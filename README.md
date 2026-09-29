@@ -518,22 +518,42 @@ Keycloak при импорте realm — в git они не попадают.
 ## Структура репозитория
 
 ```
-backend/                  # модульный монолит FastAPI (workflow, requests, crm, import_export, …)
-frontend/                 # React 18 + TS + Vite (Tailwind v4, shadcn/ui, TanStack Table, motion, React Flow, ECharts)
-services/notification/    # FastAPI + aiogram 3 (Telegram-бот, DMZ)
-services/lms-stub/        # заглушка LMS (журнал обмена, тестовые события)
-services/cms-stub/        # заглушка CMS (демо-форма лида)
-deploy/compose/           # docker-compose.dev.yml — локальная разработка
-deploy/k8s/base/          # kustomize base: Deployments, StatefulSets, Jobs, CronJobs, NetworkPolicy
-deploy/k8s/overlays/      # k3d, minikube, vm (VPS)
-deploy/keycloak/          # realm-crm.json — канонический экспорт realm
-deploy/scripts/           # генерация секретов, синхронизация realm-ConfigMap, развёртывание на VPS
-deploy/load/              # k6-сценарий нагрузочного тестирования + README запуска
-docs/design/              # проектная документация (архитектура, данные, API, дизайн)
-docs/evidence/            # аттестации: соответствие ТЗ, k8s, нагрузочное, импорт/экспорт
-docs/manual/              # руководство пользователя (PDF)
-docs/screenshots/         # снимки экрана для README
-.github/workflows/        # CI: тесты и линтеры сервисов, сборка интерфейса и образов, валидация манифестов
+.
+├── backend/                        # ядро CRM — модульный монолит FastAPI
+│   ├── app/
+│   │   ├── core/                   #   аутентификация Keycloak, шифрование ПДн, outbox, кэш
+│   │   ├── modules/                #   workflow · requests · crm · import_export · talent_pool ·
+│   │   │                           #   reporting · notifications · integrations · admin
+│   │   └── tools/                  #   миграции, наполнение демо-данными, служебные команды
+│   ├── alembic/                    #   миграции схемы БД
+│   └── tests/                      #   274 pytest
+├── frontend/                       # интерфейс — React 18 + TypeScript + Vite
+│   └── src/
+│       ├── app/                    #   каркас: маршруты, охрана доступа, меню, макет
+│       ├── pages/                  #   аналитика · доска заявок · конструктор процессов ·
+│       │                           #   импорт · пул талантов · уведомления · администрирование
+│       ├── features/onboarding/    #   адаптация сотрудников: туры, контрольный список
+│       └── shared/                 #   дизайн-система (ui, токены), API-клиент, SSE, иллюстрации
+├── services/
+│   ├── notification/               # служба уведомлений + Telegram-бот (aiogram 3, DMZ), 82 pytest
+│   ├── lms-stub/                   # заглушка LMS: журнал обмена, кнопки тестовых событий
+│   └── cms-stub/                   # заглушка CMS: демо-форма лида, каталог программ
+├── deploy/
+│   ├── compose/                    # docker-compose.dev.yml — локальная разработка
+│   ├── k8s/
+│   │   ├── base/                   # kustomize base: Deployments, Jobs, CronJobs, NetworkPolicy
+│   │   ├── overlays/               # k3d · minikube · vm (VPS c TLS)
+│   │   └── vm-addons/              # cert-manager + ClusterIssuer для публичного стенда
+│   ├── keycloak/                   # realm-crm.json — канонический экспорт realm
+│   ├── scripts/                    # секреты, realm-ConfigMap, развёртывание на VPS
+│   └── load/                       # k6-сценарий нагрузочного тестирования
+├── docs/
+│   ├── design/                     # проект: архитектура, данные, API, процессы, дизайн
+│   ├── evidence/                   # аттестации: соответствие ТЗ, k8s, нагрузочное, импорт/экспорт
+│   ├── manual/                     # руководство пользователя (PDF)
+│   ├── presentation/               # презентация (PPTX + PDF)
+│   └── screenshots/                # снимки экрана для README
+└── .github/workflows/              # CI: тесты, линтеры, сборка, валидация манифестов
 ```
 
 ## План развития
