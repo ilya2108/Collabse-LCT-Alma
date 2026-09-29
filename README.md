@@ -23,6 +23,7 @@ CRM закрытого контура для работы КАМов с вуза
 > Приложение: **https://crm.168-113-158-10.nip.io** · вход: `kam1@demo` / `Demo2026!` (все роли — в разделе «Как пользоваться»)
 > Заглушка LMS: https://lms.crm.168-113-158-10.nip.io · Заглушка CMS: https://cms.crm.168-113-158-10.nip.io
 > Telegram-бот: [@collabse_alma_crm_bot](https://t.me/collabse_alma_crm_bot) · Keycloak: https://id.crm.168-113-158-10.nip.io
+> Документация API (Swagger): https://crm.168-113-158-10.nip.io/api/v1/docs
 
 
 ## Оглавление
@@ -452,6 +453,8 @@ kubectl -n crm get secret crm-keycloak-admin -o jsonpath='{.data.password}' | ba
 Keycloak при импорте realm — в git они не попадают.
 
 ## Документация
+
+- **Документация API (OpenAPI 3 / Swagger UI)** — [живой стенд](https://crm.168-113-158-10.nip.io/api/v1/docs); при локальном запуске — тот же путь `/api/v1/docs`, машиночитаемая схема — `/api/v1/openapi.json` (135 методов REST API).
 
 - **[Руководство пользователя (PDF)](docs/manual/Альма%20—%20руководство%20пользователя.pdf)** — пошаговые сценарии по ролям со снимками экрана
 - **Презентация** — [docs/presentation/](docs/presentation/)
