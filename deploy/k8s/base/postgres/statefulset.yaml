@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels: {app.kubernetes.io/name: postgres, tier: data}
+spec:
+  serviceName: postgres-hl
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: postgres}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: postgres, tier: data}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{containerPort: 5432, name: pg}]
+          env:
+            - name: POSTGRES_DB
+              value: crm
+          envFrom:
+            - secretRef: {name: crm-db} # POSTGRES_USER, POSTGRES_PASSWORD
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data, subPath: pgdata}
+            # 01-init.sql (CREATE DATABASE keycloak) — только при первом старте пустого тома
+            - {name: initdb, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+          readinessProbe:
+            exec: {command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d crm"]}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d crm"]}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes:
+        - name: initdb
+          configMap: {name: postgres-init}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 2Gi}}
+        # storageClassName задаётся в overlay (minikube: standard, k3d: local-path)

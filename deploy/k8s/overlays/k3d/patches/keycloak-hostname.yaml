@@ -1,0 +1,15 @@
+# k3d: канонический внешний хост Keycloak — id.crm.localhost (secure context в
+# Chromium без /etc/hosts). KC_HOSTNAME фиксирует iss во всех токенах;
+# KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true в base остаётся — внутренний
+# http://keycloak:8080 продолжает работать для backend/notification.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  template:
+    spec:
+      containers:
+        - name: keycloak
+          env:
+            - {name: KC_HOSTNAME, value: "http://id.crm.localhost"}

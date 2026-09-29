@@ -1,0 +1,9 @@
+# VPS: скромная VM — 1 реплика backend в покое, до 2 под нагрузкой.
+# (replicas в Deployment не задаётся — масштабом владеет HPA, см. base/backend.)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+spec:
+  minReplicas: 1
+  maxReplicas: 4

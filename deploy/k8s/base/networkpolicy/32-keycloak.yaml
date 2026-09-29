@@ -1,0 +1,19 @@
+# Keycloak: браузерный OIDC — через ingress (политика 20); изнутри к нему ходят
+# backend (JWKS), notification (client credentials) и Jobs (маппинг keycloak_sub при сиде).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: keycloak}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: keycloak}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: notification}}
+        - podSelector: {matchLabels: {role: job}}
+      ports: [{port: 8080}]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+      ports: [{port: 5432}]

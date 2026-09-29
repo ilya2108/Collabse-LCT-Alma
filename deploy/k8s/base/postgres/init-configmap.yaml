@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  01-init.sql: |
+    -- Выполняется только при первом старте пустого тома.
+    -- Отдельная БД для Keycloak в том же инстансе: один StatefulSet,
+    -- две изолированные схемы данных (crm — приложение, keycloak — IAM).
+    CREATE DATABASE keycloak;

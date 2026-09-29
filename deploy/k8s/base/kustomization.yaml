@@ -1,0 +1,48 @@
+# kustomize base — нейтральный и полностью рабочий; окружение-специфика
+# (ingress class, storage class, секреты) — в overlays/{minikube,k3d}.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: crm
+resources:
+  - namespace.yaml
+  - config/app-configmap.yaml
+  - config/frontend-env-configmap.yaml
+  - postgres/statefulset.yaml
+  - postgres/service.yaml
+  - postgres/init-configmap.yaml
+  - minio/statefulset.yaml
+  - minio/service.yaml
+  - keydb/deployment.yaml
+  - keydb/service.yaml
+  - keycloak/deployment.yaml
+  - keycloak/service.yaml
+  - keycloak/realm-configmap.yaml
+  - backend/deployment.yaml
+  - backend/service.yaml
+  - backend/hpa.yaml
+  - frontend/deployment.yaml
+  - frontend/service.yaml
+  - notification/deployment.yaml
+  - notification/service.yaml
+  - lms-stub/deployment.yaml
+  - lms-stub/service.yaml
+  - cms-stub/deployment.yaml
+  - cms-stub/service.yaml
+  - jobs/db-migrate-job.yaml
+  - jobs/seed-demo-job.yaml
+  - jobs/minio-init-job.yaml
+  - cronjobs/stuck-check-cronjob.yaml
+  - cronjobs/purge-deleted-cronjob.yaml
+  - ingress/ingress.yaml
+  - networkpolicy/00-default-deny.yaml
+  - networkpolicy/10-allow-dns.yaml
+  - networkpolicy/20-allow-from-ingress.yaml
+  - networkpolicy/30-backend.yaml
+  - networkpolicy/31-data-layer.yaml
+  - networkpolicy/32-keycloak.yaml
+  - networkpolicy/35-jobs-stubs.yaml
+  - networkpolicy/40-notification-dmz.yaml
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: crm

@@ -1,0 +1,11 @@
+# Принудительный http→https: без него параллельно живёт http-версия,
+# и залогиненная сессия может «терять» https (жалоба с демо 29.09).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: crm
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true

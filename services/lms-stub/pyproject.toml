@@ -1,0 +1,34 @@
+[project]
+name = "lms-stub"
+version = "1.0.0"
+description = "Заглушка LMS — витрина двусторонней интеграции CRM↔LMS (ЛЦТ 2026)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "httpx>=0.27,<1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "ruff>=0.6,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+# RUF001-003 ловят «неоднозначную» кириллицу — весь проект осознанно на русском.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Паттерн FastAPI: Form(...) в значениях по умолчанию параметров — не баг.
+extend-immutable-calls = ["fastapi.Form"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

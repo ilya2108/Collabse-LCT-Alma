@@ -1,0 +1,88 @@
+# Один Ingress, две группы хостов. Фронт и API на одном хосте (пути / и /api) —
+# CORS между ними не нужен вовсе. ingressClassName в base — nginx (minikube addon);
+# overlay k3d патчит на traefik. TLS для демо выключен осознанно (deployment.md §3.6).
+#
+# *.localhost — канонические демо-хосты для k3d: Chromium/Edge считают
+# http://*.localhost секьюрным контекстом (нужен для Web Crypto / PKCE в keycloak-js)
+# и резолвят их в 127.0.0.1 без /etc/hosts. *.crm.local — алиасы для curl/API,
+# legacy и minikube (там нужен /etc/hosts — make hosts); вход в UI через
+# http://*.local невозможен (insecure context, window.crypto.subtle недоступен).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: crm
+  annotations:
+    # XLSX/XLS-импорт больших списков
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # SSE GET /api/v1/events/stream: без буферизации и с долгим таймаутом чтения
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: crm.localhost # основное приложение (канон для k3d, secure context)
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: backend, port: {number: 8000}}}
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: frontend, port: {number: 80}}}
+    - host: id.crm.localhost # Keycloak (браузерный OIDC-редирект)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: keycloak, port: {number: 8080}}}
+    - host: lms.crm.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: lms-stub, port: {number: 8020}}}
+    - host: cms.crm.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: cms-stub, port: {number: 8030}}}
+    - host: minio.crm.localhost # Console MinIO
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: minio, port: {number: 9001}}}
+    - host: crm.local # алиас для curl/API и legacy (вход в UI невозможен)
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: backend, port: {number: 8000}}}
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: frontend, port: {number: 80}}}
+    - host: id.crm.local # Keycloak (браузерный OIDC-редирект)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: keycloak, port: {number: 8080}}}
+    - host: lms.crm.local # UI заглушки: эксперт видит двусторонний обмен
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: lms-stub, port: {number: 8020}}}
+    - host: cms.crm.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: cms-stub, port: {number: 8030}}}
+    - host: minio.crm.local # Console MinIO — демо хранения файлов (S3)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: minio, port: {number: 9001}}}

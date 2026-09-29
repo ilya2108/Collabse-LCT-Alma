@@ -1,0 +1,45 @@
+# cms-stub — имитация CMS-сайта: демо-форма лида (вебхук cms.lead.created → B2C-заявка)
+# и журнал вызовов — http://cms.crm.local
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cms-stub
+  labels: {app.kubernetes.io/name: cms-stub, tier: app}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: cms-stub}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cms-stub, tier: app}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: cms-stub
+          image: crm/cms-stub:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8030, name: http}]
+          env:
+            - name: CRM_WEBHOOK_URL
+              value: http://backend:8000/api/v1/integrations/cms/webhook
+            - name: CMS_WEBHOOK_SECRET # HMAC-подпись X-Webhook-Signature
+              valueFrom: {secretKeyRef: {name: crm-internal, key: CMS_WEBHOOK_SECRET}}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /data} # SQLite-журнал вне слоя контейнера
+      volumes:
+        - {name: data, emptyDir: {}}

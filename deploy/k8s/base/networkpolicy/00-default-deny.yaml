@@ -1,0 +1,9 @@
+# Закрытый контур: любой трафик, не разрешённый явно, запрещён — включая egress
+# в интернет (ядро CRM физически не может выйти наружу). Enforcement: k3s — из
+# коробки (kube-router); minikube — только с --cni=calico (make k8s-up-minikube).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

@@ -1,0 +1,8 @@
+# k3d: iss токенов — канонический хост id.crm.localhost (см. keycloak-hostname.yaml).
+# backend/notification валидируют issuer по этому значению (envFrom crm-config).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crm-config
+data:
+  KEYCLOAK_ISSUER: "http://id.crm.localhost/realms/crm"

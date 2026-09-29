@@ -1,0 +1,20 @@
+# VPS: внешний хост Keycloak — https://id.crm.168-113-158-10.nip.io (TLS терминирует
+# traefik; KC_PROXY_HEADERS=xforwarded уже в base — дублируем для наглядности).
+# KC_HOSTNAME фиксирует iss во всех токенах; KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
+# в base остаётся — внутренний http://keycloak:8080 работает для backend/notification.
+# Ресурсы умерены под скромную VM: requests 512Mi, limit 1Gi.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  template:
+    spec:
+      containers:
+        - name: keycloak
+          env:
+            - {name: KC_HOSTNAME, value: "https://id.crm.168-113-158-10.nip.io"}
+            - {name: KC_PROXY_HEADERS, value: xforwarded}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}

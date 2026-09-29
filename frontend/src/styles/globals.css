@@ -1,0 +1,244 @@
+/*
+ * Единственная точка входа стилей (redesign.md §1.1, канонический листинг).
+ * Формат токенов — OKLCH; hex-эквиваленты в комментариях совпадают
+ * с фирменной палитрой shared/config/tokens.ts бит-в-бит.
+ * Тёмной темы нет (Р9): токены только в :root, color-scheme: light.
+ *
+ * РЕБРЕНДИНГ под ДС ПАО «Ростелеком» gen2 «Атомаро» (docs/design/brand-rt.md):
+ * все hex — из фирменных рампов --atmr-* (design.rt.ru/gen2), характер —
+ * по LMS-референсу rtkb.zion-lms.ru. Primary = base-info #1F69FF (синий РТК,
+ * белый текст 4.64:1 AA), оранжевый status-01 #FF4F12 — акцент второго плана,
+ * фиолетовый accent-400 #9233FF — Talent Pool, сайдбар — графит neutral-950.
+ *
+ * Как перекрашивать: меняются ТОЛЬКО значения токенов здесь и их hex-двойники
+ * в tokens.ts / echartsTheme.ts / illustrations/palette.ts — компоненты
+ * используют классы-токены и правок не требуют (см. §8.4: hex в tsx запрещены).
+ */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/inter';
+
+:root {
+  color-scheme: light;
+
+  /* — поверхность и текст — */
+  --background: oklch(0.977 0.005 275.0);        /* #F6F7FB фон layout (сэмпл LMS-референса) */
+  --card: oklch(1 0 0);                          /* #FFFFFF = bg-elevated-0 ДС */
+  --popover: oklch(1 0 0);
+  --foreground: oklch(0.210 0.034 263.4);        /* #101828 fg-default РТК, 17.75:1 */
+  --card-foreground: var(--foreground);
+  --popover-foreground: var(--foreground);
+  --muted: oklch(0.967 0.001 286.4);             /* #F4F4F5 neutral-25 (= bg-page-filled ДС) */
+  --muted-foreground: oklch(0.478 0.020 267.6);  /* #585D69 base-neutral, AA 6.59:1 */
+  --border: oklch(0.933 0.008 286.2);            /* #E8E8EE neutral-50 */
+  --input: oklch(0.933 0.008 286.2);
+  --ring: oklch(0.573 0.234 262.2);              /* фокус-кольцо = синий РТК */
+
+  /* — бренд — */
+  --primary: oklch(0.573 0.234 262.2);           /* #1F69FF base-info, СИНИЙ РТК (бел. 4.64:1) */
+  --primary-foreground: oklch(1 0 0);            /* белый на синем */
+  --primary-hover: oklch(0.509 0.206 262.3);     /* #1A59D9 info-600, 6.04:1 */
+  --primary-active: oklch(0.445 0.176 262.2);    /* #164AB3 info-700, 7.88:1 */
+  --primary-tint: oklch(0.978 0.010 261.8);      /* #F4F8FF info-25: выделение/hover строк */
+  --primary-tint-2: oklch(0.954 0.022 265.8);    /* #E9F0FF info-50: активные плашки */
+  --sidebar: oklch(0.231 0.032 262.5);           /* #151D2C neutral-950, графит РТК (бел. 16.88:1) */
+  --sidebar-foreground: oklch(1 0 0);
+  --sidebar-muted: oklch(0.709 0.017 269.9);     /* #9DA1AC neutral-300, 6.53:1 на графите */
+  --sidebar-active: oklch(0.573 0.234 262.2);    /* заливка активного пункта (текст — белый) */
+
+  --secondary: oklch(0.967 0.001 286.4);         /* secondary-кнопки = neutral-25 */
+  --secondary-foreground: oklch(0.210 0.034 263.4);
+  --accent: oklch(0.978 0.010 261.8);            /* hover меню/строк = primary-tint */
+  --accent-foreground: oklch(0.445 0.176 262.2);
+  --destructive: oklch(0.568 0.216 27.7);        /* #D92020 error-600, бел. 5.03:1 */
+  --destructive-foreground: oklch(1 0 0);
+  /* Фирменный оранжевый РТК (status-01): иллюстрации, маркетинговые акценты.
+     Текстом НЕ использовать — на белом всего 3.29:1. */
+  --brand-orange: oklch(0.670 0.221 36.4);       /* #FF4F12 */
+
+  /* — семантические статусы: тройки core / deep / tint (brand-rt.md §2.3),
+       все пары deep-на-tint посчитаны, AA ≥ 4.5 — */
+  --status-draft: oklch(0.478 0.020 267.6);        /* #585D69 base-neutral */
+  --status-draft-deep: oklch(0.413 0.025 267.0);   /* #454B59 neutral-700, 7.95:1 */
+  --status-draft-tint: oklch(0.967 0.001 286.4);   /* #F4F4F5 neutral-25 */
+  --status-progress: oklch(0.573 0.234 262.2);     /* #1F69FF base-info */
+  --status-progress-deep: oklch(0.445 0.176 262.2);/* #164AB3 info-700, 6.90:1 */
+  --status-progress-tint: oklch(0.954 0.022 265.8);/* #E9F0FF info-50 */
+  --status-success: oklch(0.654 0.181 149.3);      /* #09AD4D success-600 */
+  --status-success-deep: oklch(0.507 0.138 150.0); /* #067A37 success-800, 5.02:1 */
+  --status-success-tint: oklch(0.968 0.025 160.6); /* #E7FAEF success-50 */
+  --status-warning: oklch(0.702 0.148 71.6);       /* #D78D0E warning-600 */
+  --status-warning-deep: oklch(0.546 0.113 72.7);  /* #98640A warning-800, 4.71:1 */
+  --status-warning-tint: oklch(0.976 0.022 80.7);  /* #FFF6E7 warning-50 */
+  --status-danger: oklch(0.568 0.216 27.7);        /* #D92020 error-600 */
+  --status-danger-deep: oklch(0.493 0.186 27.5);   /* #B31B1B error-700, 5.85:1 */
+  --status-danger-tint: oklch(0.952 0.024 17.6);   /* #FFE9E9 error-50 */
+  --status-talent: oklch(0.574 0.272 298.0);       /* #9233FF accent-400 (фиолетовый РТК) */
+  --status-talent-deep: oklch(0.462 0.259 291.3);  /* #6500D9 accent-600, 6.85:1 */
+  --status-talent-tint: oklch(0.941 0.035 305.5);  /* #F1E6FF accent-50 */
+
+  /* — категориальная палитра графиков (brand-rt.md §4): 6 цветов из рампов ДС,
+       контраст к белому ≥ 3:1, hue разнесены, CVD-пары разведены по светлоте — */
+  --chart-1: oklch(0.573 0.234 262.2);  /* #1F69FF синий РТК (base-info) */
+  --chart-2: oklch(0.594 0.194 36.5);   /* #D9430F оранжевый РТК (status-01-600) */
+  --chart-3: oklch(0.554 0.092 209.7);  /* #148190 бирюза (status-04-600) */
+  --chart-4: oklch(0.574 0.272 298.0);  /* #9233FF фиолетовый (accent-400) */
+  --chart-5: oklch(0.516 0.193 2.5);    /* #B81B5E малиновый (status-06-600) */
+  --chart-6: oklch(0.609 0.128 72.0);   /* #B1740B охра (warning-700) */
+
+  /* — геометрия: шкала радиусов ДС 2/3/4/6/8/12/16/32; производные sm 6 /
+       md 8 / xl 16 совпадают со ступенями s/m/xl ДС бит-в-бит — */
+  --radius: 0.625rem;          /* 10px базовый (карточки; компромисс base-8 ДС / r16 LMS) */
+  --radius-sm: calc(var(--radius) - 4px);   /* 6px  чипы, теги (= s ДС) */
+  --radius-md: calc(var(--radius) - 2px);   /* 8px  кнопки, инпуты (= base ДС, computed Button r8) */
+  --radius-lg: var(--radius);               /* 10px карточки */
+  --radius-xl: calc(var(--radius) + 6px);   /* 16px модалки, витринные карточки (= xl ДС, r16 LMS) */
+
+  /* — тени: двухслойные рецепты ДС shadow-bottom-s/l/xl,
+       цвет rgba(88,93,105,…) = base-neutral #585D69 — */
+  --shadow-card: 0 0 8px rgba(88, 93, 105, 0.1), 0 2px 4px rgba(88, 93, 105, 0.05);
+  --shadow-overlay: 0 0 20px rgba(88, 93, 105, 0.1), 0 12px 20px rgba(88, 93, 105, 0.05);
+  --shadow-drag: 0 0 32px rgba(88, 93, 105, 0.1), 0 32px 32px rgba(88, 93, 105, 0.05);
+}
+
+@theme inline {
+  /* Фирменный шрифт ДС — Rostelecom Basis (проприетарный: файлы в публичную репу
+     не коммитим, лицензии на редистрибуцию нет — brand-rt.md §3, вариант Б).
+     Первым в стеке: подхватится, если установлен в системе/подключён в проде;
+     фолбэк Inter легитимен — сам LMS-референс rtkb.zion-lms.ru живёт на Inter. */
+  --font-sans: 'Rostelecom Basis', 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-active: var(--primary-active);
+  --color-primary-tint: var(--primary-tint);
+  --color-primary-tint-2: var(--primary-tint-2);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-brand-orange: var(--brand-orange);
+  /* статусные тройки → утилиты bg-status-*, text-status-*-deep, bg-status-*-tint */
+  --color-status-draft: var(--status-draft);
+  --color-status-draft-deep: var(--status-draft-deep);
+  --color-status-draft-tint: var(--status-draft-tint);
+  --color-status-progress: var(--status-progress);
+  --color-status-progress-deep: var(--status-progress-deep);
+  --color-status-progress-tint: var(--status-progress-tint);
+  --color-status-success: var(--status-success);
+  --color-status-success-deep: var(--status-success-deep);
+  --color-status-success-tint: var(--status-success-tint);
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-deep: var(--status-warning-deep);
+  --color-status-warning-tint: var(--status-warning-tint);
+  --color-status-danger: var(--status-danger);
+  --color-status-danger-deep: var(--status-danger-deep);
+  --color-status-danger-tint: var(--status-danger-tint);
+  --color-status-talent: var(--status-talent);
+  --color-status-talent-deep: var(--status-talent-deep);
+  --color-status-talent-tint: var(--status-talent-tint);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --radius-sm: var(--radius-sm); --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg); --radius-xl: var(--radius-xl);
+  --shadow-card: var(--shadow-card); --shadow-overlay: var(--shadow-overlay);
+  --shadow-drag: var(--shadow-drag);
+}
+
+@layer base {
+  /* Tailwind v4: дефолтный цвет рамок — currentColor. Возвращаем shadcn-базу,
+     чтобы «голый» класс border давал --border (#DDE4EE), а не почти чёрный
+     foreground (находка дизайн-ревью: ChecklistCard, карточки каналов и др.). */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+
+  body { @apply bg-background text-foreground font-sans antialiased; font-size: 14px; }
+  :focus-visible { @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background; }
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+/* Контент: max-width 1440, отступ 24px, на планшете 16px (§1.4, ux.md §4.3).
+   Используется текущими AntD-экранами до их миграции. */
+.app-content {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+@media (max-width: 991px) {
+  .app-content {
+    padding: 16px;
+  }
+}
+
+/* Skeleton-перелив (§2.3): shimmer поверх bg-muted */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--muted) 25%,
+    var(--primary-tint) 50%,
+    var(--muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* prefers-reduced-motion (§2.4): CSS-анимации гасятся; motion/react
+   управляется MotionConfig reducedMotion="user" в корне приложения. */
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

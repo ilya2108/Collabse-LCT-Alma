@@ -1,0 +1,10 @@
+[
+  {
+    "op": "add",
+    "path": "/spec/egress/-",
+    "value": {
+      "to": [{"ipBlock": {"cidr": "195.133.42.107/32"}}],
+      "ports": [{"port": 8888, "protocol": "TCP"}]
+    }
+  }
+]

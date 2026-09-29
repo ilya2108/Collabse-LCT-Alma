@@ -1,0 +1,4 @@
+# JSON6902: traefik в k3s работает в namespace kube-system (как в overlay k3d)
+- op: replace
+  path: /spec/ingress/0/from/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name
+  value: kube-system

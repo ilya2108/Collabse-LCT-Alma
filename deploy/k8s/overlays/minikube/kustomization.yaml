@@ -1,0 +1,43 @@
+# Overlay minikube: nginx-ingress (addon), storage class standard, CNI calico
+# (для enforcement NetworkPolicy — включает make k8s-up-minikube).
+# ingressClassName и namespace контроллера в base уже nginx/ingress-nginx — патч не нужен.
+# Секреты: make k8s-secrets OVERLAY=deploy/k8s/overlays/minikube.
+# Передача стенда наружу: подключить components: [../../components/prod-hardening].
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: crm
+resources:
+  - ../../base
+secretGenerator:
+  - name: crm-db
+    envs: [secrets/crm-db.env]
+  - name: crm-pii
+    envs: [secrets/crm-pii.env]
+  - name: crm-s3
+    envs: [secrets/crm-s3.env]
+  - name: crm-keycloak-admin
+    envs: [secrets/crm-keycloak-admin.env]
+  - name: crm-keycloak-clients
+    envs: [secrets/crm-keycloak-clients.env]
+  - name: crm-telegram
+    envs: [secrets/crm-telegram.env]
+  - name: crm-internal
+    envs: [secrets/crm-internal.env]
+generatorOptions:
+  disableNameSuffixHash: true # имена секретов зашиты в envFrom подов
+patches:
+  - target: {group: apps, version: v1, kind: StatefulSet, name: postgres}
+    path: patches/storageclass.yaml # провижинер minikube
+  - target: {group: apps, version: v1, kind: StatefulSet, name: minio}
+    path: patches/storageclass.yaml
+images:
+  - name: crm/backend
+    newTag: dev
+  - name: crm/frontend
+    newTag: dev
+  - name: crm/notification
+    newTag: dev
+  - name: crm/lms-stub
+    newTag: dev
+  - name: crm/cms-stub
+    newTag: dev

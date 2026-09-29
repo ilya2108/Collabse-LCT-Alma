@@ -1,0 +1,19 @@
+# Компонент «передача стенда наружу»: сужает контур доверия до боевых клиентов.
+# Демо-overlay'и (k3d/minikube) его НЕ подключают — там crm-loadtest нужен для
+# make load-test (k6) и smoke. В боевом overlay добавьте:
+#   components:
+#     - ../../components/prod-hardening
+# Дополнительно к патчу ниже отключите самого клиента crm-loadtest в Keycloak
+# (deploy/keycloak/realm-crm.json: clients[crm-loadtest].enabled=false + make realm-sync
+# на свежей БД, либо на живом realm: kcadm.sh update clients/<uuid> -r crm -s enabled=false):
+# у него единственного directAccessGrantsEnabled=true, а его client_secret иначе
+# продолжает выдавать токены с полными realm-ролями.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {version: v1, kind: ConfigMap, name: crm-config}
+    patch: |-
+      # без crm-loadtest: backend перестаёт принимать aud/azp нагрузочного клиента
+      - op: replace
+        path: /data/KEYCLOAK_AUDIENCES
+        value: account,crm-frontend,crm-notification,crm-integration

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SSO check</title>
+  </head>
+  <body>
+    <script>
+      // Служебная страница keycloak-js для silent check-sso (iframe).
+      parent.postMessage(location.href, location.origin);
+    </script>
+  </body>
+</html>

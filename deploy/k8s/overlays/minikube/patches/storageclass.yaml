@@ -1,0 +1,4 @@
+# JSON6902: стандартный провижинер minikube
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/storageClassName
+  value: standard

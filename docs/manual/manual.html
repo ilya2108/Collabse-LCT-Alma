@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Альма — руководство пользователя</title>
+<style>
+  :root {
+    --blue: #1F69FF;
+    --blue-dark: #1450C8;
+    --blue-pale: #EDF3FF;
+    --ink: #1c2333;
+    --muted: #5b6577;
+    --line: #d8e0ee;
+    --card: #f7f9fd;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { background: #fff; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    font-size: 10.2pt;
+    line-height: 1.5;
+  }
+  @page { size: A4; margin: 0; }
+
+  .page {
+    width: 210mm; height: 296mm;
+    padding: 21mm 16mm 17mm 16mm;
+    position: relative;
+    overflow: hidden;
+    break-after: page;
+    page-break-after: always;
+  }
+  .page:last-child { break-after: auto; page-break-after: auto; }
+
+  /* Колонтитулы */
+  .rh {
+    position: absolute; top: 9mm; left: 16mm; right: 16mm;
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 8pt; color: var(--muted);
+    border-bottom: 0.4mm solid var(--line); padding-bottom: 1.8mm;
+    letter-spacing: 0.02em;
+  }
+  .rh .rh-brand { color: var(--blue); font-weight: 600; }
+  .rf {
+    position: absolute; bottom: 8mm; left: 16mm; right: 16mm;
+    display: flex; justify-content: space-between;
+    font-size: 8pt; color: var(--muted);
+  }
+  .rf .pageno { font-weight: 600; color: var(--ink); }
+
+  /* Типографика */
+  h1.section {
+    color: var(--blue); font-size: 17pt; font-weight: 700; letter-spacing: -0.01em;
+    margin-bottom: 3.5mm; display: flex; align-items: center; gap: 3mm;
+  }
+  h1.section .num {
+    background: var(--blue); color: #fff; border-radius: 2mm;
+    font-size: 10.5pt; font-weight: 700; padding: 0.8mm 2.6mm; letter-spacing: 0;
+    flex: none;
+  }
+  h2 { color: var(--blue-dark); font-size: 11.5pt; margin: 4mm 0 1.6mm; }
+  p { margin-bottom: 2.6mm; text-align: justify; hyphens: auto; }
+  .lead { color: #303a4f; }
+  ol.steps { margin: 1.5mm 0 3mm 5.5mm; }
+  ol.steps li { margin-bottom: 1.5mm; padding-left: 1mm; }
+  ol.steps li::marker { color: var(--blue); font-weight: 700; }
+  ul.dots { margin: 1.5mm 0 3mm 5mm; list-style: none; }
+  ul.dots li { margin-bottom: 1.4mm; padding-left: 4mm; position: relative; }
+  ul.dots li::before { content: ""; position: absolute; left: 0; top: 2.1mm; width: 1.7mm; height: 1.7mm; border-radius: 50%; background: var(--blue); }
+  b { font-weight: 600; }
+  code, .mono {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 9pt; background: var(--blue-pale); border-radius: 1mm; padding: 0.2mm 1.2mm;
+    color: var(--blue-dark);
+  }
+  pre.cmd {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 8.4pt; line-height: 1.55; background: #10182b; color: #dce7ff;
+    border-radius: 2mm; padding: 3.5mm 4mm; margin: 2mm 0 3mm; white-space: pre-wrap; word-break: break-all;
+  }
+  pre.cmd .c { color: #7f96c4; }
+
+  /* Скриншоты */
+  figure.shot { margin: 3mm 0 1mm; }
+  figure.shot img {
+    display: block; width: 100%;
+    border: 0.35mm solid var(--line); border-radius: 2mm;
+  }
+  figure.shot figcaption {
+    font-size: 8.3pt; color: var(--muted); margin-top: 1.6mm; text-align: center;
+  }
+  .shot-row { display: flex; gap: 5mm; justify-content: center; margin: 3mm 0 1mm; }
+  .shot-row figure.shot { margin: 0; }
+
+  /* Карточки и таблицы */
+  .callout {
+    background: var(--blue-pale); border-left: 1.2mm solid var(--blue);
+    border-radius: 0 2mm 2mm 0; padding: 2.6mm 3.5mm; margin: 2.5mm 0;
+    font-size: 9.4pt;
+  }
+  .callout.warn { background: #fff7ec; border-left-color: #e8912d; }
+  .panel {
+    border: 0.35mm solid var(--line); border-radius: 2.5mm; background: var(--card);
+    padding: 3.5mm 4mm; margin: 2.5mm 0;
+  }
+  .panel h3 { color: var(--blue-dark); font-size: 10pt; margin-bottom: 1.5mm; }
+  table.tbl { width: 100%; border-collapse: collapse; margin: 2.5mm 0 3mm; font-size: 9.4pt; }
+  table.tbl th {
+    background: var(--blue); color: #fff; text-align: left; font-weight: 600;
+    padding: 2mm 2.8mm; font-size: 9pt;
+  }
+  table.tbl td { border-bottom: 0.3mm solid var(--line); padding: 1.9mm 2.8mm; vertical-align: top; }
+  table.tbl tr:nth-child(even) td { background: #f6f9ff; }
+
+  /* Схемы-цепочки (для разделов без скриншота) */
+  .flow { display: flex; align-items: stretch; gap: 2.5mm; margin: 3mm 0; }
+  .flow .fstep {
+    flex: 1; background: #fff; border: 0.4mm solid var(--line); border-top: 1mm solid var(--blue);
+    border-radius: 2mm; padding: 2.6mm 2.8mm; font-size: 8.8pt; line-height: 1.4;
+  }
+  .flow .fstep b { display: block; color: var(--blue-dark); margin-bottom: 0.8mm; font-size: 9.2pt; }
+  .flow .arr { align-self: center; color: var(--blue); font-weight: 700; font-size: 12pt; flex: none; }
+
+  /* Обложка */
+  .cover { padding: 0; }
+  .cover-inner { position: absolute; inset: 0; padding: 24mm 20mm; display: flex; flex-direction: column; }
+  .cover-band { height: 2.5mm; background: var(--blue); border-radius: 2mm; width: 34mm; margin-bottom: 10mm; }
+  .cover h1 { font-size: 34pt; letter-spacing: -0.02em; color: var(--ink); line-height: 1.1; }
+  .cover h1 .brand { color: var(--blue); }
+  .cover .subtitle { font-size: 15pt; color: var(--muted); margin-top: 3mm; font-weight: 400; }
+  .cover .meta { margin-top: 7mm; font-size: 10pt; color: var(--muted); display: flex; gap: 8mm; }
+  .cover .meta b { color: var(--ink); font-weight: 600; }
+  .cover figure { margin-top: 12mm; }
+  .cover figure img {
+    width: 100%; border: 0.4mm solid var(--line); border-radius: 3mm;
+    box-shadow: 0 4mm 10mm rgba(31, 105, 255, 0.13);
+  }
+  .cover .cover-foot { margin-top: auto; display: flex; justify-content: space-between; font-size: 9pt; color: var(--muted); border-top: 0.4mm solid var(--line); padding-top: 3mm; }
+
+  /* Оглавление */
+  .toc { margin-top: 2mm; }
+  .toc-row {
+    display: flex; align-items: baseline; gap: 2.5mm;
+    font-size: 10.8pt; margin-bottom: 3.1mm;
+  }
+  .toc-row .t-num { color: var(--blue); font-weight: 700; min-width: 7mm; }
+  .toc-row .t-title { font-weight: 500; }
+  .toc-row .t-dots { flex: 1; border-bottom: 0.35mm dotted #aab6cc; transform: translateY(-1mm); }
+  .toc-row .t-page { font-weight: 600; color: var(--blue-dark); }
+  .toc-row.sub { font-size: 9.6pt; margin-left: 9mm; margin-bottom: 2.2mm; color: var(--muted); }
+  .toc-row.sub .t-title { font-weight: 400; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ СТР. 1 · ОБЛОЖКА ═══════════ -->
+<div class="page cover">
+  <div class="cover-inner">
+    <div class="cover-band"></div>
+    <h1><span class="brand">Альма</span></h1>
+    <div class="subtitle">Руководство пользователя CRM-системы взаимодействия с&nbsp;вузами</div>
+    <div class="meta">
+      <span>Версия <b>1.0</b></span>
+      <span>Дата выпуска <b>29 сентября 2026</b></span>
+      <span>Стенд <b>crm.168-113-158-10.nip.io</b></span>
+    </div>
+    <figure>
+      <img src="img/app-login.png" alt="Экран входа в систему Альма">
+    </figure>
+    <div class="cover-foot">
+      <span>Команда «Коллапс» · ЛЦТ 2026</span>
+      <span>Альма — руководство пользователя</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ СТР. 2 · ОГЛАВЛЕНИЕ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section">Оглавление</h1>
+  <div class="toc">
+    <div class="toc-row"><span class="t-num">1</span><span class="t-title">Быстрый старт: доступ к стенду и демо-пользователи</span><span class="t-dots"></span><span class="t-page">3</span></div>
+    <div class="toc-row"><span class="t-num">2</span><span class="t-title">Аналитическая панель</span><span class="t-dots"></span><span class="t-page">4</span></div>
+    <div class="toc-row"><span class="t-num">3</span><span class="t-title">Доска заявок</span><span class="t-dots"></span><span class="t-page">5</span></div>
+    <div class="toc-row"><span class="t-num">4</span><span class="t-title">Карточка заявки</span><span class="t-dots"></span><span class="t-page">6</span></div>
+    <div class="toc-row"><span class="t-num">5</span><span class="t-title">Конструктор бизнес-процессов</span><span class="t-dots"></span><span class="t-page">7</span></div>
+    <div class="toc-row"><span class="t-num">6</span><span class="t-title">Импорт данных</span><span class="t-dots"></span><span class="t-page">8</span></div>
+    <div class="toc-row sub"><span class="t-num"></span><span class="t-title">6.1. Мастер импорта: загрузка файла</span><span class="t-dots"></span><span class="t-page">8</span></div>
+    <div class="toc-row sub"><span class="t-num"></span><span class="t-title">6.2. Маппинг колонок и обработка ошибок</span><span class="t-dots"></span><span class="t-page">9</span></div>
+    <div class="toc-row"><span class="t-num">7</span><span class="t-title">Пул талантов</span><span class="t-dots"></span><span class="t-page">10</span></div>
+    <div class="toc-row"><span class="t-num">8</span><span class="t-title">Уведомления и Telegram-бот</span><span class="t-dots"></span><span class="t-page">11</span></div>
+    <div class="toc-row"><span class="t-num">9</span><span class="t-title">Администрирование</span><span class="t-dots"></span><span class="t-page">12</span></div>
+    <div class="toc-row"><span class="t-num">10</span><span class="t-title">Адаптация новых сотрудников и мобильная версия</span><span class="t-dots"></span><span class="t-page">13</span></div>
+    <div class="toc-row"><span class="t-num">11</span><span class="t-title">Доступ к консоли Keycloak (администраторам стенда)</span><span class="t-dots"></span><span class="t-page">14</span></div>
+    <div class="toc-row"><span class="t-num">12</span><span class="t-title">Частые вопросы</span><span class="t-dots"></span><span class="t-page">15</span></div>
+  </div>
+  <div class="callout" style="margin-top: 8mm;">
+    <b>О системе.</b> «Альма» — CRM-система для управления взаимодействием компании с вузами: партнёрскими договорами (B2B) и заявками студентов (B2C). Система охватывает полный цикл: приём и обработка заявок на доске заявок, настраиваемые бизнес-процессы, аналитическую панель, импорт исторических данных, пул талантов и уведомления в Telegram. Названия разделов на снимках экрана могут незначительно отличаться от текста руководства.
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">2</span></div>
+</div>
+
+<!-- ═══════════ СТР. 3 · БЫСТРЫЙ СТАРТ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">1</span>Быстрый старт</h1>
+  <p class="lead">Демонстрационный стенд системы доступен по адресу: <code>https://crm.168-113-158-10.nip.io</code>. Вход выполняется через единый центр аутентификации (Keycloak): нажмите «Войти», введите логин и пароль демо-пользователя — после входа вы автоматически вернётесь в систему с правами выбранной роли.</p>
+
+  <h2>Демо-пользователи</h2>
+  <p>Для всех демо-учётных записей используется единый пароль: <code>Demo2026!</code></p>
+  <table class="tbl">
+    <tr><th style="width: 30mm;">Логин</th><th style="width: 34mm;">Роль</th><th>Что видит и может</th></tr>
+    <tr><td><code>admin@demo</code></td><td>Администратор</td><td>Полный доступ: пользователи, правила уведомлений, согласование процессов, мониторинг интеграций, журнал аудита, импорт.</td></tr>
+    <tr><td><code>head@demo</code></td><td>Руководитель</td><td>Все заявки и аналитика по обеим воронкам, назначение ответственных, редактирование процессов, экспорт отчётов, эскалации.</td></tr>
+    <tr><td><code>kam1@demo</code></td><td>Менеджер (КАМ)</td><td>Работа со своими заявками на доске заявок: переводы по статусам, комментарии, файлы, карточки вузов и студентов.</td></tr>
+    <tr><td><code>kam2@demo</code></td><td>Менеджер (КАМ)</td><td>Аналогично <code>kam1@demo</code> — второй менеджер для проверки разграничения зон ответственности и переназначений.</td></tr>
+    <tr><td><code>observer@demo</code></td><td>Наблюдатель</td><td>Доступ «только чтение»: аналитика, доска и карточки без права изменений — режим для проверяющих и заказчика.</td></tr>
+  </table>
+
+  <h2>Первые шаги</h2>
+  <ol class="steps">
+    <li>Откройте <code>https://crm.168-113-158-10.nip.io</code> и войдите как <code>head@demo</code> — эта роль показывает систему полнее всего.</li>
+    <li>Пройдите короткий вводный тур: он подсвечивает ключевые разделы интерфейса (см. раздел 10).</li>
+    <li>Откройте раздел <b>Аналитика</b> — оцените текущее состояние воронок B2B и B2C.</li>
+    <li>Перейдите на <b>Доску заявок</b> и перетащите любую заявку в следующий статус.</li>
+    <li>Зайдите под <code>admin@demo</code>, чтобы увидеть раздел администрирования и настройку уведомлений.</li>
+  </ol>
+  <div class="callout">
+    <b>Совет.</b> Чтобы сравнить поведение ролей, откройте два разных браузера (или обычное и приватное окно) и войдите одновременно под <code>head@demo</code> и <code>kam1@demo</code>: переводы заявок менеджером мгновенно отражаются у руководителя.
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">3</span></div>
+</div>
+
+<!-- ═══════════ СТР. 4 · ДАШБОРД ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">2</span>Аналитическая панель</h1>
+  <p class="lead">Аналитическая панель — стартовый экран системы. Она показывает состояние воронок B2B и B2C в реальном времени: количество и суммы заявок по статусам, конверсию между этапами, распределение по менеджерам и динамику за период. Руководитель видит картину по всей команде, менеджер — по своей зоне ответственности.</p>
+  <h2>Как пользоваться</h2>
+  <ol class="steps">
+    <li><b>Фильтры.</b> В верхней панели выберите тип воронки (B2B/B2C), период, менеджера или вуз — все виджеты пересчитываются мгновенно.</li>
+    <li><b>Детализация (drill-down).</b> Нажмите на сегмент диаграммы или строку таблицы — система откроет список конкретных заявок, из которых сложился показатель. Из списка можно перейти в карточку любой заявки.</li>
+    <li><b>Экспорт.</b> Кнопка «Экспорт» выгружает текущий срез (с учётом применённых фильтров) в файл для отчётности перед руководством.</li>
+  </ol>
+  <figure class="shot">
+    <img src="img/app-dashboard.png" alt="Экран аналитики системы Альма">
+    <figcaption>Аналитическая панель: сводные показатели воронки, распределение по статусам и менеджерам</figcaption>
+  </figure>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">4</span></div>
+</div>
+
+<!-- ═══════════ СТР. 5 · КАНБАН ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">3</span>Доска заявок</h1>
+  <p class="lead">Доска заявок — основной рабочий инструмент менеджера. Колонки соответствуют статусам бизнес-процесса, карточки — заявкам. Переключатель B2B/B2C меняет воронку: партнёрские договоры с вузами или заявки студентов. Каждая воронка использует собственный настраиваемый процесс (см. раздел 5).</p>
+  <h2>Как пользоваться</h2>
+  <ol class="steps">
+    <li><b>Перевод по статусам.</b> Перетащите карточку в соседнюю колонку. Система разрешает только переходы, предусмотренные процессом: недопустимые колонки подсвечиваются как недоступные.</li>
+    <li><b>Возврат с комментарием.</b> При перемещении карточки назад по воронке система запросит обязательный комментарий с причиной возврата — он сохраняется в истории заявки.</li>
+    <li><b>Фильтры и поиск.</b> Сверху доступны фильтры по ответственному, вузу, сроку и просроченности, а также быстрый поиск по названию.</li>
+    <li><b>Создание заявки.</b> Кнопка «Создать» открывает форму новой заявки с выбором вуза/студента и назначением ответственного.</li>
+  </ol>
+  <figure class="shot">
+    <img src="img/app-board.png" alt="Доска заявок">
+    <figcaption>Доска заявок: статусные колонки, карточки заявок, переключатель воронок B2B/B2C</figcaption>
+  </figure>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">5</span></div>
+</div>
+
+<!-- ═══════════ СТР. 6 · КАРТОЧКА ЗАЯВКИ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">4</span>Карточка заявки</h1>
+  <div style="display: flex; gap: 6mm;">
+    <div style="flex: 1;">
+      <p class="lead">Карточка — досье заявки: все данные, действия и коммуникация в одном месте. Открывается кликом по карточке на доске или из списка детализации аналитической панели.</p>
+      <h2>Что внутри</h2>
+      <ul class="dots">
+        <li><b>Основные поля</b> — вуз или студент, тип воронки, сумма, сроки, ответственный менеджер. Редактирование доступно в соответствии с ролью.</li>
+        <li><b>История изменений</b> — полная хронология: кто, когда и какой статус установил, включая возвраты с причинами. История формируется автоматически и не редактируется.</li>
+        <li><b>Комментарии</b> — обсуждение заявки командой. Комментарий с причиной возврата помечается особо.</li>
+        <li><b>Файлы</b> — договоры, письма и приложения; файлы прикрепляются к заявке и доступны всем участникам процесса.</li>
+      </ul>
+      <h2>Как пользоваться</h2>
+      <ol class="steps">
+        <li>Откройте заявку с доски одним кликом.</li>
+        <li>Смените статус кнопкой перехода — карточка предложит только допустимые по процессу шаги.</li>
+        <li>Добавьте комментарий или прикрепите файл — участники получат уведомление (см. раздел 8).</li>
+        <li>Проверьте вкладку истории перед встречей с вузом: она отвечает на вопрос «что происходило с заявкой».</li>
+      </ol>
+    </div>
+    <figure class="shot" style="flex: none; width: 62mm; margin-top: 1mm;">
+      <img src="img/mob-request.png" alt="Карточка заявки">
+      <figcaption>Карточка заявки: статус, история, комментарии</figcaption>
+    </figure>
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">6</span></div>
+</div>
+
+<!-- ═══════════ СТР. 7 · КОНСТРУКТОР ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">5</span>Конструктор бизнес-процессов</h1>
+  <p class="lead">Конструктор позволяет изменять воронки B2B и B2C без программиста: добавлять и переименовывать статусы, настраивать допустимые переходы и правила. Изменения готовятся в черновике и применяются к «боевому» процессу только после явного подтверждения — работа команды не прерывается.</p>
+
+  <div class="flow">
+    <div class="fstep"><b>1 · Черновик</b>Редактируйте схему свободно: статусы, переходы, правила. На живой процесс черновик не влияет.</div>
+    <div class="arr">→</div>
+    <div class="fstep"><b>2 · Проверка</b>Система валидирует схему: недостижимые статусы и «тупики» применить нельзя.</div>
+    <div class="arr">→</div>
+    <div class="fstep"><b>3 · Отправка на применение</b>Черновик уходит на согласование администратору (апрув в разделе администрирования).</div>
+    <div class="arr">→</div>
+    <div class="fstep"><b>4 · Миграция заявок</b>Если статус удалён, система попросит указать, куда перенести находящиеся в нём заявки.</div>
+  </div>
+
+  <h2>Как пользоваться</h2>
+  <ol class="steps">
+    <li>Откройте «Процессы» и выберите воронку (B2B или B2C) — откроется визуальная схема статусов и переходов.</li>
+    <li>Нажмите «Создать черновик». Перетаскивайте статусы, добавляйте переходы, задавайте обязательность комментария на возвратах.</li>
+    <li>Нажмите «Отправить на применение». Система прогонит проверки и покажет список замечаний, если они есть.</li>
+    <li>Если изменения затрагивают статусы с активными заявками — укажите правила миграции (в какой статус переносить заявки из удаляемого).</li>
+    <li>После согласования администратором процесс вступает в силу, доска перестраивается автоматически.</li>
+  </ol>
+
+  <div class="panel">
+    <h3>«Защита от дурака»</h3>
+    <p style="margin: 0;">Конструктор не позволит применить некорректную схему: статус без входящих переходов, воронку без конечного статуса, удаление статуса без миграции находящихся в нём заявок, а также цикл, из которого нельзя дойти до завершения. Ошибки подсвечиваются прямо на схеме с пояснением, что нужно исправить. Пока черновик не применён, команда продолжает работать по прежнему процессу.</p>
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">7</span></div>
+</div>
+
+<!-- ═══════════ СТР. 8 · ИМПОРТ 1 ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">6</span>Импорт данных</h1>
+  <p class="lead">Импорт переносит в «Альму» исторические данные из таблиц и выгрузок других систем: вузы, договоры, заявки, платежи. Поддерживаются форматы <b>XLSX, XLS, CSV и JSON</b>. Мастер импорта проводит вас за четыре шага: загрузка файла → маппинг колонок → проверка → результат, — и не даёт «испортить» базу: ошибочные строки отклоняются с точным указанием причины.</p>
+  <h2>Шаг 1. Загрузка файла</h2>
+  <ol class="steps">
+    <li>Откройте раздел «Импорт» (доступен администратору и руководителю) и нажмите «Новый импорт».</li>
+    <li>Выберите тип данных (вузы, договоры, заявки, платежи) и перетащите файл в область загрузки.</li>
+    <li>Система автоматически определит формат и кодировку и покажет предпросмотр первых строк.</li>
+  </ol>
+  <figure class="shot">
+    <img src="img/import-upload.png" alt="Мастер импорта: загрузка файла">
+    <figcaption>Мастер импорта, шаг загрузки: выбор файла XLSX/XLS/CSV/JSON и предпросмотр данных</figcaption>
+  </figure>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">8</span></div>
+</div>
+
+<!-- ═══════════ СТР. 9 · ИМПОРТ 2 ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">6</span>Импорт данных: маппинг и результат</h1>
+  <h2>Шаг 2. Маппинг колонок</h2>
+  <p>Сопоставьте колонки файла полям системы. Очевидные совпадения («Название», «ИНН», «Сумма») мастер предлагает автоматически — их достаточно подтвердить. Незамапленные колонки можно пропустить.</p>
+  <figure class="shot" style="width: 124mm; margin-left: auto; margin-right: auto;">
+    <img src="img/import-mapping.png" alt="Маппинг колонок">
+    <figcaption>Маппинг: колонки файла слева, поля системы справа, автопредложения подсвечены</figcaption>
+  </figure>
+  <h2>Шаги 3–4. Проверка и результат</h2>
+  <p>Перед записью система проверяет каждую строку: обязательные поля, форматы дат и чисел, дубликаты. Ошибочные строки не блокируют импорт целиком — корректные данные загружаются, а по каждой отклонённой строке выводится её номер и причина отказа.</p>
+  <figure class="shot" style="width: 124mm; margin-left: auto; margin-right: auto;">
+    <img src="img/import-result.png" alt="Результат импорта">
+    <figcaption>Итог импорта: сколько строк загружено, сколько отклонено и почему — построчный отчёт</figcaption>
+  </figure>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">9</span></div>
+</div>
+
+<!-- ═══════════ СТР. 10 · ПУЛ ТАЛАНТОВ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">7</span>Пул талантов</h1>
+  <p class="lead">Пул талантов — воронка работы со студентами: от первого контакта на карьерном мероприятии до оффера. Карточки студентов движутся по этапам так же, как заявки на доске заявок. Раздел спроектирован с учётом требований 152-ФЗ: персональные данные студентов по умолчанию замаскированы.</p>
+  <h2>Как пользоваться</h2>
+  <ol class="steps">
+    <li>Откройте раздел «Пул талантов» — вы увидите доску с этапами воронки найма и карточками студентов.</li>
+    <li>Перетаскивайте карточки по этапам по мере продвижения кандидата; фильтруйте по вузу, направлению и ответственному.</li>
+    <li><b>Маскирование ПДн.</b> ФИО, телефон и e-mail отображаются частично скрытыми. Это защищает данные при демонстрации экрана и от случайного просмотра.</li>
+    <li><b>Раскрытие на 60 секунд.</b> Чтобы увидеть полные данные (например, для звонка), нажмите «Показать» в карточке — данные раскроются ровно на 60 секунд, а факт раскрытия будет записан в журнал аудита.</li>
+  </ol>
+  <figure class="shot">
+    <img src="img/tp-board.png" alt="Доска пула талантов">
+    <figcaption>Пул талантов: воронка студентов, персональные данные замаскированы</figcaption>
+  </figure>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">10</span></div>
+</div>
+
+<!-- ═══════════ СТР. 11 · TELEGRAM ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">8</span>Уведомления и Telegram-бот</h1>
+  <p class="lead">«Альма» уведомляет о событиях по заявкам в двух каналах: колокольчик внутри системы и Telegram-бот <code>@collabse_alma_crm_bot</code>. Уведомления адресуются <b>ответственному</b> по заявке; администратор может дополнительно настроить правила на роль — например, чтобы руководитель получал все переходы (см. раздел 9).</p>
+
+  <h2>Привязка Telegram</h2>
+  <div class="flow">
+    <div class="fstep"><b>1 · Профиль</b>В системе откройте «Профиль → Уведомления» и нажмите «Привязать Telegram».</div>
+    <div class="arr">→</div>
+    <div class="fstep"><b>2 · Код</b>Система покажет одноразовый код привязки. Срок действия кода — 10&nbsp;минут.</div>
+    <div class="arr">→</div>
+    <div class="fstep"><b>3 · Бот</b>Откройте <b>@collabse_alma_crm_bot</b>, нажмите Start и отправьте код сообщением.</div>
+    <div class="arr">→</div>
+    <div class="fstep"><b>4 · Готово</b>Бот подтвердит привязку и начнёт присылать уведомления по вашим заявкам.</div>
+  </div>
+
+  <h2>Команды бота</h2>
+  <table class="tbl">
+    <tr><th style="width: 28mm;">Команда</th><th>Что делает</th></tr>
+    <tr><td><code>/my</code></td><td>Список ваших активных заявок со статусами и сроками.</td></tr>
+    <tr><td><code>/stuck</code></td><td>«Зависшие» заявки — те, что дольше нормы находятся в одном статусе и требуют внимания.</td></tr>
+    <tr><td><code>/summary</code></td><td>Краткая сводка за день: новые заявки, переходы, просрочки.</td></tr>
+  </table>
+
+  <h2>Эскалации</h2>
+  <p>Если заявка находится в статусе дольше допустимого срока, система формирует эскалацию: уведомление получает не только ответственный менеджер, но и руководитель. Пороговые сроки задаются в правилах процесса. Эскалации видны и в боте (команда <code>/stuck</code>), и в колокольчике системы.</p>
+  <div class="callout">
+    <b>Важно.</b> Если уведомления в Telegram не приходят — проверьте, что привязка завершена (бот прислал подтверждение), и что вы являетесь ответственным по заявке. Подробнее — в разделе 12 «Частые вопросы».
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">11</span></div>
+</div>
+
+<!-- ═══════════ СТР. 12 · АДМИНИСТРИРОВАНИЕ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">9</span>Администрирование</h1>
+  <p class="lead">Раздел доступен роли «Администратор» (<code>admin@demo</code>) и объединяет управление пользователями, правилами уведомлений, согласованием процессов и контролем работоспособности системы.</p>
+
+  <div class="panel">
+    <h3>Пользователи и роли</h3>
+    <p style="margin: 0;">Создание и блокировка учётных записей, назначение ролей (администратор, руководитель, менеджер, наблюдатель), привязка менеджеров к зонам ответственности. Учётные записи синхронизированы с Keycloak.</p>
+  </div>
+  <div class="panel">
+    <h3>Правила уведомлений</h3>
+    <p style="margin-bottom: 1.5mm;">Гибкая настройка: какое событие, кому и в какой канал доставлять. По умолчанию уведомления получает ответственный по заявке.</p>
+    <p style="margin: 0;"><b>Рецепт «получать все переходы».</b> Чтобы руководитель видел каждый переход заявок по воронке: «Администрирование → Правила уведомлений → Добавить правило», событие — «Смена статуса», получатель — <b>роль</b> «Руководитель» (а не конкретный пользователь), канал — Telegram и/или колокольчик. Правило на роль охватывает все заявки независимо от ответственного.</p>
+  </div>
+  <div class="panel">
+    <h3>Согласование процессов (апрувы)</h3>
+    <p style="margin: 0;">Черновики бизнес-процессов, отправленные из конструктора «на применение», попадают в очередь согласования. Администратор видит диф изменений и план миграции заявок, после чего применяет или отклоняет черновик с комментарием.</p>
+  </div>
+  <div class="panel">
+    <h3>Мониторинг интеграций</h3>
+    <p style="margin: 0;">Статус внешних связок системы — Telegram-бот, центр аутентификации, фоновые задачи: время последнего успешного обмена и ошибки доставки. Если канал «покраснел», начните диагностику отсюда.</p>
+  </div>
+  <div class="panel">
+    <h3>Журнал аудита</h3>
+    <p style="margin: 0;">Неизменяемая запись значимых действий: входы, смены статусов, изменения процессов, импорты и раскрытия персональных данных в пуле талантов (кто, что, когда). Поддерживает фильтры по пользователю, типу события и периоду.</p>
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">12</span></div>
+</div>
+
+<!-- ═══════════ СТР. 13 · ОНБОРДИНГ И МОБИЛЬНАЯ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">10</span>Адаптация новых сотрудников и мобильная версия</h1>
+  <h2>Вводный тур и контрольный список</h2>
+  <p class="lead">При первом входе система запускает короткий вводный тур: серия подсказок проводит по ключевым разделам — доска, карточка, аналитика, уведомления. Тур можно пропустить и запустить повторно из меню профиля («Помощь → Пройти тур»).</p>
+  <ul class="dots">
+    <li><b>Контрольный список новичка</b> — виджет со списком первых действий: пройти вводный тур, открыть заявку, сменить статус, привязать Telegram. Выполненные пункты отмечаются автоматически; заполненный список сворачивается.</li>
+    <li>Прогресс адаптации индивидуален для каждого пользователя — новый сотрудник осваивает систему без помощи коллег.</li>
+  </ul>
+  <h2>Мобильная версия</h2>
+  <p>Интерфейс адаптирован для смартфона: доска, карточки заявок и аналитическая панель работают в мобильном браузере без установки приложений. Менеджер на выезде в вузе может перевести заявку по статусу и оставить комментарий прямо со встречи.</p>
+  <div class="shot-row">
+    <figure class="shot" style="width: 52mm;">
+      <img src="img/mob-dashboard.png" alt="Мобильная аналитическая панель">
+      <figcaption>Аналитика на смартфоне</figcaption>
+    </figure>
+    <figure class="shot" style="width: 52mm;">
+      <img src="img/mob-board.png" alt="Мобильная доска">
+      <figcaption>Доска заявок на смартфоне</figcaption>
+    </figure>
+    <figure class="shot" style="width: 52mm;">
+      <img src="img/mob-talent-pool.png" alt="Мобильный пул талантов">
+      <figcaption>Пул талантов на смартфоне</figcaption>
+    </figure>
+  </div>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">13</span></div>
+</div>
+
+<!-- ═══════════ СТР. 14 · KEYCLOAK ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">11</span>Доступ к консоли Keycloak</h1>
+  <p class="lead">Раздел для администраторов стенда. Аутентификация «Альмы» построена на Keycloak: пользователи, роли и сессии управляются в его административной консоли. Для повседневной работы с CRM консоль не нужна — она требуется только для обслуживания стенда.</p>
+  <h2>Вход в консоль</h2>
+  <ol class="steps">
+    <li>Откройте адрес: <code>https://id.crm.168-113-158-10.nip.io/admin/master/console/</code></li>
+    <li>Логин: <code>admin</code>.</li>
+    <li>Пароль хранится в секрете Kubernetes и извлекается командой на сервере стенда:</li>
+  </ol>
+  <pre class="cmd"><span class="c"># выполняется по SSH на сервере стенда (замените ВАШ_СЕРВЕР на адрес хоста)</span>
+ssh root@ВАШ_СЕРВЕР 'k3s kubectl get secret crm-keycloak-admin -n crm \
+  -o go-template={{.data.password}} | base64 -d'</pre>
+  <p>Команда выводит пароль администратора Keycloak в терминал. Не сохраняйте значение в файлах и чатах — извлекайте его из секрета при необходимости.</p>
+  <div class="callout warn">
+    <b>Внимание: две формы входа.</b> В Keycloak два уровня администрирования. Консоль по адресу выше — это realm <b>master</b> (управление самим Keycloak): здесь действует логин <code>admin</code>. Пользователи CRM (<code>admin@demo</code>, <code>kam1@demo</code> и другие) живут в realm <b>crm</b> — чтобы управлять ими, войдите в консоль master и переключите realm на «crm» в левом верхнем меню. Попытка войти в консоль master под <code>admin@demo</code> (или на форму realm crm под <code>admin</code>) закончится ошибкой «Invalid username or password» — это ожидаемое поведение, а не сбой.
+  </div>
+  <h2>Типовые операции</h2>
+  <ul class="dots">
+    <li>Сброс пароля демо-пользователя: realm crm → Users → выбрать пользователя → Credentials → Reset password.</li>
+    <li>Разблокировка учётной записи: realm crm → Users → пользователь → Details → Enabled.</li>
+    <li>Просмотр активных сессий: realm crm → Sessions.</li>
+  </ul>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">14</span></div>
+</div>
+
+<!-- ═══════════ СТР. 15 · FAQ ═══════════ -->
+<div class="page">
+  <div class="rh"><span class="rh-brand">Альма</span><span>Альма — руководство пользователя</span></div>
+  <h1 class="section"><span class="num">12</span>Частые вопросы</h1>
+
+  <div class="panel">
+    <h3>Не приходит уведомление о переходе заявки</h3>
+    <p style="margin-bottom: 1.5mm;">Уведомления по умолчанию адресуются <b>ответственному</b> по заявке. Если заявку перевёл другой сотрудник, а вы не назначены ответственным — уведомление вам не положено, это штатное поведение.</p>
+    <p style="margin: 0;">Что проверить: 1) вы — ответственный по заявке (поле «Ответственный» в карточке); 2) Telegram привязан и бот подтвердил привязку (раздел 8); 3) если уведомления нужны по <b>всем</b> заявкам — попросите администратора создать правило на роль: «Администрирование → Правила уведомлений → событие "Смена статуса" → получатель — роль» (рецепт в разделе 9).</p>
+  </div>
+
+  <div class="panel">
+    <h3>Код привязки Telegram истёк</h3>
+    <p style="margin: 0;">Код привязки одноразовый и действует <b>10 минут</b>. Если бот отвечает, что код недействителен, — сгенерируйте новый: «Профиль → Уведомления → Привязать Telegram», и отправьте свежий код боту <code>@collabse_alma_crm_bot</code> в течение 10 минут. Старые коды аннулируются автоматически.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Не получается перетащить заявку в нужный статус</h3>
+    <p style="margin: 0;">Доска разрешает только переходы, предусмотренные бизнес-процессом. Если целевая колонка недоступна — переход не описан в процессе либо требует промежуточного шага. Схему переходов можно посмотреть в разделе «Процессы»; изменить её вправе руководитель через конструктор (раздел 5).</p>
+  </div>
+
+  <div class="panel">
+    <h3>Персональные данные студента скрыты звёздочками</h3>
+    <p style="margin: 0;">Это маскирование ПДн в пуле талантов (раздел 7). Нажмите «Показать» в карточке студента — данные раскроются на 60 секунд, факт раскрытия попадёт в журнал аудита. Постоянного отображения ПДн в списках нет по требованиям защиты данных.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Изменил процесс в конструкторе, но доска не поменялась</h3>
+    <p style="margin: 0;">Изменения живут в черновике, пока вы не нажмёте «Отправить на применение» и администратор не согласует их (разделы 5 и 9). Проверьте статус черновика в конструкторе и очередь апрувов у администратора.</p>
+  </div>
+
+  <p style="margin-top: 6mm; color: var(--muted); font-size: 9pt; text-align: center;">Команда «Коллапс» · ЛЦТ 2026 · Стенд: crm.168-113-158-10.nip.io</p>
+  <div class="rf"><span>Альма — руководство пользователя</span><span class="pageno">15</span></div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,50 @@
+# Overlay k3d (k3s): traefik-ingress, local-path storage, LoadBalancer из коробки
+# (k3d serverlb пробрасывает 80/443 на localhost — основной путь для экспертов).
+# Секреты: make k8s-secrets генерирует secrets/*.env из *.env.example (gitignored).
+# Передача стенда наружу: подключить components: [../../components/prod-hardening].
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: crm
+resources:
+  - ../../base
+secretGenerator:
+  - name: crm-db
+    envs: [secrets/crm-db.env]
+  - name: crm-pii
+    envs: [secrets/crm-pii.env]
+  - name: crm-s3
+    envs: [secrets/crm-s3.env]
+  - name: crm-keycloak-admin
+    envs: [secrets/crm-keycloak-admin.env]
+  - name: crm-keycloak-clients
+    envs: [secrets/crm-keycloak-clients.env]
+  - name: crm-telegram
+    envs: [secrets/crm-telegram.env]
+  - name: crm-internal
+    envs: [secrets/crm-internal.env]
+generatorOptions:
+  disableNameSuffixHash: true # имена секретов зашиты в envFrom подов
+patches:
+  - path: patches/ingress-class.yaml # ingressClassName: traefik (встроен в k3s)
+  # канонические демо-хосты k3d — *.localhost (secure context в Chromium, резолв
+  # в 127.0.0.1 без /etc/hosts); *.crm.local в base остаются алиасами для curl
+  - path: patches/keycloak-hostname.yaml # KC_HOSTNAME=http://id.crm.localhost
+  - path: patches/app-config-localhost.yaml # KEYCLOAK_ISSUER → id.crm.localhost
+  - path: patches/frontend-env-localhost.yaml # config.js: KEYCLOAK_URL → id.crm.localhost
+  - target: {group: apps, version: v1, kind: StatefulSet, name: postgres}
+    path: patches/storageclass.yaml # local-path-provisioner
+  - target: {group: apps, version: v1, kind: StatefulSet, name: minio}
+    path: patches/storageclass.yaml
+  - target: {group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-from-ingress}
+    path: patches/netpol-ingress-ns.yaml # traefik живёт в kube-system
+images:
+  - name: crm/backend
+    newTag: dev
+  - name: crm/frontend
+    newTag: dev
+  - name: crm/notification
+    newTag: dev
+  - name: crm/lms-stub
+    newTag: dev
+  - name: crm/cms-stub
+    newTag: dev

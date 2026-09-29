@@ -1,0 +1,14 @@
+# frontend-env — рантайм-конфиг SPA (/config.js), монтируется в под frontend.
+# Меняется без пересборки образа: kubectl apply + rollout restart deploy/frontend.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env
+data:
+  config.js: |
+    window.__ENV__ = {
+      KEYCLOAK_URL: "http://id.crm.local",
+      KEYCLOAK_REALM: "crm",
+      KEYCLOAK_CLIENT_ID: "crm-frontend",
+      API_BASE: "/api"
+    };

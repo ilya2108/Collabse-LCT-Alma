@@ -1,0 +1,26 @@
+# Прямой ответ на «план масштабирования на 300+ одновременных пользователей»:
+# 2 реплики (~600 RPS ёмкости при профиле с think-time) → до 6 по CPU 70%.
+# Требует metrics-server (k3s — встроен; minikube — addon, включает make k8s-up-minikube).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  labels: {app.kubernetes.io/name: backend, tier: app}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2 # всегда >=2: и отказоустойчивость, и балансировка
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{type: Pods, value: 2, periodSeconds: 30}]
+    scaleDown:
+      stabilizationWindowSeconds: 120

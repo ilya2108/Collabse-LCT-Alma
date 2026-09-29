@@ -1,0 +1,43 @@
+# backend — точка-точка: разговаривает только с postgres, minio, keydb, keycloak,
+# заглушками и notification. Трафик от ingress-контроллера разрешает отдельная
+# политика 20-allow-from-ingress (политики аддитивны).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: backend}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: backend}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: # Jobs/CronJob (stuck-check, purge-deleted, seed)
+        - podSelector: {matchLabels: {role: job}}
+      ports: [{port: 8000}]
+    - from: # ответные вызовы бота по ролям (/internal/bot/*)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: notification}}
+      ports: [{port: 8000}]
+    - from: # webhook-callbacks заглушек (X-Webhook-Signature)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: lms-stub}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: cms-stub}}
+      ports: [{port: 8000}]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+      ports: [{port: 5432}]
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: minio}}
+      ports: [{port: 9000}]
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keydb}}
+      ports: [{port: 6379}]
+    - to: # JWKS
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keycloak}}
+      ports: [{port: 8080}]
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: lms-stub}}
+      ports: [{port: 8020}]
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: cms-stub}}
+      ports: [{port: 8030}]
+    - to: # outbox-relay нотификаций (POST /api/v1/send)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: notification}}
+      ports: [{port: 8010}]

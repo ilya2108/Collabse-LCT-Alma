@@ -1,0 +1,58 @@
+# notification-service — прообраз DMZ: единственный под с egress в интернет
+# (NetworkPolicy 40-notification-dmz); токен Telegram-бота видит только он.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  labels: {app.kubernetes.io/name: notification, tier: dmz}
+spec:
+  replicas: 1 # строго 1: long-polling — единственный consumer Telegram Bot API
+  selector:
+    matchLabels: {app.kubernetes.io/name: notification}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: notification, tier: dmz}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-keycloak
+          image: curlimages/curl:8.10.1
+          # ждём не только процесс Keycloak, но и импортированный realm crm
+          command: ["sh", "-c",
+            "until curl -fsS http://keycloak:8080/realms/crm/.well-known/openid-configuration >/dev/null; do echo 'waiting for keycloak realm crm'; sleep 5; done"]
+      containers:
+        - name: notification
+          image: crm/notification:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8010, name: http}]
+          envFrom:
+            - configMapRef: {name: crm-config}
+            - secretRef: {name: crm-internal}
+          env:
+            - name: KC_CLIENT_ID
+              value: crm-notification
+            - name: KC_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: crm-keycloak-clients, key: NOTIFICATION_CLIENT_SECRET}}
+            - name: TELEGRAM_BOT_TOKEN # пусто => канал TG в режиме console-заглушки
+              valueFrom: {secretKeyRef: {name: crm-telegram, key: TELEGRAM_BOT_TOKEN}}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30 # до 60 с на старт
+          readinessProbe:
+            httpGet: {path: /healthz/ready, port: http} # бот запущен, Keycloak-токен получен
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 300m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}

@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-services:
+    name: Тесты и линтер (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: backend, dir: backend, sync: --extra dev }
+          - { name: notification, dir: services/notification, sync: --group dev }
+          - { name: lms-stub, dir: services/lms-stub, sync: --extra dev }
+          - { name: cms-stub, dir: services/cms-stub, sync: --extra dev }
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Зависимости
+        run: uv sync ${{ matrix.sync }}
+      - name: Тесты
+        run: uv run pytest -q
+      - name: Линтер
+        run: uv run ruff check app tests
+
+  frontend:
+    name: Сборка интерфейса
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Зависимости
+        run: npm ci
+      - name: Проверка типов
+        run: npx tsc --noEmit
+      - name: Сборка
+        run: npm run build
+
+  manifests:
+    name: Валидация Kubernetes-манифестов
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: kubeconform
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin kubeconform
+      - name: Секреты-заглушки для генераторов kustomize
+        run: |
+          for f in deploy/k8s/overlays/*/secrets/*.env.example; do
+            cp "$f" "${f%.example}"
+          done
+      - name: Рендер и проверка всех оверлеев
+        run: |
+          for overlay in deploy/k8s/overlays/*/; do
+            echo "== $overlay =="
+            kubectl kustomize "$overlay" | kubeconform -strict -ignore-missing-schemas -summary
+          done
+
+  docker-images:
+    name: Сборка образа (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: backend, context: backend }
+          - { name: frontend, context: frontend }
+          - { name: notification, context: services/notification }
+          - { name: lms-stub, context: services/lms-stub }
+          - { name: cms-stub, context: services/cms-stub }
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t crm/${{ matrix.name }}:ci ${{ matrix.context }}

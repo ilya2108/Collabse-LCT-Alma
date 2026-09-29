@@ -1,0 +1,14 @@
+# k3d: рантайм-конфиг SPA указывает на канонический Keycloak-хост id.crm.localhost
+# (secure context — обязателен для keycloak-js PKCE S256 / window.crypto.subtle).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env
+data:
+  config.js: |
+    window.__ENV__ = {
+      KEYCLOAK_URL: "http://id.crm.localhost",
+      KEYCLOAK_REALM: "crm",
+      KEYCLOAK_CLIENT_ID: "crm-frontend",
+      API_BASE: "/api"
+    };

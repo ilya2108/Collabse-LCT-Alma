@@ -1,0 +1,51 @@
+# VPS: единственный набор хостов — *.168-113-158-10.nip.io (публичный wildcard-DNS).
+# Strategic merge заменяет списки rules/tls целиком: *.localhost/*.crm.local из base
+# здесь не нужны. MinIO-консоль наружу осознанно НЕ выставляется.
+# TLS: cert-manager (vm-addons/) по аннотации cluster-issuer выпускает LE-сертификат
+# на каждый хост из своей tls-секции (http01 через traefik).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: crm
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.middlewares: crm-redirect-https@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [crm.168-113-158-10.nip.io]
+      secretName: crm-tls
+    - hosts: [id.crm.168-113-158-10.nip.io]
+      secretName: id-crm-tls
+    - hosts: [lms.crm.168-113-158-10.nip.io]
+      secretName: lms-crm-tls
+    - hosts: [cms.crm.168-113-158-10.nip.io]
+      secretName: cms-crm-tls
+  rules:
+    - host: crm.168-113-158-10.nip.io # основное приложение (SPA + /api)
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: backend, port: {number: 8000}}}
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: frontend, port: {number: 80}}}
+    - host: id.crm.168-113-158-10.nip.io # Keycloak (браузерный OIDC-редирект)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: keycloak, port: {number: 8080}}}
+    - host: lms.crm.168-113-158-10.nip.io # UI заглушки: судьи видят двусторонний обмен
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: lms-stub, port: {number: 8020}}}
+    - host: cms.crm.168-113-158-10.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: cms-stub, port: {number: 8030}}}

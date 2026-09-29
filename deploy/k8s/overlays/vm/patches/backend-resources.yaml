@@ -1,0 +1,13 @@
+# VPS: requests умерены под скромную VM (limit оставлен — burst на импорт XLSX).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}

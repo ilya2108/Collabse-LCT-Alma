@@ -1,0 +1,13 @@
+# VPS: requests умерены под скромную VM (limit оставлен — pg спокойно берёт кэш).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 1Gi}

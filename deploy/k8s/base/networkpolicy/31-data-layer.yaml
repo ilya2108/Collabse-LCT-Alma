@@ -1,0 +1,43 @@
+# Данные-слой: postgres / minio / keydb принимают только своих клиентов,
+# egress им не нужен (default-deny оставляет только DNS из 10-allow-dns).
+# Заглушки БД не видят. Доступ Console MinIO от ingress — политика 20.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: postgres}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: postgres}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keycloak}}
+        - podSelector: {matchLabels: {role: job}}
+      ports: [{port: 5432}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: minio}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: minio}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+        - podSelector: {matchLabels: {role: job}}
+      ports: [{port: 9000}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: keydb}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: keydb}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: notification}} # идемпотентность send
+        - podSelector: {matchLabels: {role: job}} # seed ходит тем же сервисным слоем
+      ports: [{port: 6379}]

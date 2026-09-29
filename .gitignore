@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- Env-файлы и секреты (в git — только *.example) ---
+.env
+*.env
+!.env.example
+!*.env.example
+deploy/compose/.env
+deploy/k8s/overlays/*/secrets/*.env
+!deploy/k8s/overlays/*/secrets/*.env.example
+
+# --- Docker-архивы amd64-образов для VPS (deploy/scripts/vm-deploy.sh) ---
+.vm-images/
+
+# --- Исходные файлы организаторов (ПДн-подобные тестовые данные — не публикуем) ---
+docs/defense/demo-files/организаторы/
+
+# --- Артефакты нагрузочного тестирования (в git — только load-report.md) ---
+docs/defense/load-raw.json
+docs/defense/load-summary.json
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.DS_Store
+.claude/
+
+# --- Внутренние материалы (подготовка к защите, план) — не публикуем ---
+docs/defense/
+/PLAN.md
+Untitled/

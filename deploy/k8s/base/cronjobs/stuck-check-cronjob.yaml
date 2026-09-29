@@ -1,0 +1,40 @@
+# «Зависшие» заявки: CronJob — ТОЛЬКО триггер; вся логика (каскад порогов из БД,
+# двухступенчатая эскалация 1×→ответственному / 1.5×→manager_id, дедуп
+# notification.dedup_key) — в backend. Повторный вызов дублей не шлёт.
+# Демо: kubectl create job stuck-demo --from=cronjob/stuck-check -n crm (make demo).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stuck-check
+  labels: {app.kubernetes.io/name: stuck-check, role: job}
+spec:
+  schedule: "0 * * * *" # ежечасно; порог измеряется днями — чаще незачем
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: stuck-check, role: job}
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: curlimages/curl:8.10.1
+              command:
+                - sh
+                - -c
+                # --retry-connrefused: свежему поду Job сетевой контроллер (kube-router)
+                # применяет allow-правила NetworkPolicy с задержкой ~секунды после старта;
+                # первый мгновенный connect может получить reject — ждём и повторяем.
+                - >
+                  curl -fsS -X POST
+                  --retry 5 --retry-connrefused --retry-delay 3 --retry-max-time 90
+                  -H "X-Internal-Token: $INTERNAL_API_TOKEN"
+                  http://backend:8000/api/v1/internal/jobs/check-stuck-requests
+              env:
+                - name: INTERNAL_API_TOKEN
+                  valueFrom: {secretKeyRef: {name: crm-internal, key: INTERNAL_API_TOKEN}}

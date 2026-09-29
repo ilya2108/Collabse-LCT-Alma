@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <!-- Графит РТК neutral-950 (brand-rt.md §2.2): цвет шапки браузера = сайдбар -->
+    <meta name="theme-color" content="#151D2C" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Альма — кейс «Ростелекома», ЛЦТ 2026</title>
+    <!-- Рантайм-конфиг (window.__ENV__): в k8s/compose монтируется из ConfigMap frontend-env,
+         в dev отдаётся дефолтный public/config.js. Подключается ДО бандла (deployment.md §2.2). -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

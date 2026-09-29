@@ -1,0 +1,4 @@
+# JSON6902: storage class встроенного local-path-provisioner k3s
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/storageClassName
+  value: local-path

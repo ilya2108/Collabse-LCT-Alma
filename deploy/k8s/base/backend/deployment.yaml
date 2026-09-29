@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels: {app.kubernetes.io/name: backend, tier: app}
+spec:
+  # replicas не задаём: масштабом владеет HPA (hpa.yaml, min 2 / max 6) —
+  # иначе каждый kubectl apply (make k8s-apply/seed/demo) сбрасывал бы масштаб
+  selector:
+    matchLabels: {app.kubernetes.io/name: backend}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: backend, tier: app}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-c",
+            "until pg_isready -h postgres -p 5432 -U $PGUSER; do echo waiting; sleep 2; done"]
+          env:
+            - name: PGUSER
+              valueFrom: {secretKeyRef: {name: crm-db, key: POSTGRES_USER}}
+        - name: wait-migrations
+          image: crm/backend:dev
+          imagePullPolicy: IfNotPresent
+          # ждём, пока Job db-migrate доведёт схему до head: initContainer только ЖДЁТ,
+          # схему меняет единственный Job — иначе реплики устроили бы гонку alembic upgrade
+          command: ["sh", "-c",
+            "until python -m app.tools.check_migrations; do echo 'waiting for alembic head'; sleep 3; done"]
+          envFrom:
+            - configMapRef: {name: crm-config}
+            - secretRef: {name: crm-db}
+            # check_migrations строит полный Settings, а тот при APP_ENV=k8s
+            # fail-fast'ится без боевых internal-секретов — монтируем их и сюда
+            - secretRef: {name: crm-internal}
+      containers:
+        - name: backend
+          image: crm/backend:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8000, name: http}]
+          envFrom:
+            - configMapRef: {name: crm-config}
+            - secretRef: {name: crm-db}
+            - secretRef: {name: crm-s3}
+            - secretRef: {name: crm-pii}
+            - secretRef: {name: crm-internal}
+          env: # синк пользователей из Keycloak Admin API (client credentials + view-users)
+            - name: KEYCLOAK_ADMIN_CLIENT_ID
+              value: crm-backend-admin
+            - name: KEYCLOAK_ADMIN_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: crm-keycloak-clients, key: BACKEND_ADMIN_CLIENT_SECRET}}
+          startupProbe:
+            httpGet: {path: /healthz/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 30 # до 60 с на старт
+          readinessProbe:
+            httpGet: {path: /healthz/ready, port: http} # PG, KeyDB, MinIO, JWKS-кэш
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz/live, port: http} # только event loop, без зависимостей
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false # /tmp нужен для XLSX-импорта (openpyxl/xlrd)
+            capabilities: {drop: ["ALL"]}

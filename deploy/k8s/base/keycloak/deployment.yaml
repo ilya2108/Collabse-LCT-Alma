@@ -1,0 +1,85 @@
+# Keycloak 26 — self-hosted IAM (требование кейсодержателя: их endpoint не дадут).
+# Состояние — в PostgreSQL (БД keycloak того же StatefulSet), импорт realm —
+# штатный start --import-realm из ConfigMap keycloak-realm (идемпотентен:
+# существующий realm не перезатирается). Правка realm-JSON:
+# make realm-sync && kubectl rollout restart deployment/keycloak.
+#
+# Двойное имя: браузер ходит на http://id.crm.local (Ingress), backend — на
+# http://keycloak:8080. KC_HOSTNAME фиксирует iss во всех токенах;
+# KC_HOSTNAME_BACKCHANNEL_DYNAMIC разрешает обращения по внутреннему имени.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels: {app.kubernetes.io/name: keycloak, tier: iam}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: keycloak}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: keycloak, tier: iam}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # uid keycloak в образе; энфорсим манифестом, не полагаясь на USER образа
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16-alpine
+          # -U обязателен: под runAsUser 1000 (нет в /etc/passwd образа) libpq не может
+          # определить имя пользователя → pg_isready вечно даёт «no attempt» (см. db-migrate)
+          command: ["sh", "-c",
+            "until pg_isready -h postgres -p 5432 -U $PGUSER; do sleep 2; done"]
+          env:
+            - name: PGUSER
+              valueFrom: {secretKeyRef: {name: crm-db, key: POSTGRES_USER}}
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          # обёртка подставляет ${env.*} в realm-JSON (KC 26 сам этого не делает)
+          command: ["/bin/bash", "/realm-src/import-realm.sh"]
+          args: ["start", "--import-realm"]
+          env:
+            - {name: KC_DB, value: postgres}
+            - {name: KC_DB_URL, value: "jdbc:postgresql://postgres:5432/keycloak"}
+            - name: KC_DB_USERNAME
+              valueFrom: {secretKeyRef: {name: crm-db, key: POSTGRES_USER}}
+            - name: KC_DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: crm-db, key: POSTGRES_PASSWORD}}
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: {secretKeyRef: {name: crm-keycloak-admin, key: username}}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: crm-keycloak-admin, key: password}}
+            - {name: KC_HEALTH_ENABLED, value: "true"}
+            - {name: KC_HTTP_ENABLED, value: "true"}
+            - {name: KC_PROXY_HEADERS, value: xforwarded}
+            - {name: KC_HOSTNAME, value: "http://id.crm.local"}
+            - {name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true"}
+          envFrom:
+            # секреты confidential-клиентов: подстановка ${env.*} в realm-JSON при импорте
+            - secretRef: {name: crm-keycloak-clients}
+          ports:
+            - {containerPort: 8080, name: http}
+            - {containerPort: 9000, name: mgmt}
+          volumeMounts:
+            - {name: realm, mountPath: /realm-src, readOnly: true}
+            - {name: realm-import, mountPath: /opt/keycloak/data/import}
+          startupProbe:
+            httpGet: {path: /health/started, port: mgmt}
+            periodSeconds: 5
+            failureThreshold: 60 # JVM + import realm: до 5 минут
+          readinessProbe:
+            httpGet: {path: /health/ready, port: mgmt}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health/live, port: mgmt}
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 500m, memory: 768Mi}
+            limits: {cpu: "1", memory: 1536Mi}
+      volumes:
+        - name: realm
+          configMap: {name: keycloak-realm}
+        - name: realm-import
+          emptyDir: {}

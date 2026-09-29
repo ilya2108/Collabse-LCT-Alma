@@ -1,0 +1,28 @@
+# crm-config — несекретные настройки всех сервисов (потребители: backend, notification, jobs).
+# Секреты (DATABASE_URL, ключи ПДн, токены) — ТОЛЬКО в Secret'ах через secretGenerator overlay-я.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crm-config
+data:
+  APP_ENV: "k8s"
+  # двойное имя Keycloak: iss в токенах — внешний хост, JWKS качается по внутреннему
+  KEYCLOAK_INTERNAL_URL: "http://keycloak:8080"
+  KEYCLOAK_ISSUER: "http://id.crm.local/realms/crm"
+  KEYCLOAK_REALM: "crm"
+  # сервисные клиенты (бот/интеграции) + crm-loadtest (k6) — только для демо-стенда;
+  # при передаче наружу подключить components/prod-hardening (уберёт crm-loadtest
+  # из списка) и отключить клиента в Keycloak — см. комментарий в компоненте
+  KEYCLOAK_AUDIENCES: "account,crm-frontend,crm-notification,crm-integration,crm-loadtest"
+  KEYDB_URL: "redis://keydb:6379/0"
+  S3_ENDPOINT: "http://minio:9000"
+  S3_BUCKET_FILES: "crm-files"
+  S3_BUCKET_IMPORTS: "crm-imports"
+  S3_BUCKET_EXPORTS: "crm-exports"
+  LMS_BASE_URL: "http://lms-stub:8020"
+  CMS_BASE_URL: "http://cms-stub:8030"
+  NOTIFICATION_BASE_URL: "http://notification:8010"
+  BACKEND_BASE_URL: "http://backend:8000"
+  # сидирует app_setting['stuck_threshold_days_default']; фактические пороги
+  # per-workflow/per-этап живут в БД и настраиваются в админке/конструкторе
+  STUCK_DEFAULT_DAYS: "14"

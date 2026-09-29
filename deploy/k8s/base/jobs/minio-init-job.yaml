@@ -1,0 +1,48 @@
+# Бакеты и отдельный app-ключ S3 создаёт Job, а не приложение; все команды идемпотентны.
+# backend не ходит в MinIO под root-учёткой — отдельный access key с политикой readwrite.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  labels: {app.kubernetes.io/name: minio-init, role: job}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: minio-init, role: job}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-minio
+          image: curlimages/curl:8.10.1
+          command: ["sh", "-c",
+            "until curl -fsS http://minio:9000/minio/health/live >/dev/null; do echo waiting; sleep 2; done"]
+      containers:
+        - name: mc
+          # пин релиза (deployment.md §10.4) + IfNotPresent: перезапуск не требует реестра
+          image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              mc mb -p local/crm-files local/crm-imports local/crm-exports
+              mc admin user add local "$S3_ACCESS_KEY" "$S3_SECRET_KEY" || true
+              mc admin policy attach local readwrite --user "$S3_ACCESS_KEY" || true
+          env:
+            # mc пишет конфиг в $HOME/.mc; под runAsUser 10001 хоум образа недоступен
+            - {name: HOME, value: /tmp}
+          envFrom:
+            - secretRef: {name: crm-s3}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}

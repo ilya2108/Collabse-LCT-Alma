@@ -1,0 +1,20 @@
+# ClusterIssuer Let's Encrypt (prod) — применяется ПОСЛЕ cert-manager.yaml,
+# когда webhook cert-manager готов (иначе apply отобьётся) — порядок зашит
+# в deploy/scripts/vm-deploy.sh. Сертификаты выпускаются по аннотации
+# cert-manager.io/cluster-issuer на Ingress оверлея vm (http01 через traefik).
+# ВНИМАНИЕ: email — плейсхолдер владельца стенда; LE шлёт на него алерты об
+# истечении. Rate-limit LE prod: 5 дубликатов сертификата в неделю на набор хостов.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ryabukhiny1305@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik

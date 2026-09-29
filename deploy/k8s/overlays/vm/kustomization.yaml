@@ -1,0 +1,70 @@
+# Overlay vm — публичный VPS на голом k3s (Ubuntu x86_64, 168.113.158.10).
+# Хосты — *.168-113-158-10.nip.io (nip.io резолвит в IP без /etc/hosts у судей),
+# TLS — Let's Encrypt через cert-manager (ставится ОТДЕЛЬНО от оверлея:
+# deploy/k8s/vm-addons/, порядок — deploy/scripts/vm-deploy.sh или make vm-deploy).
+# Traefik/local-path — как в k3d (это тот же k3s). MinIO-консоль наружу не
+# выставляется. Секреты генерируются НА VPS: gen-secrets.sh deploy/k8s/overlays/vm.
+# Ужесточение контура (без crm-loadtest): components: [../../components/prod-hardening].
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: crm
+resources:
+  - resources/traefik-redirect-https.yaml
+  - ../../base
+  - resources/netpol-acme-solver.yaml # http01-челленджи сквозь default-deny
+secretGenerator:
+  - name: crm-db
+    envs: [secrets/crm-db.env]
+  - name: crm-pii
+    envs: [secrets/crm-pii.env]
+  - name: crm-s3
+    envs: [secrets/crm-s3.env]
+  - name: crm-keycloak-admin
+    envs: [secrets/crm-keycloak-admin.env]
+  - name: crm-keycloak-clients
+    envs: [secrets/crm-keycloak-clients.env]
+  - name: crm-telegram
+    envs: [secrets/crm-telegram.env]
+  - name: crm-internal
+    envs: [secrets/crm-internal.env]
+generatorOptions:
+  disableNameSuffixHash: true # имена секретов зашиты в envFrom подов
+patches:
+  # Секрет crm-telegram целиком в env: точечные env-переменные base не покрывают
+  # новые ключи (TELEGRAM_API_BASE); явные env имеют приоритет — конфликтов нет.
+  - path: patches/notification-envfrom-telegram.json
+    target:
+      kind: Deployment
+      name: notification
+  # Телеграм ходит через tinyproxy на внешнем узле (обход блокировки Bot API);
+  # точечный egress только до этого IP:порта — DMZ-принцип сохранён.
+  - path: patches/netpol-notification-proxy.json
+    target:
+      kind: NetworkPolicy
+      name: notification-dmz
+  - path: patches/ingress-vm.yaml # traefik + nip.io-хосты + tls (cert-manager)
+  - path: patches/keycloak-vm.yaml # KC_HOSTNAME=https://id.crm...nip.io + ресурсы
+  - path: patches/app-config-vm.yaml # KEYCLOAK_ISSUER → https://id.crm...nip.io
+  - path: patches/frontend-env-vm.yaml # config.js: KEYCLOAK_URL → https://id.crm...nip.io
+  - path: patches/backend-resources.yaml # requests под скромную VM
+  - path: patches/hpa-vm.yaml # 1 реплика backend, HPA max 2
+  - path: patches/postgres-resources.yaml
+  - target: {group: apps, version: v1, kind: StatefulSet, name: postgres}
+    path: patches/storageclass.yaml # local-path-provisioner (встроен в k3s)
+  - target: {group: apps, version: v1, kind: StatefulSet, name: minio}
+    path: patches/storageclass.yaml
+  - target: {group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-from-ingress}
+    path: patches/netpol-ingress-ns.yaml # traefik живёт в kube-system
+images:
+  # тег vm — образы собираются на Mac под linux/amd64 (vm-deploy.sh) и не
+  # пересекаются с локальными :dev (arm64)
+  - name: crm/backend
+    newTag: vm
+  - name: crm/frontend
+    newTag: vm
+  - name: crm/notification
+    newTag: vm
+  - name: crm/lms-stub
+    newTag: vm
+  - name: crm/cms-stub
+    newTag: vm

@@ -1,0 +1,51 @@
+# Идемпотентный сид демо-стенда (upsert по натуральным ключам): workflow B2B/B2C,
+# вузы/договоры/продукты, заявки на разных этапах (включая «−20 дней» — фактура
+# для демо CronJob о зависших), студенты Talent Pool (ПДн шифруются тем же
+# сервисным слоем, что в проде), пользователи CRM ↔ keycloak_sub (+ manager_id).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-demo
+  labels: {app.kubernetes.io/name: seed-demo, role: job}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: seed-demo, role: job}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16-alpine
+          # -U обязателен: под runAsUser 10001 (см. db-migrate-job.yaml)
+          command: ["sh", "-c",
+            "until pg_isready -h postgres -p 5432 -U $PGUSER; do echo waiting; sleep 2; done"]
+          env:
+            - name: PGUSER
+              valueFrom: {secretKeyRef: {name: crm-db, key: POSTGRES_USER}}
+        - name: wait-migrations
+          image: crm/backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c",
+            "until python -m app.tools.check_migrations; do echo 'waiting for alembic head'; sleep 3; done"]
+          envFrom:
+            - configMapRef: {name: crm-config}
+            - secretRef: {name: crm-db}
+            # check_migrations строит полный Settings — см. backend/deployment.yaml
+            - secretRef: {name: crm-internal}
+      containers:
+        - name: seed
+          image: crm/backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.seed"]
+          envFrom:
+            - configMapRef: {name: crm-config}
+            - secretRef: {name: crm-db}
+            - secretRef: {name: crm-pii}
+            - secretRef: {name: crm-s3}
+            - secretRef: {name: crm-internal}

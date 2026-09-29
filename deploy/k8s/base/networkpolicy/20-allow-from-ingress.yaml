@@ -1,0 +1,16 @@
+# Публикуемые через Ingress поды принимают трафик от ingress-контроллера.
+# Namespace контроллера в base — ingress-nginx (minikube addon);
+# overlay k3d патчит на kube-system (traefik).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-from-ingress}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [frontend, backend, keycloak, lms-stub, cms-stub, minio]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}

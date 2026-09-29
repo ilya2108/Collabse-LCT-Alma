@@ -1,0 +1,9 @@
+// Шаблон рантайм-конфига. Заполняется envsubst'ом при старте контейнера
+// (docker-entrypoint.d/40-config-js.sh); в k8s файл /config.js монтируется
+// из ConfigMap frontend-env и имеет приоритет над генерацией.
+window.__ENV__ = {
+  KEYCLOAK_URL: "${KEYCLOAK_URL}",
+  KEYCLOAK_REALM: "${KEYCLOAK_REALM}",
+  KEYCLOAK_CLIENT_ID: "${KEYCLOAK_CLIENT_ID}",
+  API_BASE: "${API_BASE}"
+};

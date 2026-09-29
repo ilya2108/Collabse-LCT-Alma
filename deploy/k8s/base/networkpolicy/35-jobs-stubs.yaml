@@ -1,0 +1,60 @@
+# Разрешения для подов Jobs/CronJob и заглушек — без них default-deny
+# заблокировал бы миграции, сид, init бакетов, триггеры CronJob, webhook'и заглушек
+# и исходящие интеграции backend → lms/cms (NetworkPolicy требует allow с ОБЕИХ сторон).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: jobs-egress}
+spec:
+  podSelector:
+    matchLabels: {role: job}
+  policyTypes: [Egress]
+  egress:
+    - to: # db-migrate, seed-demo
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+      ports: [{port: 5432}]
+    - to: # minio-init, файлы сида
+        - podSelector: {matchLabels: {app.kubernetes.io/name: minio}}
+      ports: [{port: 9000}]
+    - to: # сид ходит тем же сервисным слоем (cache-aside)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keydb}}
+      ports: [{port: 6379}]
+    - to: # маппинг keycloak_sub при сиде
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keycloak}}
+      ports: [{port: 8080}]
+    - to: # CronJob-триггеры: stuck-check, purge-deleted
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+      ports: [{port: 8000}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: stubs-egress}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [lms-stub, cms-stub]
+  policyTypes: [Egress]
+  egress:
+    - to: # только webhook в CRM; БД и интернет заглушкам не видны
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+      ports: [{port: 8000}]
+---
+# Ingress-половина исходящих интеграций: egress backend → заглушки разрешён
+# политикой 30-backend, но получатели под default-deny — без этой политики
+# outbox-доставка (передача заявки в ЛМС, публикация программ в CMS) уходила бы
+# в ретраи и dead. Пары к 30-backend.yaml (egress 8020/8030).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: stubs-ingress}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [lms-stub, cms-stub]
+  policyTypes: [Ingress]
+  ingress:
+    - from: # outbox-relay backend: POST /api/v1/enrollments, /api/v1/catalog/* и пр.
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+      ports: [{port: 8020}, {port: 8030}]

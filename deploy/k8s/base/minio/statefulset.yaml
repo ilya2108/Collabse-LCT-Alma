@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels: {app.kubernetes.io/name: minio, tier: data}
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: minio}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: minio, tier: data}
+    spec:
+      containers:
+        - name: minio
+          # пин релиза (deployment.md §10.4) + IfNotPresent: рестарт пода не требует реестра
+          image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - {containerPort: 9000, name: api}
+            - {containerPort: 9001, name: console}
+          envFrom:
+            - secretRef: {name: crm-s3} # MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
+          env:
+            # Console корректно работает за Ingress
+            - name: MINIO_BROWSER_REDIRECT_URL
+              value: http://minio.crm.local
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /minio/health/live, port: api}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /minio/health/live, port: api}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 5Gi}}
+        # storageClassName задаётся в overlay

@@ -1,0 +1,38 @@
+# Единственный, кто меняет схему БД: у backend 2+ реплик (HPA), initContainer в каждой
+# устроил бы гонку alembic upgrade — реплики только ЖДУТ head (wait-migrations).
+# Jobs неизменяемы: make k8s-apply всегда делает kubectl delete job перед apply.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  labels: {app.kubernetes.io/name: db-migrate, role: job}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: db-migrate, role: job}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16-alpine
+          # -U обязателен: под runAsUser 10001 без записи в /etc/passwd libpq
+          # не может определить имя пользователя → pg_isready вечно даёт «no attempt»
+          command: ["sh", "-c",
+            "until pg_isready -h postgres -p 5432 -U $PGUSER; do echo waiting; sleep 2; done"]
+          env:
+            - name: PGUSER
+              valueFrom: {secretKeyRef: {name: crm-db, key: POSTGRES_USER}}
+      containers:
+        - name: migrate
+          image: crm/backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: {name: crm-config}
+            - secretRef: {name: crm-db}

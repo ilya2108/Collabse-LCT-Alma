@@ -1,0 +1,30 @@
+# notification — прообраз DMZ: ЕДИНСТВЕННЫЙ под с egress в интернет (Telegram
+# Bot API, только 443 и только не в кластерные/приватные сети). Проверяемо на
+# демо: curl https://api.telegram.org из backend — timeout, из notification — ок.
+# В целевой архитектуре переезжает в отдельный сегмент без изменения кода.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: notification-dmz}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: notification}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: # единственный канал точка-точка: backend → POST /api/v1/send
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+      ports: [{port: 8010}]
+  egress:
+    - to: # backend (ответные вызовы API по ролям привязанного пользователя)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+      ports: [{port: 8000}]
+    - to: # keycloak (client credentials crm-notification)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keycloak}}
+      ports: [{port: 8080}]
+    - to: # keydb (идемпотентность send / stub-outbox)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: keydb}}
+      ports: [{port: 6379}]
+    - to: # Telegram Bot API: только 443 и только не в кластер
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports: [{port: 443}]

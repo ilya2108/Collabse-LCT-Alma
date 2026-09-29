@@ -1,0 +1,8 @@
+<!-- Логотип-плейсхолдер «Альмы» в духе бренда РТК (brand-rt.md): графитовая
+     плашка neutral-950, белая контурная моногр. «А», фирменный оранжевый
+     «огонёк» status-01. Настоящий товарный знак «Ростелеком» НЕ используется. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="8" fill="#151D2C"/>
+  <path d="M8.5 25.5 14 7.5l5.5 18M10.6 19h6.8" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="24.5" cy="24" r="2.5" fill="#FF4F12"/>
+</svg>

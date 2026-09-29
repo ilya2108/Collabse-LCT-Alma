@@ -1,0 +1,273 @@
+{
+  "realm": "crm",
+  "displayName": "Альма — ЛЦТ 2026",
+  "displayNameHtml": "Альма — ЛЦТ 2026",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": true,
+  "bruteForceProtected": true,
+  "loginTheme": "keycloak",
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "ru",
+    "en"
+  ],
+  "defaultLocale": "ru",
+  "accessTokenLifespan": 1800,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 36000,
+  "requiredCredentials": [
+    "password"
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Администратор CRM: полный доступ, апрув опасных изменений workflow"
+      },
+      {
+        "name": "head_kam",
+        "description": "Руководитель КАМов: читает и пишет всё по заявкам, получает эскалации"
+      },
+      {
+        "name": "kam",
+        "description": "Key Account Manager: читает всё, пишет своё"
+      },
+      {
+        "name": "observer",
+        "description": "Наблюдатель: только чтение, ПДн маскируются без права раскрытия"
+      },
+      {
+        "name": "svc_notification",
+        "description": "Сервисная роль клиента crm-notification (Telegram-бот, notification-service)"
+      },
+      {
+        "name": "svc_integration",
+        "description": "Сервисная роль клиента crm-integration (bearer-альтернатива HMAC для интеграций)"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "admin@demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Алексей",
+      "lastName": "Администраторов",
+      "email": "admin@demo.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Demo2026!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin"
+      ]
+    },
+    {
+      "username": "head@demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Ольга",
+      "lastName": "Соколова",
+      "email": "head@demo.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Demo2026!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "head_kam"
+      ]
+    },
+    {
+      "username": "kam1@demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Иван",
+      "lastName": "Петров",
+      "email": "kam1@demo.local",
+      "attributes": {
+        "manager_username": [
+          "head@demo"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Demo2026!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "kam"
+      ]
+    },
+    {
+      "username": "kam2@demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Анна",
+      "lastName": "Смирнова",
+      "email": "kam2@demo.local",
+      "attributes": {
+        "manager_username": [
+          "head@demo"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Demo2026!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "kam"
+      ]
+    },
+    {
+      "username": "observer@demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Сергей",
+      "lastName": "Волков",
+      "email": "observer@demo.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Demo2026!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "observer"
+      ]
+    },
+    {
+      "username": "service-account-crm-notification",
+      "enabled": true,
+      "serviceAccountClientId": "crm-notification",
+      "realmRoles": [
+        "svc_notification"
+      ]
+    },
+    {
+      "username": "service-account-crm-integration",
+      "enabled": true,
+      "serviceAccountClientId": "crm-integration",
+      "realmRoles": [
+        "svc_integration"
+      ]
+    },
+    {
+      "username": "service-account-crm-backend-admin",
+      "enabled": true,
+      "serviceAccountClientId": "crm-backend-admin",
+      "clientRoles": {
+        "realm-management": [
+          "view-users"
+        ]
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "crm-frontend",
+      "name": "CRM Frontend (SPA)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "fullScopeAllowed": true,
+      "rootUrl": "http://crm.local",
+      "baseUrl": "/",
+      "redirectUris": [
+        "http://crm.localhost/*",
+        "http://crm.local/*",
+        "http://localhost:5173/*",
+        "http://localhost/*",
+        "https://crm.168-113-158-10.nip.io/*"
+      ],
+      "webOrigins": [
+        "+",
+        "http://crm.localhost",
+        "https://crm.168-113-158-10.nip.io"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://crm.localhost/*##http://crm.local/*##http://localhost:5173/*##http://localhost/*##https://crm.168-113-158-10.nip.io/*"
+      }
+    },
+    {
+      "clientId": "crm-notification",
+      "name": "Notification Service (Telegram-бот)",
+      "description": "Confidential-клиент: client credentials для вызовов /internal/bot/* backend'а",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${env.NOTIFICATION_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "crm-integration",
+      "name": "Integration Gateway",
+      "description": "Confidential-клиент: bearer-альтернатива HMAC для webhook'ов (по умолчанию не используется)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${env.INTEGRATION_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "crm-loadtest",
+      "name": "Load Testing (k6)",
+      "description": "Direct Access Grants включён ТОЛЬКО у этого клиента — боевые клиенты чисты",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${env.LOADTEST_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "crm-backend-admin",
+      "name": "Backend Admin Sync",
+      "description": "Confidential-клиент backend'а: client credentials + view-users (realm-management) для синка пользователей из Keycloak Admin API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${env.BACKEND_ADMIN_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true
+    }
+  ]
+}
