@@ -218,7 +218,7 @@ sequenceDiagram
     FE->>BE: POST /api/v1/requests/{id}/transitions
     BE->>PG: проверка перехода по графу + запись истории (одна транзакция)
     PG-->>BE: зафиксировано (оптимистическая блокировка по version)
-    BE-->>FE: 200 — новый статус; SSE обновляет все открытые доски
+    BE-->>FE: 200 — новый статус · SSE обновляет все открытые доски
     BE->>NT: POST /api/v1/send (X-Internal-Token, без ПДн)
     NT->>TG: sendMessage — единственный egress контура (:443)
     TG-->>NT: доставлено
