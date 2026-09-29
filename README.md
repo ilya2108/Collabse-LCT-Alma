@@ -19,6 +19,12 @@ CRM закрытого контура для работы КАМов с вуза
 ![152-ФЗ](https://img.shields.io/badge/152--ФЗ-Fernet_%2B_blind_index-2E7D32)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+> **🔗 Живой стенд**
+> Приложение: **https://crm.168-113-158-10.nip.io** · вход: `kam1@demo` / `Demo2026!` (все роли — в разделе «Как пользоваться»)
+> Заглушка LMS: https://lms.crm.168-113-158-10.nip.io · Заглушка CMS: https://cms.crm.168-113-158-10.nip.io
+> Telegram-бот: [@collabse_alma_crm_bot](https://t.me/collabse_alma_crm_bot) · Keycloak: https://id.crm.168-113-158-10.nip.io
+
+
 ## Оглавление
 
 - [О системе](#о-системе)
@@ -113,7 +119,7 @@ gen2 («Атомаро»).
 Контекст системы: четыре роли работают с CRM внутри закрытого контура, внешние
 системы — LMS, CMS (двусторонний обмен) и Telegram (только исходящие уведомления):
 
-```mermaid
+``mermaid
 flowchart LR
     subgraph roles["Пользователи (VPN, закрытый контур)"]
         KAM["КАМ — ведёт вузы и заявки"]
@@ -138,15 +144,15 @@ flowchart LR
     classDef ext fill:#151D2C,stroke:#151D2C,color:#FFFFFF
     class ALMA core
     class LMS,CMS,TGE ext
-```
+``
 
 Контейнерный уровень — что именно работает в кластере и кто с кем говорит:
 
-```mermaid
+``mermaid
 flowchart TB
     USR["КАМ / head_kam / admin / observer<br/>(браузер, VPN в закрытый контур)"]
     subgraph cluster["Kubernetes, namespace crm — закрытый контур (default-deny NetworkPolicy)"]
-        ING["Ingress: crm.localhost (/ и /api),<br/>id/lms/cms/minio.crm.localhost<br/>+ алиасы *.crm.local (curl/API)"]
+        ING["Ingress (traefik):<br/>/ → интерфейс, /api → ядро,<br/>отдельные хосты: id / lms / cms"]
         subgraph apps["Приложения (tier=app)"]
             FE["frontend<br/>React 18 + TS, Tailwind v4 + shadcn/ui<br/>(токены ДС РТК gen2), React Flow, ECharts<br/>· nginx-unprivileged :8080"]
             BE["backend :8000 — модульный монолит FastAPI<br/>workflow · requests · crm · import/export ·<br/>talent_pool · reporting · integrations · notifications"]
@@ -199,12 +205,12 @@ flowchart TB
     class KC iam
     class NT dmz
     class USR,TG,MAX ext
-```
+``
 
 Сквозной сценарий «переход заявки → уведомление в Telegram» — как бизнес-событие
 покидает закрытый контур через единственную разрешённую точку:
 
-```mermaid
+``mermaid
 sequenceDiagram
     autonumber
     actor U as КАМ (браузер)
@@ -223,7 +229,7 @@ sequenceDiagram
     NT->>TG: sendMessage — единственный egress контура (:443)
     TG-->>NT: доставлено
     NT-->>BE: статус доставки (журнал уведомлений)
-```
+``
 
 Ключевое о закрытом контуре: **у ядра CRM нет выхода в интернет ни по коду, ни
 по сети** (default-deny NetworkPolicy, разрешения точка-точка между подами);
@@ -310,43 +316,43 @@ QR/код → команда `/start <код>` боту. Команды `/my` и
 
 ### Вариант 1 — docker-compose (локальная разработка)
 
-```sh
+``sh
 make dev                      # postgres + keycloak + minio + keydb + backend (hot-reload) + уведомления + заглушки
 cd frontend && npm run dev    # vite на :5173, прокси /api → localhost:8000
-```
+``
 
 `make dev-env` создаёт `deploy/compose/.env` (генерирует ключи шифрования ПДн;
 файл не входит в git и не перетирается повторными запусками). Остановить — `make dev-down`.
 
 ### Вариант 2 — локальный Kubernetes (k3d, основной путь)
 
-```sh
+``sh
 make k8s-secrets && make k8s-up   # 1. секреты + кластер + образы + манифесты + ожидание
-make demo                         # 2. демо-данные и «зависшие» заявки → открыть http://crm.localhost
-```
+make demo                         # 2. демо-данные и «зависшие» заявки → открыть `crm.localhost`
+``
 
 > `make k8s-up` сам вызывает `k8s-secrets`, поэтому шаг 1 можно сократить до
 > одной команды; секреты (включая ключи шифрования ПДн) генерируются локально
 > и в git не попадают.
 
-Открывать в Chrome/Chromium/Edge по адресу **http://crm.localhost** — браузер
+Открывать в Chrome/Chromium/Edge по адресу `crm.localhost` — браузер
 резолвит `*.localhost` в `127.0.0.1` сам: без правки `/etc/hosts` и без sudo.
 `http://*.localhost` считается безопасным контекстом (Web Crypto доступен), что
 обязательно для входа через Keycloak (PKCE S256).
 
 | Адрес | Что это |
 |---|---|
-| http://crm.localhost | «Альма» (фронтенд `/`, API `/api` — один хост, без CORS) |
-| http://id.crm.localhost | Keycloak (realm `crm`) |
-| http://lms.crm.localhost | Заглушка LMS — журнал двустороннего обмена + кнопка «событие в CRM» |
-| http://cms.crm.localhost | Заглушка CMS — демо-форма лида + журнал |
-| http://minio.crm.localhost | Консоль MinIO (S3-хранилище файлов) |
+| `crm.localhost` | «Альма» (фронтенд `/`, API `/api` — один хост, без CORS) |
+| `id.crm.localhost` | Keycloak (realm `crm`) |
+| `lms.crm.localhost` | Заглушка LMS — журнал двустороннего обмена + кнопка «событие в CRM» |
+| `cms.crm.localhost` | Заглушка CMS — демо-форма лида + журнал |
+| `minio.crm.localhost` | Консоль MinIO (S3-хранилище файлов) |
 
 Ingress дополнительно отвечает на алиасах `*.crm.local` для curl/API/k6
 (строку для `/etc/hosts` печатает `make hosts`; для curl достаточно
 `--resolve crm.local:80:127.0.0.1`). Вход в интерфейс через `http://*.local`
 невозможен: это небезопасный контекст браузера, Web Crypto недоступен и
-PKCE-вход падает — используйте `http://crm.localhost`.
+PKCE-вход падает — используйте `crm.localhost`.
 
 Вариант minikube: `make k8s-up-minikube` (стартует с `--cni=calico` —
 принудительное применение NetworkPolicy; на macOS с драйвером docker
@@ -356,9 +362,9 @@ PKCE-вход падает — используйте `http://crm.localhost`.
 
 ### Вариант 3 — VPS (публичный стенд)
 
-```sh
+``sh
 VM_IP=<ip> VM_HOST=<ssh-host> make vm-deploy   # amd64-образы → импорт, манифесты overlay vm, cert-manager (TLS), smoke-проверка
-```
+``
 
 Хосты — `*.<IP-через-дефисы>.nip.io` (публичный wildcard-DNS, у посетителей
 ничего настраивать не нужно), TLS выпускает cert-manager.
@@ -387,8 +393,8 @@ console-заглушки: сообщения уходят в лог службы
 
 | Симптом | Решение |
 |---|---|
-| `http://crm.localhost` не открывается | проверьте, свободен ли порт 80: `sudo lsof -i :80` — балансировщик k3d пробрасывает 80 на localhost; `*.localhost` резолвит сам Chromium/Edge (в Firefox/Safari при необходимости добавьте строку из `make hosts` с `crm.localhost`) |
-| Открыли `http://crm.local` — «вход невозможен» | ожидаемо: `http://*.local` — небезопасный контекст, Web Crypto недоступен; для входа используйте `http://crm.localhost` |
+| `crm.localhost` не открывается | проверьте, свободен ли порт 80: `sudo lsof -i :80` — балансировщик k3d пробрасывает 80 на localhost; `*.localhost` резолвит сам Chromium/Edge (в Firefox/Safari при необходимости добавьте строку из `make hosts` с `crm.localhost`) |
+| Открыли `http://crm.local` — «вход невозможен» | ожидаемо: `http://*.local` — небезопасный контекст, Web Crypto недоступен; для входа используйте `crm.localhost` |
 | Поды в `Pending`/`OOMKilled` | Docker Desktop: выделите ≥ 4 CPU и ≥ 6–8 GB памяти (сумма requests стенда ≈ 1.7 CPU / 2.5 GiB + сам кластер) |
 | minikube на macOS: Ingress недоступен | драйвер docker требует `sudo minikube -p crm tunnel`; либо возьмите IP из `minikube -p crm ip` |
 | Keycloak долго не готов | норма: JVM + импорт realm — до 5 минут (startupProbe учитывает); `make k8s-apply` дожидается сам |
@@ -424,14 +430,14 @@ console-заглушки: сообщения уходят в лог службы
 
 Консоль администратора Keycloak доступна по пути `/admin/master/console/`:
 на живом стенде — https://id.crm.168-113-158-10.nip.io/admin/master/console/,
-на локальном — http://id.crm.localhost/admin/master/console/.
+на локальном — `id.crm.localhost`/admin/master/console/.
 
 Данные для входа генерируются при установке и хранятся только в секрете кластера:
 
-```sh
+``sh
 kubectl -n crm get secret crm-keycloak-admin -o jsonpath='{.data.username}' | base64 -d; echo
 kubectl -n crm get secret crm-keycloak-admin -o jsonpath='{.data.password}' | base64 -d; echo
-```
+``
 
 > **Внимание: две разные формы входа.** Консоль администратора — это realm
 > `master` и служебная учётная запись из секрета `crm-keycloak-admin`;
@@ -508,7 +514,7 @@ Keycloak при импорте realm — в git они не попадают.
 
 ## Структура репозитория
 
-```
+``
 backend/                  # модульный монолит FastAPI (workflow, requests, crm, import_export, …)
 frontend/                 # React 18 + TS + Vite (Tailwind v4, shadcn/ui, TanStack Table, motion, React Flow, ECharts)
 services/notification/    # FastAPI + aiogram 3 (Telegram-бот, DMZ)
@@ -525,7 +531,7 @@ docs/evidence/            # аттестации: соответствие ТЗ,
 docs/manual/              # руководство пользователя (PDF)
 docs/screenshots/         # снимки экрана для README
 .github/workflows/        # CI: тесты и линтеры сервисов, сборка интерфейса и образов, валидация манифестов
-```
+``
 
 ## План развития
 
