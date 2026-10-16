@@ -3,12 +3,18 @@
 
 CLUSTER      ?= crm
 NS           ?= crm
-IMAGES        = crm/backend crm/frontend crm/notification crm/lms-stub crm/cms-stub
+IMAGES        = crm/backend crm/frontend crm/notification crm/llm-gateway crm/lms-stub crm/cms-stub
 K3D_OVERLAY   = deploy/k8s/overlays/k3d
 MINI_OVERLAY  = deploy/k8s/overlays/minikube
 VM_OVERLAY    = deploy/k8s/overlays/vm
 OVERLAY      ?= $(K3D_OVERLAY)
 COMPOSE       = docker compose -f deploy/compose/docker-compose.dev.yml
+# Сводки ИИ: ключ GigaChat (gitignored) — секрет оверлея k3d; LLM_SRC — файл с GIGACHAT_*
+LLM_ENV      ?= $(K3D_OVERLAY)/secrets/crm-llm.env
+LLM_SRC      ?=
+LLM_CA        = deploy/k8s/base/llm-gateway/certs/russian_trusted_bundle.pem
+# uv: из PATH, иначе из venv backend (там он ставится зависимостью)
+UV           ?= $(or $(shell command -v uv 2>/dev/null),$(wildcard $(CURDIR)/backend/.venv/bin/uv),uv)
 # Публичный VPS (голый k3s): деплой — deploy/scripts/vm-*.sh
 VM_IP        ?= 168.113.158.10
 VM_HOST      ?= root@$(VM_IP)
@@ -30,13 +36,13 @@ K6_CHECK      = command -v k6 >/dev/null 2>&1 || \
         k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo demo-reset \
         demo-reset-local hosts stuck-check idempotency-purge demo-idempotency \
         bench-migration docs-arch load-test load-test-users load-test-reports load-test-nft logs \
-        clean vm-install vm-deploy vm-smoke vm-demo-reset
+        clean vm-install vm-deploy vm-smoke vm-demo-reset llm-secret llm-smoke llm-smoke-k8s
 
 help: ## список целей
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 ## --- Локальная разработка ---------------------------------------------------
-dev: dev-env ## compose-стек (инфра + backend/notification/заглушки) + подсказка про фронт
+dev: dev-env ## compose-стек (инфра + backend/notification/llm-gateway/заглушки) + подсказка про фронт
 	$(COMPOSE) up -d --build
 	@echo "API:      http://localhost:8000/docs"
 	@echo "Keycloak: http://localhost:8080  (admin / см. deploy/compose/.env)"
@@ -53,6 +59,7 @@ build-images: ## собрать все образы crm/*:dev
 	docker build -t crm/backend:dev backend
 	docker build -t crm/frontend:dev frontend
 	docker build -t crm/notification:dev services/notification
+	docker build -t crm/llm-gateway:dev services/llm-gateway
 	docker build -t crm/lms-stub:dev services/lms-stub
 	docker build -t crm/cms-stub:dev services/cms-stub
 
@@ -90,6 +97,7 @@ k8s-apply: ## идемпотентный apply: Jobs пересоздаются 
 	kubectl -n $(NS) wait --for=condition=complete job/minio-init --timeout=180s
 	kubectl -n $(NS) wait --for=condition=available deploy/keycloak --timeout=600s
 	kubectl -n $(NS) wait --for=condition=available deploy/backend --timeout=300s
+	kubectl -n $(NS) wait --for=condition=available deploy/llm-gateway --timeout=180s
 	@echo "Стенд готов: http://crm.localhost (k3d, без /etc/hosts); minikube — http://crm.local (make hosts)"
 
 # pipefail: без него упавший kustomize (нет секретов) даёт kubeconform пустой вход — «0 ресурсов», exit 0
@@ -101,6 +109,19 @@ k8s-validate: ## рендер всех overlay + kubeconform (нужны сге�
 
 k8s-down: ## удалить кластер (k3d или minikube)
 	k3d cluster delete $(CLUSTER) 2>/dev/null || minikube delete -p $(CLUSTER) || true
+
+## --- Сводки ИИ: GigaChat через llm-gateway (services/llm-gateway/README.md) ------
+# Ключ — только в gitignored-файлах; скрипт печатает имена ключей, но не значения.
+llm-secret: ## ключ GigaChat в секрет: LLM_SRC=<файл с GIGACHAT_*> [OVERLAY=<оверлей>|compose]
+	./deploy/scripts/llm-secret.sh "$(LLM_SRC)" $(OVERLAY)
+
+llm-smoke: ## живой смоук GigaChat с этой машины: OAuth + 2 вызова (env из LLM_ENV, тратит токены)
+	@test -f "$(LLM_ENV)" || { echo "llm-smoke: нет $(LLM_ENV) — make k8s-secrets, затем make llm-secret LLM_SRC=…" >&2; exit 2; }
+	@cd services/llm-gateway && set -a && . "$(abspath $(LLM_ENV))" && set +a && \
+	  ALMA_LLM_LIVE=1 GIGACHAT_CA_BUNDLE="$(abspath $(LLM_CA))" $(UV) run python -m app.tools.smoke
+
+llm-smoke-k8s: ## тот же смоук из DMZ-пода llm-gateway (проверка egress 443/9443 из кластера)
+	kubectl -n $(NS) exec deploy/llm-gateway -- sh -c 'ALMA_LLM_LIVE=1 python -m app.tools.smoke'
 
 ## --- Публичный VPS (голый k3s, судьи заходят по https://crm.<IP>.nip.io) -------
 vm-install: ## VPS: bootstrap — swap 2G + установка k3s + ожидание node Ready (идемпотентен)

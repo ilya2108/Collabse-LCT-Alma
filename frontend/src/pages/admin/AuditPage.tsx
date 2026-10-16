@@ -44,6 +44,9 @@ const ACTION_LABELS: Record<string, string> = {
   'role.reset': 'Сброс роли к стандартным правам',
   'role.deleted': 'Удаление роли',
   'user.roles_changed': 'Назначение ролей пользователю',
+  // сводки ИИ отчёта «Активность КАМов»: в записи — параметры и итог, без текста сводки
+  'ai.summary_requested': 'Запрос сводки ИИ',
+  'ai.summary_generated': 'Сводка ИИ: результат',
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -57,6 +60,7 @@ const ENTITY_LABELS: Record<string, string> = {
   app_role: 'роль',
   feature_flag: 'фичефлаг',
   import_session: 'импорт',
+  ai_summary_job: 'сводка ИИ',
 };
 
 const PII_ACTION = 'student.pii_revealed';

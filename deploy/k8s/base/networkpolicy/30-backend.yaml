@@ -1,5 +1,5 @@
 # backend — точка-точка: разговаривает только с postgres, minio, keydb, keycloak,
-# заглушками и notification. Трафик от ingress-контроллера разрешает отдельная
+# заглушками, notification и llm-gateway. Наружу ядро по-прежнему не ходит. Трафик от ingress-контроллера разрешает отдельная
 # политика 20-allow-from-ingress (политики аддитивны).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -41,3 +41,6 @@ spec:
     - to: # outbox-relay нотификаций (POST /api/v1/send)
         - podSelector: {matchLabels: {app.kubernetes.io/name: notification}}
       ports: [{port: 8010}]
+    - to: # сводки ИИ (POST /v1/chat): в интернет за GigaChat ходит только шлюз
+        - podSelector: {matchLabels: {app.kubernetes.io/name: llm-gateway}}
+      ports: [{port: 8040}]

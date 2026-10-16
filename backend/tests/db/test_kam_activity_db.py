@@ -781,7 +781,7 @@ async def test_export_pdf_rules(api, db_session, people, memory_storage) -> None
     db_session.add(
         AppSetting(
             key="feature_flags",
-            value={"auto_ranking": False, "report_pdf": False, "llm_features": False},
+            value={"auto_ranking": False, "report_pdf": False, "ai_summaries": False},
         )
     )
     await db_session.flush()

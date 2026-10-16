@@ -196,7 +196,7 @@ APP_SETTINGS = [
     ),
     (
         "feature_flags",
-        {"auto_ranking": False, "report_pdf": True, "llm_features": False},
+        {"auto_ranking": False, "report_pdf": True, "ai_summaries": True},
         "Фичефлаги приложения (реестр — app.modules.admin.service.KNOWN_FLAGS)",
     ),
     (

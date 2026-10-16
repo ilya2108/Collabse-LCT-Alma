@@ -15,6 +15,7 @@ jobs:
         include:
           - { name: backend, dir: backend, sync: --extra dev }
           - { name: notification, dir: services/notification, sync: --group dev }
+          - { name: llm-gateway, dir: services/llm-gateway, sync: --group dev }
           - { name: lms-stub, dir: services/lms-stub, sync: --extra dev }
           - { name: cms-stub, dir: services/cms-stub, sync: --extra dev }
     # интеграционные тесты backend (tests/db) идут на настоящем PostgreSQL: схема из миграций
@@ -97,6 +98,7 @@ jobs:
           - { name: backend, context: backend }
           - { name: frontend, context: frontend }
           - { name: notification, context: services/notification }
+          - { name: llm-gateway, context: services/llm-gateway }
           - { name: lms-stub, context: services/lms-stub }
           - { name: cms-stub, context: services/cms-stub }
     steps:

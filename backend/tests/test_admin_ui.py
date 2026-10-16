@@ -26,7 +26,9 @@ class TestFeatureFlags:
         assert flags["report_pdf"] is True
         assert KNOWN_FLAGS["report_pdf"]["label"] == "PDF-выгрузка дашборда (общая таблица)"
         assert flags["auto_ranking"] is False
-        assert flags["llm_features"] is False  # N6: LLM в закрытом контуре выключен
+        # N6: сводки ИИ — опция за флагом, по умолчанию выключены (пустой llm_features убран)
+        assert flags["ai_summaries"] is False
+        assert "llm_features" not in flags
 
     def test_stored_override_and_unknown_dropped(self) -> None:
         flags = merge_flags({"auto_ranking": True, "time_travel": True})

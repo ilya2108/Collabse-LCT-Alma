@@ -52,9 +52,14 @@ KNOWN_FLAGS: dict[str, dict[str, Any]] = {
         "default": True,
         "label": "PDF-выгрузка дашборда (общая таблица)",
     },
-    "llm_features": {
+    # сводки ИИ в отчёте «Активность КАМов» (modules/ai_summary): выключен — обе ручки
+    # `/reports/ai-summaries*` отвечают 422; заменил пустой флаг `llm_features`
+    "ai_summaries": {
         "default": False,
-        "label": "LLM-функции (в закрытом контуре — выключено)",
+        "label": (
+            "Сводки ИИ в отчёте «Активность КАМов»: GigaChat получает только агрегаты и "
+            "псевдонимы КАМов; без GigaChat — сводка по правилам"
+        ),
     },
 }
 

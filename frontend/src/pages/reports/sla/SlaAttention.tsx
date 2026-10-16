@@ -40,7 +40,8 @@ export function SlaAttention({ attention, matched, onSelectKam, loading = false 
               }`}
         </p>
       </header>
-      <div className="min-w-0 flex-1 px-3 pb-3">
+      {/* на широком экране список прокручивается внутри карточки, высота — в паре с графиком */}
+      <div className="min-w-0 flex-1 px-3 pb-3 lg:max-h-[26rem] lg:overflow-y-auto">
         {loading || !attention ? (
           <div className="flex flex-col gap-2 px-2" aria-hidden="true">
             <Skeleton className="h-16 rounded-md" />

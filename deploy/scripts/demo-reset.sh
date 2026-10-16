@@ -79,10 +79,18 @@ for name in $PAUSE_CRONJOBS; do
 done
 
 # --- Job из шаблона; DEMO_ANCHOR_DATE — через set env --local (create --from не умеет env) ---
+# Пустой якорь не передаём: `kubectl set env VAR=""` (проверено на 1.34) молча отдаёт
+# пустой вывод, и apply падает с «no objects passed to apply». Без подстановки Job
+# берёт из шаблона DEMO_ANCHOR_DATE="" — якорь «сейчас».
 JOB="demo-reset-$(date +%Y%m%d%H%M%S)"
-kctl create job "$JOB" --from=cronjob/demo-reset --dry-run=client -o yaml \
-    | $KUBECTL set env --local -f - -o yaml DEMO_ANCHOR_DATE="$ANCHOR" \
-    | kctl apply -f - >/dev/null
+if [[ -n "$ANCHOR" ]]; then
+    kctl create job "$JOB" --from=cronjob/demo-reset --dry-run=client -o yaml \
+        | $KUBECTL set env --local -f - -o yaml DEMO_ANCHOR_DATE="$ANCHOR" \
+        | kctl apply -f - >/dev/null
+else
+    kctl create job "$JOB" --from=cronjob/demo-reset --dry-run=client -o yaml \
+        | kctl apply -f - >/dev/null
+fi
 echo "   job/$JOB создан, ждём завершения (до ${TIMEOUT} с)…"
 
 status=0

@@ -13,7 +13,8 @@
   Роль выполняет функцию, если в её наборе есть хотя бы одно из прав функции.
   У каждого сервиса в свойствах записаны API, права и экран интерфейса.
 - **Компонентная схема** — из чего система состоит и где работает: frontend,
-  backend и его модули, notification-service, заглушки LMS и CMS, Keycloak,
+  backend и его модули, notification-service, шлюз GigaChat llm-gateway, заглушки
+  LMS и CMS, Keycloak,
   PostgreSQL, KeyDB, MinIO. Всё размещено в кластере Kubernetes (namespace `crm`)
   по зонам `tier`, как в манифестах. На схеме также образы контейнеров, задания
   CronJob и Job, внешние системы и ограничения закрытого контура.
@@ -108,20 +109,20 @@ python3 docs/architecture/archi/build_archi.py --check  # exit 1, если фа�
 <!-- archi:stats:begin -->
 | Вид | Элементов | Связей на виде | Состав |
 |---|---:|---:|---|
-| Функциональная схема | 73 | 87 | бизнес-акторы — 2, бизнес-роли — 5, бизнес-функции — 14, прикладные сервисы — 41, группировки — 11 |
-| Компонентная схема | 51 | 40 | бизнес-акторы — 1, компоненты приложений — 25, узлы — 1, системное ПО — 4, технологические процессы — 2, артефакты — 5, ограничения — 5, группировки — 8 |
+| Функциональная схема | 74 | 88 | бизнес-акторы — 2, бизнес-роли — 5, бизнес-функции — 14, прикладные сервисы — 42, группировки — 11 |
+| Компонентная схема | 56 | 45 | бизнес-акторы — 1, компоненты приложений — 28, узлы — 1, системное ПО — 4, технологические процессы — 2, артефакты — 6, ограничения — 6, группировки — 8 |
 
-Всего в модели 124 элемента и 298 связей. Связей без линии на видах — 171: вложенность (группировка, композиция модулей в backend, размещение в кластере) и трассировка «компонент реализует прикладной сервис», которая соединяет два вида. Эти связи видны в дереве модели и на вкладке Analysis → Model Relations свойств элемента.
+Всего в модели 130 элементов и 313 связей. Связей без линии на видах — 180: вложенность (группировка, композиция модулей в backend, размещение в кластере) и трассировка «компонент реализует прикладной сервис», которая соединяет два вида. Эти связи видны в дереве модели и на вкладке Analysis → Model Relations свойств элемента.
 
 | Тип связи | Связей |
 |---|---:|
-| агрегация (`AggregationRelationship`) | 94 |
-| назначение (`AssignmentRelationship`) | 44 |
-| ассоциация (`AssociationRelationship`) | 14 |
-| композиция (`CompositionRelationship`) | 19 |
-| поток (`FlowRelationship`) | 7 |
-| реализация (`RealizationRelationship`) | 56 |
-| обслуживание (`ServingRelationship`) | 62 |
+| агрегация (`AggregationRelationship`) | 99 |
+| назначение (`AssignmentRelationship`) | 45 |
+| ассоциация (`AssociationRelationship`) | 16 |
+| композиция (`CompositionRelationship`) | 20 |
+| поток (`FlowRelationship`) | 9 |
+| реализация (`RealizationRelationship`) | 59 |
+| обслуживание (`ServingRelationship`) | 63 |
 | специализация (`SpecializationRelationship`) | 1 |
 | запуск (`TriggeringRelationship`) | 1 |
 <!-- archi:stats:end -->
@@ -189,6 +190,7 @@ flowchart LR
         svc_kam_activity["Отчёт «Активность КАМов»"]
         svc_interactions["Отчёт «Взаимодействия за период»"]
         svc_sla["Просрочки по срокам этапов"]
+        svc_ai_summary["Сводка ИИ по отчёту КАМов"]
         svc_export["Экспорт XLSX, CSV, JSON, PDF"]
     end
     subgraph grp_svc_access["Роли и доступ"]
@@ -298,6 +300,7 @@ flowchart TB
         ext_cms["CMS-сайт заказчика"]
         ext_telegram["Telegram Bot API"]
         ext_channels["Email (Exchange) и Max"]
+        ext_gigachat["GigaChat API (Сбер)"]
     end
     subgraph node_k8s["Kubernetes: namespace crm"]
         subgraph grp_tier_app["tier=app — приложения"]
@@ -312,6 +315,7 @@ flowchart TB
                 mod_import_export["import_export — импорт и экспорт"]
                 mod_talent["talent_pool — пул талантов"]
                 mod_reporting["reporting — отчёты"]
+                mod_ai_summary["ai_summary — сводки ИИ"]
                 mod_integrations["integrations — LMS и CMS"]
                 mod_notifications["notifications — уведомления"]
                 mod_files["files — файлы"]
@@ -328,6 +332,7 @@ flowchart TB
         end
         subgraph grp_tier_dmz["tier=dmz — выход наружу"]
             ac_notification["notification-service"]
+            ac_llm_gateway["llm-gateway — шлюз GigaChat"]
         end
         subgraph grp_tier_data["tier=data — хранилища"]
             sw_postgres[("PostgreSQL 16")]
@@ -342,28 +347,33 @@ flowchart TB
             art_backend["crm/backend"]
             art_frontend["crm/frontend"]
             art_notification["crm/notification"]
+            art_llm_gateway["crm/llm-gateway"]
             art_lms_stub["crm/lms-stub"]
             art_cms_stub["crm/cms-stub"]
         end
     end
     subgraph grp_constraints["Условия и ограничения контура"]
         con_no_egress>"Ядро без выхода в интернет"]
-        con_single_egress>"Единственный egress — notification-service, порт 443"]
+        con_single_egress>"Выход наружу — только DMZ-поды"]
         con_stubs>"LMS и CMS на стенде — заглушки"]
         con_cache>"KeyDB без персистентности"]
         con_pii>"ПДн студентов — шифртекст"]
+        con_ai_facts>"В GigaChat — только агрегаты и псевдонимы"]
     end
     art_backend -.->|"образ"| ac_backend
     art_frontend -.->|"образ"| ac_frontend
     art_notification -.->|"образ"| ac_notification
+    art_llm_gateway -.->|"образ"| ac_llm_gateway
     art_lms_stub -.->|"образ"| ac_lms_stub
     art_cms_stub -.->|"образ"| ac_cms_stub
     con_no_egress --- node_k8s
     con_single_egress --- ac_notification
+    con_ai_facts --- mod_ai_summary
     con_stubs --- ac_lms_stub
     con_cache --- sw_keydb
     con_pii --- sw_postgres
     con_stubs --- ac_cms_stub
+    con_single_egress --- ac_llm_gateway
     ac_frontend -->|"SPA в браузере"| actor_users
     sw_ingress -->|"/"| ac_frontend
     sw_ingress -->|"/api"| ac_backend
@@ -385,6 +395,8 @@ flowchart TB
     ac_cms_stub ---|"заменяет на стенде"| ext_cms
     ac_notification -.->|"443, long-polling"| ext_telegram
     ac_notification -.->|"адаптеры-заглушки"| ext_channels
+    ac_backend -.->|"сводки ИИ: POST /v1/chat, X-Internal-Token"| ac_llm_gateway
+    ac_llm_gateway -.->|"OAuth 9443, chat 443"| ext_gigachat
     sw_postgres -->|"БД crm"| ac_backend
     sw_postgres -->|"БД keycloak"| ac_keycloak
     sw_keydb -->|"кэш, pub/sub SSE"| ac_backend
@@ -396,11 +408,12 @@ flowchart TB
     mod_auth ~~~ mod_import_export
     mod_access ~~~ mod_talent
     mod_workflow ~~~ mod_reporting
-    mod_requests ~~~ mod_integrations
-    mod_crm ~~~ mod_notifications
-    mod_import_export ~~~ mod_files
-    mod_talent ~~~ mod_admin
-    mod_reporting ~~~ mod_ui
+    mod_requests ~~~ mod_ai_summary
+    mod_crm ~~~ mod_integrations
+    mod_import_export ~~~ mod_notifications
+    mod_talent ~~~ mod_files
+    mod_reporting ~~~ mod_admin
+    mod_ai_summary ~~~ mod_ui
     mod_integrations ~~~ mod_internal
     mod_notifications ~~~ mod_core
 ```

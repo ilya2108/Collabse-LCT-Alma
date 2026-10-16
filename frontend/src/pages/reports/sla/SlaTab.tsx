@@ -24,6 +24,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/shared/ui/dropdown-menu';
+import { AiSummaryButton } from '../ai/AiSummaryButton';
+import { AiSummaryPanel } from '../ai/AiSummaryPanel';
+import { useAiSummary } from '../ai/useAiSummary';
 import { SlaHowItWorks } from './SlaHowItWorks';
 import { SlaKamView } from './SlaKamView';
 import { SlaTeamView } from './SlaTeamView';
@@ -37,7 +40,9 @@ import { mskDateTime, mskDay } from './slaFormat';
  * `toApiParams`: период, процесс, КАМы, вузы, ИТ-направления). Своё URL-состояние:
  * `sla_kam` — открытый разбор КАМа, `sla_metric` — показатель тренда. При «только свои»
  * сразу открывается разбор себя. Карточка заявки — через `onOpenRequest` (`request=`).
- * Своя кнопка «Экспорт» (XLSX, PDF без имён / по КАМам, CSV просроченных).
+ * Своя кнопка «Экспорт» (XLSX, PDF без имён / по КАМам, CSV просроченных). В разборе
+ * КАМа — кнопка и панель «Сводка ИИ» по этому КАМу; при «только свои» её заменяет
+ * кнопка в шапке страницы (сводка по себе), чтобы не было двух одинаковых.
  */
 
 export interface SlaTabProps {
@@ -123,6 +128,14 @@ export function SlaTab({ params, ownOnly, onOpenRequest }: SlaTabProps): ReactNo
     queryFn: ({ signal }) => getSlaKam(kamId ?? '', params, signal),
     staleTime: 30_000,
     enabled: kamId !== null,
+  });
+
+  const aiKam = useAiSummary({
+    kind: 'kam',
+    kamId,
+    params,
+    enabled: kamId !== null && !ownOnly,
+    kamName: kamQuery.data?.kam.name ?? null,
   });
 
   const active = kamId === null ? teamQuery : kamQuery;
@@ -251,6 +264,8 @@ export function SlaTab({ params, ownOnly, onOpenRequest }: SlaTabProps): ReactNo
         boardLink={kamQuery.data?.period.is_current ? boardLinkFor(params, [kamId]) : null}
         caption={caption}
         exportCaption={exportCaption}
+        headerExtra={aiKam.available ? <AiSummaryButton controller={aiKam} size="sm" /> : undefined}
+        aiPanel={aiKam.open ? <AiSummaryPanel controller={aiKam} /> : undefined}
       />
     );
   } else {

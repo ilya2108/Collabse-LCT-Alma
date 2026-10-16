@@ -9,9 +9,9 @@
 
 | Группа | Всего | Состав | Источник |
 |---|---|---|---|
-| Python-пакеты | 79 | в образах — 63, для разработки и тестов — 9, только для других версий Python и ОС — 7 | `backend/uv.lock`, `services/notification/uv.lock`, `services/lms-stub/uv.lock`, `services/cms-stub/uv.lock` |
+| Python-пакеты | 95 | в образах — 76, для разработки и тестов — 12, только для других версий Python и ОС — 7 | `backend/uv.lock`, `services/notification/uv.lock`, `services/lms-stub/uv.lock`, `services/cms-stub/uv.lock`, `services/llm-gateway/uv.lock` |
 | npm-пакеты | 308 | без признака `dev` — 182, с признаком `dev` (только сборка) — 50, платформенные бинарные сборки — 76 | `frontend/package-lock.json` |
-| Образы контейнеров | 19 | собственные — 5, сторонние — 14 | Dockerfile, `deploy/`, `.github/workflows/` |
+| Образы контейнеров | 20 | собственные — 6, сторонние — 14 | Dockerfile, `deploy/`, `.github/workflows/` |
 | Действия GitHub Actions | 3 | сборка и проверки в CI | CI |
 | Шрифты | 1 | PDF отчётов | `backend/app/modules` |
 
@@ -21,10 +21,10 @@ Python-пакеты считаются парами «пакет — верси�
 
 | Лицензия | Python | npm | Образы |
 |---|---|---|---|
-| MIT | 35 | 259 | 1 |
+| MIT | 45 | 259 | 1 |
 | ISC | — | 23 | — |
-| Apache-2.0 | 11 | 6 | 4 |
-| BSD-3-Clause | 12 | 3 | 1 |
+| Apache-2.0 | 12 | 6 | 4 |
+| BSD-3-Clause | 17 | 3 | 1 |
 | MPL-2.0 | 1 | 12 | — |
 | PSF-2.0 | 3 | — | 1 |
 | 0BSD | — | 3 | — |
@@ -49,7 +49,7 @@ Python-пакеты считаются парами «пакет — верси�
 
 | Компонент | Версия | Лицензия | Где |
 |---|---|---|---|
-| certifi | 2026.7.22 | MPL-2.0 | Python: backend, notification, lms-stub, cms-stub |
+| certifi | 2026.7.22 | MPL-2.0 | Python: backend (транзитивная), notification (транзитивная), lms-stub (транзитивная), cms-stub (транзитивная), llm-gateway |
 | fpdf2 | 2.8.9 | LGPL-3.0-only | Python: backend |
 | orjson | 3.12.0 | MPL-2.0 AND (Apache-2.0 OR MIT) | Python: backend |
 | @fontsource-variable/inter | 5.3.0 | OFL-1.1 | npm (frontend) |
@@ -64,26 +64,30 @@ Python-пакеты считаются парами «пакет — верси�
 
 ## Python
 
-Проекты: backend (`crm-backend`, `backend`), notification (`crm-notification`, `services/notification`), lms-stub (`lms-stub`, `services/lms-stub`), cms-stub (`cms-stub`, `services/cms-stub`). Маркеры зависимостей вычислены для платформы образов: Linux x86_64, CPython 3.12.
+Проекты: backend (`crm-backend`, `backend`), notification (`crm-notification`, `services/notification`), lms-stub (`lms-stub`, `services/lms-stub`), cms-stub (`cms-stub`, `services/cms-stub`), llm-gateway (`crm-llm-gateway`, `services/llm-gateway`). Маркеры зависимостей вычислены для платформы образов: Linux x86_64, CPython 3.12.
 
-### Прямые зависимости — 22
+### Прямые зависимости — 27
 
 | Пакет | Версия | Лицензия | Где | Назначение |
 |---|---|---|---|---|
 | aiogram | 3.31.0 | MIT¹ | notification | Telegram-бот (long-polling) |
 | alembic | 1.20.0 | MIT | backend | миграции схемы БД |
 | asyncpg | 0.31.0 | Apache-2.0 | backend | асинхронный драйвер PostgreSQL |
+| certifi | 2026.7.22 | MPL-2.0 | backend (транзитивная), notification (транзитивная), lms-stub (транзитивная), cms-stub (транзитивная), llm-gateway | корневые сертификаты TLS |
 | charset-normalizer | 3.5.1 | MIT | backend | определение кодировки импортируемых файлов |
 | cryptography | 50.0.1 | Apache-2.0 OR BSD-3-Clause | backend, notification (транзитивная) | шифрование ПДн (Fernet), подписи JWT |
 | fastapi | 0.141.1 | MIT | backend, notification, lms-stub, cms-stub | веб-фреймворк REST API и Swagger UI |
+| fastapi | 0.143.3 | MIT | llm-gateway | веб-фреймворк REST API и Swagger UI |
 | fpdf2 | 2.8.9 | LGPL-3.0-only | backend | PDF отчётов с кириллицей |
-| httpx | 0.28.1 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | HTTP-клиент: интеграции, Keycloak, notification-service |
+| httpx | 0.28.1 | BSD-3-Clause | backend, notification, lms-stub, cms-stub, llm-gateway | HTTP-клиент: интеграции, Keycloak, notification-service |
 | jinja2 | 3.1.6 | BSD-3-Clause¹ | notification | шаблоны текстов уведомлений |
 | minio | 7.2.20 | Apache-2.0 | backend | клиент S3-хранилища MinIO |
 | openpyxl | 3.1.5 | MIT | backend | чтение и запись XLSX |
 | orjson | 3.12.0 | MPL-2.0 AND (Apache-2.0 OR MIT) | backend | быстрая сериализация JSON |
 | pydantic | 2.13.5 | MIT | backend, notification, lms-stub (транзитивная), cms-stub (транзитивная) | схемы запросов и ответов, валидация |
+| pydantic | 2.14.1 | MIT | llm-gateway | схемы запросов и ответов, валидация |
 | pydantic-settings | 2.15.0 | MIT | backend, notification | настройки из переменных окружения |
+| pydantic-settings | 2.16.0 | MIT | llm-gateway | настройки из переменных окружения |
 | pyjwt | 2.14.0 | MIT | backend, notification | проверка JWT Keycloak |
 | python-multipart | 0.0.32 | Apache-2.0 | backend, lms-stub, cms-stub | загрузка файлов (multipart/form-data) |
 | redis | 5.3.1 | MIT | notification | клиент KeyDB: кэш, pub/sub, идемпотентность |
@@ -91,9 +95,10 @@ Python-пакеты считаются парами «пакет — верси�
 | sqlalchemy | 2.0.54 | MIT | backend | ORM и построитель SQL (async) |
 | sse-starlette | 3.4.11 | BSD-3-Clause | backend | Server-Sent Events |
 | uvicorn | 0.53.0 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | ASGI-сервер |
+| uvicorn | 0.54.0 | BSD-3-Clause | llm-gateway | ASGI-сервер |
 | xlrd | 2.0.2 | BSD | backend | чтение старого XLS (BIFF) |
 
-### Транзитивные зависимости — 41
+### Транзитивные зависимости — 49
 
 | Пакет | Версия | Лицензия | Где | Назначение |
 |---|---|---|---|---|
@@ -101,57 +106,68 @@ Python-пакеты считаются парами «пакет — верси�
 | aiohappyeyeballs | 2.7.1 | PSF-2.0¹ | notification | — |
 | aiohttp | 3.14.3 | Apache-2.0¹ | notification | HTTP-клиент aiogram |
 | aiosignal | 1.4.0 | Apache-2.0¹ | notification | — |
-| annotated-doc | 0.0.5 | MIT | backend, notification, lms-stub, cms-stub | — |
-| annotated-types | 0.8.0 | MIT | backend, notification, lms-stub, cms-stub | — |
-| anyio | 4.15.1 | MIT | backend, notification, lms-stub, cms-stub | асинхронный ввод-вывод для Starlette и httpx |
+| annotated-doc | 0.0.5 | MIT | backend, notification, lms-stub, cms-stub, llm-gateway | — |
+| annotated-types | 0.8.0 | MIT | backend, notification, lms-stub, cms-stub, llm-gateway | — |
+| anyio | 4.15.1 | MIT | backend, notification, lms-stub, cms-stub, llm-gateway | асинхронный ввод-вывод для Starlette и httpx |
 | argon2-cffi | 25.1.0 | MIT | backend | зависимость клиента MinIO |
 | argon2-cffi-bindings | 26.1.0 | MIT | backend | — |
 | attrs | 26.1.0 | MIT¹ | notification | — |
-| certifi | 2026.7.22 | MPL-2.0 | backend, notification, lms-stub, cms-stub | корневые сертификаты TLS |
 | cffi | 2.1.1 | MIT-0 | backend, notification | — |
-| click | 8.5.0 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | — |
+| click | 8.5.0 | BSD-3-Clause | backend, notification, lms-stub, cms-stub, llm-gateway | — |
 | defusedxml | 0.7.1 | PSF-2.0 | backend | безопасный разбор XML (fpdf2) |
 | et-xmlfile | 2.0.0 | MIT | backend | потоковая запись XML для openpyxl |
 | fonttools | 4.67.0 | MIT | backend | встраивание шрифтов в PDF (fpdf2) |
 | frozenlist | 1.8.0 | Apache-2.0¹ | notification | — |
 | greenlet | 3.5.6 | MIT AND PSF-2.0 | backend | асинхронный режим SQLAlchemy |
-| h11 | 0.16.0 | MIT | backend, notification, lms-stub, cms-stub | — |
-| httpcore | 1.0.9 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | транспорт httpx |
+| h11 | 0.16.0 | MIT | backend, notification, lms-stub, cms-stub, llm-gateway | — |
+| httpcore | 1.0.9 | BSD-3-Clause | backend, notification, lms-stub, cms-stub, llm-gateway | транспорт httpx |
 | httptools | 0.8.0 | MIT | backend, notification, lms-stub, cms-stub | разбор HTTP для uvicorn |
+| httptools | 0.9.0 | MIT | llm-gateway | разбор HTTP для uvicorn |
 | idna | 3.19 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | — |
+| idna | 3.20 | BSD-3-Clause | llm-gateway | — |
 | magic-filter | 1.0.12 | MIT¹ | notification | — |
 | mako | 1.4.1 | MIT | backend | шаблоны миграций Alembic |
 | markupsafe | 3.0.3 | BSD-3-Clause | backend, notification | экранирование в шаблонах |
 | multidict | 6.8.0 | Apache-2.0¹ | notification | — |
+| opentelemetry-api | 1.45.1 | Apache-2.0 | llm-gateway | — |
 | pillow | 12.3.0 | MIT-CMU | backend | изображения в PDF (fpdf2) |
 | propcache | 0.5.4 | Apache-2.0¹ | notification | — |
 | pycparser | 3.0 | BSD-3-Clause | backend, notification | — |
 | pycryptodome | 3.23.0 | BSD, Public Domain | backend | зависимость клиента MinIO |
 | pydantic-core | 2.46.5 | MIT | backend, notification, lms-stub, cms-stub | ядро валидации Pydantic |
+| pydantic-core | 2.50.1 | MIT | llm-gateway | ядро валидации Pydantic |
 | python-dotenv | 1.2.3 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | чтение .env в uvicorn |
-| pyyaml | 6.0.3 | MIT | backend, notification, lms-stub, cms-stub | конфигурация логирования uvicorn |
+| python-dotenv | 1.2.4 | BSD-3-Clause | llm-gateway | чтение .env в uvicorn |
+| pyyaml | 6.0.3 | MIT | backend, notification, lms-stub, cms-stub, llm-gateway | конфигурация логирования uvicorn |
 | starlette | 1.6.0 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | ASGI-основа FastAPI: маршрутизация, middleware |
-| typing-extensions | 4.16.0 | PSF-2.0 | backend, notification, lms-stub, cms-stub | — |
-| typing-inspection | 0.4.4 | MIT | backend, notification, lms-stub, cms-stub | — |
+| starlette | 1.8.0 | BSD-3-Clause | llm-gateway | ASGI-основа FastAPI: маршрутизация, middleware |
+| typing-extensions | 4.16.0 | PSF-2.0 | backend, notification, lms-stub, cms-stub, llm-gateway | — |
+| typing-inspection | 0.4.4 | MIT | backend, notification, lms-stub, cms-stub, llm-gateway | — |
 | urllib3 | 2.8.0 | MIT | backend | — |
 | uvloop | 0.22.1 | MIT | backend, notification, lms-stub, cms-stub | быстрый цикл событий для uvicorn |
+| uvloop | 0.23.0 | MIT | llm-gateway | быстрый цикл событий для uvicorn |
 | watchfiles | 1.2.0 | MIT | backend, notification, lms-stub, cms-stub | перезапуск uvicorn при разработке |
+| watchfiles | 1.3.0 | MIT | llm-gateway | перезапуск uvicorn при разработке |
 | websockets | 17.1 | BSD-3-Clause | backend, notification, lms-stub, cms-stub | протокол WebSocket для uvicorn[standard] |
+| websockets | 17.2 | BSD-3-Clause | llm-gateway | протокол WebSocket для uvicorn[standard] |
 | yarl | 1.25.1 | Apache-2.0¹ | notification | — |
 
-### Для разработки и тестов — 9
+### Для разработки и тестов — 12
 
 | Пакет | Версия | Лицензия | Где | Назначение |
 |---|---|---|---|---|
 | iniconfig | 2.3.0 | MIT | backend, notification, lms-stub, cms-stub | — |
-| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | backend, notification, lms-stub, cms-stub | — |
+| iniconfig | 2.3.1 | MIT | llm-gateway | — |
+| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | backend, notification, lms-stub, cms-stub, llm-gateway | — |
 | pluggy | 1.6.0 | MIT | backend, notification, lms-stub, cms-stub | — |
-| pygments | 2.21.0 | BSD-2-Clause | backend, notification, lms-stub, cms-stub | — |
+| pluggy | 1.7.0 | MIT | llm-gateway | — |
+| pygments | 2.21.0 | BSD-2-Clause | backend, notification, lms-stub, cms-stub, llm-gateway | — |
 | pytest | 8.4.2 | MIT | lms-stub, cms-stub | тесты |
-| pytest | 9.1.1 | MIT | backend, notification | тесты |
-| pytest-asyncio | 1.4.0 | Apache-2.0 | backend, notification | асинхронные тесты |
+| pytest | 9.1.1 | MIT | backend, notification, llm-gateway | тесты |
+| pytest-asyncio | 1.4.0 | Apache-2.0 | backend, notification, llm-gateway | асинхронные тесты |
 | ruff | 0.16.7 | MIT | notification | линтер и форматтер |
 | ruff | 0.16.8 | MIT | backend, lms-stub, cms-stub | линтер и форматтер |
+| ruff | 0.17.1 | MIT | llm-gateway | линтер и форматтер |
 
 ### Не ставятся на Linux x86_64, CPython 3.12 — 7
 
@@ -161,7 +177,7 @@ Python-пакеты считаются парами «пакет — верси�
 |---|---|---|---|---|
 | async-timeout | 5.0.1 | Apache-2.0¹ | python_full_version < '3.11.3' | backend, notification |
 | backports-asyncio-runner | 1.2.0 | PSF-2.0¹ | python_full_version < '3.11' | backend, notification |
-| colorama | 0.4.6 | BSD-3-Clause¹ | sys_platform == 'win32' | backend, notification, lms-stub, cms-stub |
+| colorama | 0.4.6 | BSD-3-Clause¹ | sys_platform == 'win32' | backend, notification, lms-stub, cms-stub, llm-gateway |
 | exceptiongroup | 1.3.1 | MIT | python_full_version < '3.11' | backend, notification, lms-stub, cms-stub |
 | fonttools | 4.65.0 | MIT | python_full_version < '3.11' | backend |
 | tomli | 2.4.1 | MIT | python_full_version < '3.11' | backend, notification, lms-stub, cms-stub |
@@ -515,6 +531,7 @@ Python-пакеты считаются парами «пакет — верси�
 | crm/backend | `backend/Dockerfile` | ghcr.io/astral-sh/uv:python3.12-bookworm-slim, python:3.12-slim-bookworm |
 | crm/cms-stub | `services/cms-stub/Dockerfile` | ghcr.io/astral-sh/uv:python3.12-bookworm-slim, python:3.12-slim-bookworm |
 | crm/frontend | `frontend/Dockerfile` | node:22-alpine, nginxinc/nginx-unprivileged:1.27-alpine |
+| crm/llm-gateway | `services/llm-gateway/Dockerfile` | ghcr.io/astral-sh/uv:python3.12-bookworm-slim, python:3.12-slim-bookworm |
 | crm/lms-stub | `services/lms-stub/Dockerfile` | ghcr.io/astral-sh/uv:python3.12-bookworm-slim, python:3.12-slim-bookworm |
 | crm/notification | `services/notification/Dockerfile` | ghcr.io/astral-sh/uv:python3.12-bookworm-slim, python:3.12-slim-bookworm |
 
@@ -524,12 +541,12 @@ Python-пакеты считаются парами «пакет — верси�
 |---|---|---|---|---|
 | curlimages/curl | 8.10.1 | curl¹ | вызов служебных эндпоинтов из CronJob и init-контейнеров | `deploy/k8s/base/cronjobs/idempotency-purge-cronjob.yaml`, `deploy/k8s/base/cronjobs/purge-deleted-cronjob.yaml`, `deploy/k8s/base/cronjobs/stuck-check-cronjob.yaml`, `deploy/k8s/base/jobs/minio-init-job.yaml`, `deploy/k8s/base/notification/deployment.yaml` |
 | eqalpha/keydb | sha256:6537505c4235… (v6.3.4) | BSD-3-Clause¹ | кэш, pub/sub событий SSE, идемпотентность | `deploy/compose/docker-compose.dev.yml`, `deploy/k8s/base/keydb/deployment.yaml` |
-| ghcr.io/astral-sh/uv | python3.12-bookworm-slim | MIT OR Apache-2.0¹ | установка зависимостей по uv.lock | `backend/Dockerfile`, `services/cms-stub/Dockerfile`, `services/lms-stub/Dockerfile`, `services/notification/Dockerfile` |
+| ghcr.io/astral-sh/uv | python3.12-bookworm-slim | MIT OR Apache-2.0¹ | установка зависимостей по uv.lock | `backend/Dockerfile`, `services/cms-stub/Dockerfile`, `services/llm-gateway/Dockerfile`, `services/lms-stub/Dockerfile`, `services/notification/Dockerfile` |
 | grafana/k6 | 0.57.0 | AGPL-3.0¹ | нагрузочное тестирование | `deploy/load/README.md` |
 | nginxinc/nginx-unprivileged | 1.27-alpine | BSD-2-Clause¹ | раздача интерфейса без root | `frontend/Dockerfile` |
 | node | 22-alpine | MIT¹ | сборка интерфейса (стадия build) | `frontend/Dockerfile` |
 | postgres | 16-alpine | PostgreSQL¹ | СУБД CRM и Keycloak; psql и pg_isready в init-контейнерах | `.github/workflows/ci.yml`, `deploy/compose/docker-compose.dev.yml`, `deploy/k8s/base/backend/deployment.yaml`, `deploy/k8s/base/jobs/db-migrate-job.yaml`, `deploy/k8s/base/jobs/seed-demo-job.yaml`, `deploy/k8s/base/keycloak/deployment.yaml`, `deploy/k8s/base/postgres/statefulset.yaml` |
-| python | 3.12-slim-bookworm | PSF-2.0¹ | среда выполнения Python-сервисов (runtime-стадия) | `backend/Dockerfile`, `services/cms-stub/Dockerfile`, `services/lms-stub/Dockerfile`, `services/notification/Dockerfile` |
+| python | 3.12-slim-bookworm | PSF-2.0¹ | среда выполнения Python-сервисов (runtime-стадия) | `backend/Dockerfile`, `services/cms-stub/Dockerfile`, `services/llm-gateway/Dockerfile`, `services/lms-stub/Dockerfile`, `services/notification/Dockerfile` |
 | quay.io/jetstack/cert-manager-cainjector | v1.21.2 | Apache-2.0¹ | TLS-сертификаты стенда на ВМ | `deploy/k8s/vm-addons/cert-manager.yaml` |
 | quay.io/jetstack/cert-manager-controller | v1.21.2 | Apache-2.0¹ | TLS-сертификаты стенда на ВМ | `deploy/k8s/vm-addons/cert-manager.yaml` |
 | quay.io/jetstack/cert-manager-webhook | v1.21.2 | Apache-2.0¹ | TLS-сертификаты стенда на ВМ | `deploy/k8s/vm-addons/cert-manager.yaml` |

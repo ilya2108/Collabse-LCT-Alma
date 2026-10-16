@@ -9,6 +9,7 @@ lower_snake_case — pydantic-settings сопоставляет их с UPPER_CA
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,11 +19,14 @@ _DEV_SECRET_DEFAULTS = frozenset({"dev-internal-token", "dev-lms-secret", "dev-c
 
 
 class Settings(BaseSettings):
+    # hide_input_in_errors: ошибка валидатора (fail-closed ниже) иначе печатает в лог пода
+    # repr всего ввода из env — с хвостом LLM_GATEWAY_TOKEN, INTERNAL_API_TOKEN, ключей ПДн
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     # --- общее ---------------------------------------------------------------
@@ -106,6 +110,48 @@ class Settings(BaseSettings):
     # TTL каталога ролей в памяти процесса: сброс идёт по SSE access.changed,
     # TTL — страховка для других реплик (в том числе при недоступном KeyDB)
     rbac_catalog_ttl_seconds: int = 5
+
+    # --- сводки ИИ в отчёте «Активность КАМов» (modules/ai_summary) ---------------------
+    # gigachat — через llm-gateway (единственный под с ключом GigaChat и выходом наружу);
+    # rules — сводка по правилам без ИИ (работает офлайн); stub — детерминированный ответ
+    # без сети для dev и тестов (в контуре запрещён)
+    ai_summary_provider: Literal["gigachat", "rules", "stub"] = "rules"
+    llm_gateway_url: str = "http://localhost:8040"
+    # X-Internal-Token для llm-gateway (Secret crm-llm, backend видит только этот ключ)
+    llm_gateway_token: str = "dev-llm-token"
+    # ожидание ответа шлюза: очередь 180 с + бюджет попыток 120 с + запас 30 с
+    ai_summary_gateway_timeout_seconds: float = Field(default=330.0, gt=0)
+    ai_summary_cache_ttl_seconds: int = Field(default=3600, ge=0)
+    # задача в queued/running дольше — failed: interrupted (рестарт пода посреди вызова)
+    ai_summary_job_stale_seconds: int = Field(default=900, ge=60)
+    ai_summary_retention_days: int = Field(default=7, ge=1)
+    # вторая попытка (ремонт JSON) — только если с начала задачи прошло меньше 200 с
+    ai_summary_llm_attempts: int = Field(default=2, ge=1, le=3)
+    # новых задач GigaChat на пользователя за скользящий час (кэш и присоединение к задаче
+    # в полёте не считаются); сверх — задача сразу failed: rate_limited. 0 — без лимита.
+    # Один пользователь не выбирает дневной бюджет шлюза (≈ 40 сводок) за всех
+    ai_summary_user_hourly_limit: int = Field(default=10, ge=0)
+    # «Обновить» (force) чаще раза в N секунд на тот же ключ отдаёт свежую готовую сводку
+    ai_summary_force_cooldown_seconds: int = Field(default=300, ge=0)
+
+    @model_validator(mode="after")
+    def _ai_summary_provider_in_contour(self) -> Settings:
+        """В контуре stub запрещён, а gigachat без настоящего токена шлюза — ошибка
+        конфигурации (как dev-дефолты секретов ниже)."""
+        if self.app_env in ("k8s", "prod"):
+            if self.ai_summary_provider == "stub":
+                raise ValueError(
+                    f"APP_ENV={self.app_env}: AI_SUMMARY_PROVIDER=stub только для dev и тестов "
+                    "(в контуре — gigachat или rules)"
+                )
+            token = self.llm_gateway_token.strip()
+            if self.ai_summary_provider == "gigachat" and (not token or token == "dev-llm-token"):
+                raise ValueError(
+                    f"APP_ENV={self.app_env}: LLM_GATEWAY_TOKEN пуст или равен dev-дефолту. "
+                    "Смонтируйте Secret crm-llm (make llm-secret) или задайте "
+                    "AI_SUMMARY_PROVIDER=rules"
+                )
+        return self
 
     @model_validator(mode="after")
     def _no_dev_secrets_outside_dev(self) -> Settings:

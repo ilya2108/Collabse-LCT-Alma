@@ -292,6 +292,7 @@ erDiagram
     IMPORT_SESSION ||--|| FILE_OBJECT : "исходный файл в MinIO"
     DEAL_STAGE_HISTORY ||--o{ FILE_OBJECT : "файлы в статусах (0006)"
     APP_USER ||--o{ AUDIT_LOG : "actor"
+    APP_USER ||--o{ AI_SUMMARY_JOB : "requested_by; kam_id (0010)"
 
     APP_USER {
         uuid id PK
@@ -380,6 +381,16 @@ erDiagram
         uuid entity_id
         jsonb before
         jsonb after
+    }
+    AI_SUMMARY_JOB {
+        uuid id PK
+        text kind "team | kam"
+        uuid kam_id FK "только kind = kam"
+        text cache_key "частичный UNIQUE среди queued/running"
+        text status "queued | running | done | failed"
+        jsonb facts "что ушло наружу: агрегаты и псевдонимы"
+        jsonb aliases "КАМ-01 -> uuid, без ФИО"
+        jsonb result "разделы с псевдонимами + checks"
     }
 ```
 
@@ -534,8 +545,9 @@ CREATE INDEX ix_app_role_permission_code ON app_role_permission (permission_code
 
 ### 3.3 Каталог прав и системные роли
 
-Каталог — 61 право в 8 группах (`PERMISSION_GROUPS` в `rbac_catalog.py`; 0004 засеяла 60,
-0006 добавила `universities:assign` — назначение ответственного КАМа за вуз):
+Каталог — 62 права в 8 группах (`PERMISSION_GROUPS` в `rbac_catalog.py`; 0004 засеяла 60,
+0006 добавила `universities:assign` — назначение ответственного КАМа за вуз, 0010 —
+`reports:ai_summary` — сводки ИИ по отчёту КАМов):
 
 | Группа (`group_code`) | Подпись в интерфейсе | Прав |
 |---|---|---:|
@@ -543,13 +555,13 @@ CREATE INDEX ix_app_role_permission_code ON app_role_permission (permission_code
 | `workflow` | Конструктор процессов | 4 |
 | `crm` | Вузы, договоры, продукты, программы | 18 |
 | `talent` | Пул талантов и активности | 9 |
-| `reports` | Аналитика и экспорт | 3 |
+| `reports` | Аналитика и экспорт | 4 |
 | `import` | Импорт | 2 |
 | `notifications` | Уведомления | 3 |
 | `admin` | Администрирование | 9 |
 
-**Права с областью** (`is_scoped`, 18): группа «Заявки», кроме `clients:pii`, весь «Конструктор
-процессов», `reports:read` и `reports:all`. Они действуют только в процессах роли
+**Права с областью** (`is_scoped`, 19): группа «Заявки», кроме `clients:pii`, весь «Конструктор
+процессов», `reports:read`, `reports:all` и `reports:ai_summary`. Они действуют только в процессах роли
 (`workflow_types`) и с её областью записей (`record_scope`). Остальные права общие
 (справочники, студенты, импорт, админка) и от процесса не зависят. У права есть зависимости
 (`requires`): роль с правом без его зависимостей не сохранится (400 `permission_dependency`),
@@ -559,8 +571,8 @@ CREATE INDEX ix_app_role_permission_code ON app_role_permission (permission_code
 
 | Код | Название | Прав по умолчанию | Особенности |
 |---|---|---:|---|
-| `admin` | Администратор | 60 | все права, кроме `requests:kam`; `is_locked` — права и область не меняются, роль не удаляется |
-| `head_kam` | Руководитель КАМов | 41 | права КАМа без `requests:kam` + чужие заявки и назначение ответственных, пакеты изменений схемы (публикует admin), правка чужих вузов и договоров, назначение ответственного КАМа за вуз (`universities:assign`), продукты и активности, отчёты по всем КАМам, просмотр правил уведомлений и списка пользователей |
+| `admin` | Администратор | 61 | все права, кроме `requests:kam`; `is_locked` — права и область не меняются, роль не удаляется |
+| `head_kam` | Руководитель КАМов | 42 | права КАМа без `requests:kam` + чужие заявки и назначение ответственных, пакеты изменений схемы (публикует admin), правка чужих вузов и договоров, назначение ответственного КАМа за вуз (`universities:assign`), продукты и активности, отчёты по всем КАМам, сводки ИИ (`reports:ai_summary`, 0010), просмотр правил уведомлений и списка пользователей |
 | `kam` | КАМ | 28 | свой портфель: видит все заявки, правит свои; `requests:kam` — попадает в отчёты по КАМам и выбор КАМа |
 | `observer` | Наблюдатель | 14 | только чтение, отчёты по всем КАМам, журнал аудита; ПДн маскированы, раскрытия нет |
 
@@ -1768,7 +1780,7 @@ Seed `app_setting` (`APP_SETTINGS` в `app/tools/seed.py`):
 {"stuck_threshold_days_default": {"value": 14},
  "stuck_check_enabled": {"value": true},
  "stuck_escalate_to_manager": {"value": true},
- "feature_flags": {"auto_ranking": false, "report_pdf": true, "llm_features": false},
+ "feature_flags": {"auto_ranking": false, "report_pdf": true, "ai_summaries": true},
  "integration_mode": {"value": "http"},
  "file_delivery": {"value": "proxy"},
  "notification_quiet_hours": {"value": {"from": "21:00", "to": "09:00", "tz": "Europe/Moscow"}}}
@@ -1778,6 +1790,9 @@ Seed `app_setting` (`APP_SETTINGS` в `app/tools/seed.py`):
   значение `PUT /admin/settings` отклоняет. Миграция 0003 привела сохранённое `stream` к `http`.
 - `feature_flags.report_pdf` закрывает только общую табличную PDF-выгрузку дашборда; PDF отчёта
   «Активность КАМов» флагом не закрыт.
+- `feature_flags.ai_summaries` — «Сводка ИИ» в отчёте «Активность КАМов» (9.7): по умолчанию в
+  коде выключен (`KNOWN_FLAGS`), демо-сид включает. Заменил пустой заблокированный флаг
+  `llm_features` (за ним не было кода); сохранённый ключ `llm_features` игнорируется.
 - `notification_quiet_hours` — зарезервированная настройка, в MVP не применяется.
 
 Seed `notification_rule` (дефолтные правила из решения кейсодержателя):
@@ -1877,6 +1892,65 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
   `IDEMPOTENCY_MAX_RESPONSE_BYTES` (1 МиБ). Вебхуки `/integrations/{lms,cms}/webhook` исключены:
   у них своя идемпотентность по `event_id` (9.3).
 
+### 9.7 `ai_summary_job` — задачи «Сводки ИИ» (миграция 0010)
+
+Задача текстовой сводки фактов по отчёту «Активность КАМов» (api-contract.md §7.2.3): по
+команде (`kind = 'team'`) или по КАМу (`'kam'`). В таблице, а не в KeyDB: POST и опрос GET
+попадают в разные реплики и воркеры; KeyDB настроен без persistence и с вытеснением LRU, а
+обёртки кэша молча глотают сбои — статус задачи пропал бы посреди опроса. Нужны атомарная
+дедупликация задач в полёте между репликами (частичный UNIQUE + `INSERT … ON CONFLICT DO
+NOTHING`) и кэш на час, который переживает рестарты.
+
+```sql
+CREATE TABLE ai_summary_job (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind           text NOT NULL CHECK (kind IN ('team','kam')),
+    kam_id         uuid REFERENCES app_user(id) ON DELETE CASCADE,
+    scope_key      text NOT NULL,                 -- DealScope.cache_key() области сводок
+    params         jsonb NOT NULL,                -- фильтры после подстановки периода
+    mode           text NOT NULL CHECK (mode IN ('auto','rules')),
+    provider       text NOT NULL CHECK (provider IN ('gigachat','rules','stub')),
+    prompt_version text NOT NULL,
+    input_sha256   text NOT NULL,                 -- версия данных = sha256 канонических фактов
+    cache_key      text NOT NULL,                 -- sha256(kind|kam_id|scope_key|params|provider|prompt_version|input_sha256)
+    status         text NOT NULL CHECK (status IN ('queued','running','done','failed')),
+    facts          jsonb NOT NULL,                -- ровно то, что уходит/ушло наружу (без ПДн)
+    aliases        jsonb NOT NULL,                -- {"КАМ-01": "<uuid>"} — ФИО в таблице нет
+    result         jsonb,                         -- разделы С ПСЕВДОНИМАМИ + checks + model + source
+    error_code     text,
+    error_message  text,
+    model          text,
+    tokens_in      int, tokens_out int, latency_ms int,
+    attempts       int NOT NULL DEFAULT 0,
+    requested_by   uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    started_at     timestamptz,
+    finished_at    timestamptz,
+    CONSTRAINT ck_ai_summary_job_kam CHECK ((kind = 'kam') = (kam_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX uq_ai_summary_job_inflight ON ai_summary_job (cache_key) WHERE status IN ('queued','running');
+CREATE INDEX ix_ai_summary_job_cache   ON ai_summary_job (cache_key, finished_at DESC) WHERE status = 'done';
+CREATE INDEX ix_ai_summary_job_queue   ON ai_summary_job (created_at) WHERE status IN ('queued','running');
+CREATE INDEX ix_ai_summary_job_created ON ai_summary_job (created_at);
+```
+
+Правила (`app/modules/ai_summary/service.py`):
+
+- **Кэш** — готовая задача (`done`, `finished_at` не старше `AI_SUMMARY_CACHE_TTL_SECONDS`,
+  1 ч) с тем же `cache_key`; `force` идёт мимо кэша. Провал не кэшируется.
+- **Дедупликация** — `INSERT … ON CONFLICT (cache_key) WHERE status IN ('queued','running') DO
+  NOTHING RETURNING id`: строка не вставилась — запрос присоединяется к задаче в полёте.
+- **Выполнение** — `UPDATE … SET status='running' WHERE status='queued'` (одна реплика берёт
+  задачу), вызов шлюза вне транзакции, запись результата и аудит `ai.summary_generated` одной
+  транзакцией.
+- **Ленивое обслуживание** при создании задачи: `queued`/`running` старше
+  `AI_SUMMARY_JOB_STALE_SECONDS` (15 мин) → `failed`, `error_code = 'interrupted'` (то же при
+  чтении); строки старше `AI_SUMMARY_RETENTION_DAYS` (7) удаляются.
+- **ПДн**: в `facts` только агрегаты, очищенные названия этапов, метки процессов и псевдонимы;
+  в `aliases` — псевдоним → id; ФИО подставляются при чтении из `app_user`. Сброс стенда
+  очищает таблицу (её нет в `RESET_KEEP_TABLES`); удаление пользователя удаляет его задачи
+  (CASCADE). Аудит ссылается на задачу по `entity_id` без FK.
+
 ---
 
 ## 10. Кэширование в KeyDB
@@ -1909,6 +1983,8 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
 - **каталог ролей и прав** — память процесса backend, TTL 5 с, сброс по SSE `access.changed`
   (3.4): лишний сетевой запрос на каждый HTTP-запрос не нужен;
 - **шина интеграций** — режима KeyDB Streams нет, источник истины — outbox `integration_event` (9.3);
+- **задачи и кэш «Сводки ИИ»** — таблица `ai_summary_job` (9.7): статус задачи нужен всем
+  репликам и не должен пропадать при вытеснении LRU;
 - **JWKS realm'а Keycloak** — память процесса (`JwksCache` в `app/core/security.py`), TTL 10 мин,
   внеочередное обновление при токене с неизвестным `kid`.
 
@@ -2028,9 +2104,10 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
 
 ## 13. Сводка объектов
 
-37 таблиц (31 из начальной миграции + `idempotency_key` + три таблицы ролей и прав + две
-таблицы ИТ-направлений) и одно расширение — `pg_trgm`; `gen_random_uuid()` встроен в
-PostgreSQL 13+. Модели — `backend/app/models/` (регистрация всех 37 — `app/models/__init__.py`).
+38 таблиц (31 из начальной миграции + `idempotency_key` + три таблицы ролей и прав + две
+таблицы ИТ-направлений + `ai_summary_job`) и одно расширение — `pg_trgm`; `gen_random_uuid()`
+встроен в PostgreSQL 13+. Модели — `backend/app/models/` (регистрация всех 38 —
+`app/models/__init__.py`).
 Домены:
 
 | Домен | Таблицы |
@@ -2048,6 +2125,7 @@ PostgreSQL 13+. Модели — `backend/app/models/` (регистрация �
 | Нотификации/настройки | `notification_rule`, `notification`, `app_setting` |
 | Аудит | `audit_log` |
 | Идемпотентность API | `idempotency_key` |
+| Сводки ИИ | `ai_summary_job` |
 
 Миграции Alembic (`backend/alembic/versions/`), каждая обратима (`downgrade`):
 
@@ -2062,6 +2140,7 @@ PostgreSQL 13+. Модели — `backend/app/models/` (регистрация �
 | `0007` it directions | таблицы `it_direction`, `product_direction`, колонка `program.direction_id` с индексом (4.5.1); описание права `admin:dictionaries`; новых прав нет |
 | `0008` contract product license | поля лицензии в `contract_product` с CHECK и частичным индексом по дате окончания (4.6); `kam_catalog` в CHECK `import_session.entity_type` (9.1); даунгрейд удаляет сессии `kam_catalog` |
 | `0009` notification stuck index | только индекс: частичный `ix_notification_stuck_created (created_at) WHERE event_type = 'request.stuck'` — начало журнала напоминаний для вкладки «Просрочки» (api-contract.md §7.2.2) |
+| `0010` ai summary | таблица `ai_summary_job` с частичным UNIQUE задач в полёте и индексами кэша, очереди и очистки (9.7); право `reports:ai_summary` и его выдача `admin` и `head_kam` (3.3); даунгрейд удаляет право (каскад из ролей) и таблицу |
 
 Обратимость `upgrade head → downgrade base → upgrade head` проверяет `tests/db/test_db_smoke.py`;
 тесты с БД создают схему настоящими миграциями, а не `create_all`.
@@ -2071,6 +2150,7 @@ PostgreSQL 13+. Модели — `backend/app/models/` (регистрация �
 workflow-блок → `deal`-блок → talent-pool-блок → сервисные (`file_object` до `import_session`;
 `import_session` до `student.import_session_id` — этот FK добавляется отдельным `ALTER` после
 создания обеих таблиц, либо `use_alter=True` в SQLAlchemy). Таблицы ролей (0004) ссылаются на
-`app_user` (`created_by`, `updated_by`); `idempotency_key` (0003) внешних ключей не имеет;
+`app_user` (`created_by`, `updated_by`), `ai_summary_job` (0010) — на `app_user` (`kam_id`,
+`requested_by`); `idempotency_key` (0003) внешних ключей не имеет;
 `it_direction` (0007) создаётся до `program.direction_id` и `product_direction`, которые на неё
 ссылаются.

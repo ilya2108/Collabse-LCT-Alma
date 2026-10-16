@@ -60,6 +60,8 @@ export const P = {
   // Аналитика и экспорт
   REPORTS_READ: 'reports:read',
   REPORTS_ALL: 'reports:all',
+  /** Кнопка «Сводка ИИ» в отчёте «Активность КАМов» (с областью). */
+  REPORTS_AI_SUMMARY: 'reports:ai_summary',
   EXPORT_RUN: 'export:run',
   // Импорт
   IMPORT_RUN: 'import:run',
@@ -121,6 +123,7 @@ export const SCOPED_PERMISSIONS: ReadonlySet<string> = new Set<string>([
   P.WORKFLOW_APPROVE,
   P.REPORTS_READ,
   P.REPORTS_ALL,
+  P.REPORTS_AI_SUMMARY,
 ]);
 
 /**

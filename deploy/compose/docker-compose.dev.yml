@@ -1,4 +1,4 @@
-# Дев-стенд: быстрый inner loop (hot-reload backend/notification, vite на хосте).
+# Дев-стенд: быстрый inner loop (hot-reload backend/notification/llm-gateway, vite на хосте).
 # Кластер (make k8s-up) — для стенда и демо, compose — для разработки.
 # Окружение: deploy/compose/.env (генерируется `make dev-env`).
 # Фронтенд в dev запускается на хосте: cd frontend && npm run dev (порт 5173,
@@ -120,6 +120,10 @@ services:
       LMS_WEBHOOK_SECRET: ${LMS_WEBHOOK_SECRET:-dev-lms-secret}
       CMS_WEBHOOK_SECRET: ${CMS_WEBHOOK_SECRET:-dev-cms-secret}
       STUCK_DEFAULT_DAYS: "14"
+      # сводки ИИ: gigachat — через llm-gateway (пустой ключ => сводка по правилам), rules — без ИИ
+      AI_SUMMARY_PROVIDER: ${AI_SUMMARY_PROVIDER:-gigachat}
+      LLM_GATEWAY_URL: http://llm-gateway:8040
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-dev-llm-token}
     volumes: [../../backend:/app] # hot-reload
     ports: ["8000:8000"]
     depends_on:
@@ -148,6 +152,31 @@ services:
     ports: ["8010:8010"]
     depends_on:
       keycloak: {condition: service_healthy}
+
+  # шлюз к GigaChat: единственный держатель ключа (в k8s — второй под с egress, DMZ).
+  # Ключ — в deploy/compose/.env: make llm-secret LLM_SRC=<файл с GIGACHAT_*> OVERLAY=compose
+  llm-gateway:
+    build: {context: ../../services/llm-gateway, target: builder}
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8040", "--reload"]
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-gigachat} # stub — без сети и ключа
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-dev-llm-token}
+      GIGACHAT_CREDENTIALS: ${GIGACHAT_CREDENTIALS:-} # пусто => 503 llm_not_configured
+      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      GIGACHAT_MODEL_STRONG: ${GIGACHAT_MODEL_STRONG:-GigaChat-2-Pro}
+      GIGACHAT_MODEL_FAST: ${GIGACHAT_MODEL_FAST:-GigaChat-2}
+      GIGACHAT_CA_BUNDLE: /etc/alma/certs/russian_trusted_bundle.pem
+      LLM_MAX_CONCURRENCY: "1" # бесплатный тариф GIGACHAT_API_PERS — один поток
+    volumes:
+      - ../../services/llm-gateway:/app
+      # venv образа, а не хостовый (.venv на macOS для pytest): иначе uv пересоздал бы его
+      # в рабочей копии под Linux
+      - /app/.venv
+      # тот же PEM НУЦ, что и в ConfigMap llm-gateway-ca (копия одна)
+      - ../k8s/base/llm-gateway/certs:/etc/alma/certs:ro
+    # только loopback: backend ходит по сети compose, а 0.0.0.0 у Docker Desktop — это LAN
+    # (с настоящим ключом шлюз был бы открыт всей Wi-Fi площадки)
+    ports: ["127.0.0.1:8040:8040"]
 
   lms-stub:
     build: {context: ../../services/lms-stub}

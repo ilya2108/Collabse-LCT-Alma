@@ -23,6 +23,8 @@ from app.core.outbox import outbox_relay_loop
 from app.core.sse import sse_listener_loop
 from app.modules.access.router import router as access_router
 from app.modules.admin.router import router as admin_router
+from app.modules.ai_summary import runner as ai_summary_runner
+from app.modules.ai_summary.router import router as ai_summary_router
 from app.modules.auth.router import router as auth_router
 from app.modules.crm.router import router as crm_router
 from app.modules.files.router import router as files_router
@@ -57,6 +59,8 @@ async def lifespan(app: FastAPI):
     for task in background_tasks:
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    # незавершённые сводки ИИ: отмена и сразу failed: interrupted (не успели — stale-логика)
+    await ai_summary_runner.shutdown()
     await close_cache()
     await dispose_engine()
 
@@ -94,6 +98,7 @@ def create_app() -> FastAPI:
     api.include_router(reporting_router)
     api.include_router(interactions_router)  # «Взаимодействия за период» (ТЗ ФТ4)
     api.include_router(sla_router)  # «Просрочки» (api-contract.md §7.2.2)
+    api.include_router(ai_summary_router)  # «Сводка ИИ» (api-contract.md §7.2.3)
     api.include_router(talent_pool_router)
     api.include_router(notifications_router)
     api.include_router(files_router)

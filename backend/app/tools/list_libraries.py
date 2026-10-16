@@ -48,6 +48,7 @@ PY_PROJECTS: tuple[tuple[str, str], ...] = (
     ("notification", "services/notification"),
     ("lms-stub", "services/lms-stub"),
     ("cms-stub", "services/cms-stub"),
+    ("llm-gateway", "services/llm-gateway"),
 )
 
 # целевая платформа образов: python:3.12-slim-bookworm, linux/amd64

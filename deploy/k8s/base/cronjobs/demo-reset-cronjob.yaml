@@ -44,6 +44,9 @@ spec:
                 # один процесс сида: два соединения — бюджет PostgreSQL см. load-report.md §5
                 - {name: DB_POOL_SIZE, value: "2"}
                 - {name: DB_MAX_OVERFLOW, value: "0"}
+                # шлюз сиду не нужен: rules перекрывает gigachat из crm-config, и fail-fast
+                # Settings не требует токен шлюза (секрет crm-llm сюда не монтируется)
+                - {name: AI_SUMMARY_PROVIDER, value: rules}
               envFrom:
                 - configMapRef: {name: crm-config}
                 - secretRef: {name: crm-db}

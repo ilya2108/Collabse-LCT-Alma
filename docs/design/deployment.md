@@ -13,9 +13,9 @@
 ## 0. TL;DR
 
 - **Kubernetes — витрина решения.** Один kustomize `base` + три overlay: `minikube` и `k3d` — локальный стенд, `vm` — публичный демо-стенд на голом k3s с TLS (§4.3). В кластере: Deployments c HPA и probes, StatefulSet'ы с PVC, Jobs (миграции/сиды/бакеты), три CronJob (зависшие заявки, физическое удаление по 152-ФЗ, очистка ключей идемпотентности) и приостановленный CronJob-шаблон `demo-reset` (сброс стенда к показу, §3.8), Ingress, NetworkPolicy как иллюстрация закрытого контура.
-- **Модульный монолит + 3 сервиса-сателлита** (notification, lms-stub, cms-stub) — осознанный выбор, допустимый по решениям кейсодержателя («допустимы монолит или микросервисы»); обоснование в §1.
+- **Модульный монолит + 4 сервиса-сателлита** (notification, llm-gateway, lms-stub, cms-stub) — осознанный выбор, допустимый по решениям кейсодержателя («допустимы монолит или микросервисы»); обоснование в §1.
 - **152-ФЗ:** ключ шифрования ПДн живёт только в k8s Secret (`crm-pii`), генерируется при установке, в git не попадает.
-- **Закрытый контур:** default-deny NetworkPolicy, точка-точка backend↔stubs/БД; notification-gateway — единственный pod с egress в интернет, в проде выносится в DMZ (диаграмма в §3.11).
+- **Закрытый контур:** default-deny NetworkPolicy, точка-точка backend↔stubs/БД; у ядра egress наружу нет. Выходят только два DMZ-пода: notification-gateway (Telegram) и llm-gateway (GigaChat для «Сводки ИИ», TCP 443/9443), в проде оба выносятся в DMZ (диаграмма в §3.11).
 - **300+ параллельных пользователей:** HPA backend 2→6 реплик + расчёт ёмкости, бюджет соединений PostgreSQL и k6-сценарий (§8) — прямой ответ кейсодержателю; профили НФТ «50 пользователей» и «10 параллельных отчётов» — §8.2.
 - Локальная разработка — `docker-compose.dev.yml` (`make dev`), стенд — `make k8s-up` (k3d) / `make k8s-up-minikube`, публичный демо-стенд — `make vm-install` + `make vm-deploy`.
 - **nip.io и Let's Encrypt — только для демо-стенда.** В проде — корпоративный DNS, ingress-контроллер контура заказчика и сертификат внутреннего CA; меняется один overlay, код и `base` — нет (§4.4).
@@ -29,6 +29,7 @@
 | notification (FastAPI+aiogram) | 8010 | 8010 | long-polling к Telegram |
 | lms-stub | 8020 | 8020 | |
 | cms-stub | 8030 | 8030 | |
+| llm-gateway (FastAPI + httpx) | 8040 | 8040 | только для backend; один процесс uvicorn, 1 реплика |
 | keycloak | 8080 (+9000 mgmt) | 8080 | health на mgmt-порту 9000 |
 | postgres | 5432 | 5432 | |
 | minio | 9000 / 9001 | 9000 / 9001 | API / Console |
@@ -49,7 +50,8 @@
 
 Где границы сервисов настоящие — там они и проведены:
 
-- **notification-service** — другой контур безопасности (единственный egress в интернет → DMZ), другой runtime-паттерн (long-polling aiogram, долгоживущее соединение), независимый цикл падений: лежащий Telegram не должен трогать CRM.
+- **notification-service** — другой контур безопасности (egress в интернет только к Telegram → DMZ), другой runtime-паттерн (long-polling aiogram, долгоживущее соединение), независимый цикл падений: лежащий Telegram не должен трогать CRM.
+- **llm-gateway** — тот же довод, что у notification: единственный, кто знает ключ GigaChat и ходит наружу (443/9443); ядро остаётся без egress. Шлюз «глупый» (сообщения → текст и usage), а промпт, факты и проверка чисел — в модуле backend `ai_summary`: ключ и предметная логика в разных подах. Один поток бесплатного тарифа держит очередь в шлюзе.
 - **lms-stub / cms-stub** — по определению имитируют *внешние* системы; отдельные процессы делают проверку двусторонности честной (проверяющий видит, что данные реально пришли по сети в другую систему).
 
 Почему при монолите всё равно Kubernetes: k8s даёт нам не «микросервисность», а операционные примитивы, которые прямо отвечают требованиям — HPA (300+ пользователей), CronJob (зависшие заявки, очистки), NetworkPolicy (закрытый контур), Jobs (миграции/сиды), probes и самовосстановление. И тот же манифест без изменений разворачивается в контуре заказчика (§4.4).
@@ -165,6 +167,17 @@ aiogram запускается как background-task внутри того же
 
 Тот же шаблон; `EXPOSE 8020` / `EXPOSE 8030`, `CMD` с соответствующим портом. У заглушек есть мини-UI (одна HTML-страница «журнал полученных вызовов») — это то, что проверяющий открывает для проверки двусторонности.
 
+### 2.5 llm-gateway — `services/llm-gateway/Dockerfile`
+
+Копия шаблона notification (uv builder → `python:3.12-slim-bookworm`, non-root 10001), новых сторонних образов нет:
+
+```dockerfile
+EXPOSE 8040
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8040"]   # ОДИН воркер
+```
+
+Один процесс без `--workers`: семафор на один поток GigaChat, очередь и дневной счётчик токенов живут в памяти процесса. Зависимости — FastAPI, uvicorn, httpx, pydantic, certifi (без SDK `gigachat`: OAuth, TLS-бандл НУЦ и ретраи под явным контролем). Контракт, настройки и смоук — `services/llm-gateway/README.md`.
+
 ---
 
 ## 3. Kubernetes: kustomize base
@@ -189,6 +202,10 @@ deploy/k8s/
 │   ├── notification/
 │   │   ├── deployment.yaml
 │   │   └── service.yaml
+│   ├── llm-gateway/
+│   │   ├── deployment.yaml             # 1 реплика, strategy Recreate, tier=dmz
+│   │   ├── service.yaml
+│   │   └── certs/russian_trusted_bundle.pem  # НУЦ Минцифры → ConfigMap llm-gateway-ca
 │   ├── lms-stub/  {deployment,service}.yaml
 │   ├── cms-stub/  {deployment,service}.yaml
 │   ├── postgres/
@@ -224,7 +241,8 @@ deploy/k8s/
 │       ├── 31-data-layer.yaml
 │       ├── 32-keycloak.yaml
 │       ├── 35-jobs-stubs.yaml          # Jobs/CronJob и заглушки под default-deny
-│       └── 40-notification-dmz.yaml
+│       ├── 40-notification-dmz.yaml
+│       └── 41-llm-gateway-dmz.yaml     # egress только GigaChat (443, 9443)
 ├── components/
 │   └── prod-hardening/                 # сужение доверия при передаче стенда наружу (§4.4)
 ├── overlays/
@@ -273,6 +291,8 @@ resources:
   - frontend/service.yaml
   - notification/deployment.yaml
   - notification/service.yaml
+  - llm-gateway/deployment.yaml       # шлюз GigaChat (сводки ИИ): второй под с egress
+  - llm-gateway/service.yaml
   - lms-stub/deployment.yaml
   - lms-stub/service.yaml
   - cms-stub/deployment.yaml
@@ -293,6 +313,11 @@ resources:
   - networkpolicy/32-keycloak.yaml
   - networkpolicy/35-jobs-stubs.yaml
   - networkpolicy/40-notification-dmz.yaml
+  - networkpolicy/41-llm-gateway-dmz.yaml
+# PEM НУЦ — рядом с манифестом шлюза: kustomize не читает файлы вне корня kustomization
+configMapGenerator:
+  - name: llm-gateway-ca
+    files: [llm-gateway/certs/russian_trusted_bundle.pem]
 labels:
   - includeSelectors: false
     pairs:
@@ -303,8 +328,8 @@ labels:
 
 | Метка | Значения |
 |---|---|
-| `app.kubernetes.io/name` | `backend`, `frontend`, `notification`, `lms-stub`, `cms-stub`, `postgres`, `minio`, `keydb`, `keycloak` |
-| `tier` | `app` (backend, frontend, stubs), `data` (postgres, minio, keydb), `iam` (keycloak), `dmz` (notification) |
+| `app.kubernetes.io/name` | `backend`, `frontend`, `notification`, `llm-gateway`, `lms-stub`, `cms-stub`, `postgres`, `minio`, `keydb`, `keycloak` |
+| `tier` | `app` (backend, frontend, stubs), `data` (postgres, minio, keydb), `iam` (keycloak), `dmz` (notification, llm-gateway) |
 | `role` | `job` — у подов Jobs/CronJob (для NetworkPolicy) |
 
 ### 3.2 Общая топология (диаграмма)
@@ -324,6 +349,7 @@ flowchart TB
         end
         subgraph dmzseg["tier=dmz"]
             NT["Deployment notification x1"]
+            LGW["Deployment llm-gateway x1 (Recreate)"]
         end
         subgraph iam["tier=iam"]
             KC["Deployment keycloak x1"]
@@ -350,6 +376,7 @@ flowchart TB
     BE <-->|"JSON API (двусторонне)"| LMS
     BE <-->|"JSON API (двусторонне)"| CMS
     BE -->|"POST /notify"| NT
+    BE -->|"POST /v1/chat (сводки ИИ)"| LGW
     NT -->|"client credentials"| KC
     NT -->|"вызовы API по ролям"| BE
     KC --> PG
@@ -364,9 +391,10 @@ flowchart TB
 
 | Deployment | Реплики | Образ | initContainers | Ключевые env (источник) |
 |---|---|---|---|---|
-| `backend` | 2 (HPA до 6) | `crm/backend:dev` | `wait-postgres`, `wait-migrations` | `DATABASE_URL` (Secret `crm-db`), `PII_FERNET_KEYS`/`PII_HMAC_KEY` (Secret `crm-pii`), `S3_*` (Secret `crm-s3`), `KEYDB_URL`, `KEYCLOAK_*`, `LMS_BASE_URL`, `CMS_BASE_URL`, `NOTIFICATION_BASE_URL`, `INTERNAL_API_TOKEN` (Secret `crm-internal`) — несекретное из ConfigMap `crm-config` |
+| `backend` | 2 (HPA до 6) | `crm/backend:dev` | `wait-postgres`, `wait-migrations` | `DATABASE_URL` (Secret `crm-db`), `PII_FERNET_KEYS`/`PII_HMAC_KEY` (Secret `crm-pii`), `S3_*` (Secret `crm-s3`), `KEYDB_URL`, `KEYCLOAK_*`, `LMS_BASE_URL`, `CMS_BASE_URL`, `NOTIFICATION_BASE_URL`, `INTERNAL_API_TOKEN` (Secret `crm-internal`), `AI_SUMMARY_PROVIDER`, `LLM_GATEWAY_URL` (ConfigMap), `LLM_GATEWAY_TOKEN` (один ключ Secret `crm-llm`, `secretKeyRef`, только контейнер `backend`; `wait-migrations`, Job `seed-demo` и шаблон `demo-reset` перекрывают `AI_SUMMARY_PROVIDER=rules` и токена не получают) — несекретное из ConfigMap `crm-config` |
 | `frontend` | 1 | `crm/frontend:dev` | — | volume `frontend-env` → `/usr/share/nginx/html/config.js` |
 | `notification` | 1 (строго: long-polling — единственный consumer Telegram) | `crm/notification:dev` | `wait-keycloak` | `TELEGRAM_BOT_TOKEN` (Secret `crm-telegram`), `KC_CLIENT_ID=crm-notification`, `KC_CLIENT_SECRET` (Secret `crm-keycloak-clients`), `BACKEND_BASE_URL`, `INTERNAL_API_TOKEN` |
+| `llm-gateway` | 1 (строго, `strategy: Recreate`: бесплатный тариф GigaChat — один поток, семафор и дневной лимит — в памяти пода) | `crm/llm-gateway:dev` | — (не нужны ни Keycloak, ни БД) | `GIGACHAT_CREDENTIALS`, `GIGACHAT_SCOPE`, `GIGACHAT_MODEL_*`, `LLM_GATEWAY_TOKEN` (Secret `crm-llm`, `envFrom`); `APP_ENV=k8s`, `LLM_PROVIDER=gigachat`, `GIGACHAT_CA_BUNDLE=/etc/alma/certs/russian_trusted_bundle.pem` (volume ConfigMap `llm-gateway-ca`), `LLM_MAX_CONCURRENCY=1`, `LLM_QUEUE_MAX=8`, `LLM_TIMEOUT_SECONDS=120`, `LLM_QUEUE_TIMEOUT_SECONDS=180`, `LLM_DAILY_TOKEN_CAP=200000`; `readOnlyRootFilesystem`, `emptyDir` на `/tmp`; ресурсы 50m/96Mi → 300m/256Mi |
 | `lms-stub` | 1 | `crm/lms-stub:dev` | — | `CRM_WEBHOOK_URL=http://backend:8000/api/v1/integrations/lms/webhook`, `LMS_WEBHOOK_SECRET` (Secret `crm-internal`) — HMAC-подпись X-Webhook-Signature |
 | `cms-stub` | 1 | `crm/cms-stub:dev` | — | аналогично: `.../cms/webhook`, `CMS_WEBHOOK_SECRET` |
 
@@ -446,6 +474,7 @@ spec:
 | backend | `GET /healthz/live` (без зависимостей) | `GET /healthz/ready` (SELECT 1 в PG; PING в KeyDB; head Alembic применён; bucket-check MinIO — с кэшем 10 с) | 60 с |
 | frontend | `GET /healthz` :8080 | тот же | — |
 | notification | `GET /healthz` :8010 | `GET /healthz/ready` (бот запущен, Keycloak-токен получен) | 60 с |
+| llm-gateway | `GET /healthz` :8040 | `GET /readyz` (200, пока процесс жив: доступность GigaChat готовность не меняет — под не флапает при проблемах с интернетом) | 60 с |
 | lms/cms-stub | `GET /healthz` | тот же | — |
 | keycloak | `GET /health/live` :9000 | `GET /health/ready` :9000 | 300 с (JVM + import realm) |
 | postgres | `exec pg_isready -U $POSTGRES_USER` | тот же | — |
@@ -610,6 +639,7 @@ spec:
 | `notification` | notification | 8010 → 8010 |
 | `lms-stub` | lms-stub | 8020 → 8020 |
 | `cms-stub` | cms-stub | 8030 → 8030 |
+| `llm-gateway` | llm-gateway | 8040 → 8040 (только для backend) |
 | `keycloak` | keycloak | 8080 → 8080 |
 | `postgres`, `postgres-hl` (headless) | postgres | 5432 → 5432 |
 | `minio` | minio | 9000 → 9000, 9001 → 9001 |
@@ -669,10 +699,11 @@ spec:
 
 | ConfigMap | Ключи | Потребители |
 |---|---|---|
-| `crm-config` | `APP_ENV=k8s`; `KEYCLOAK_INTERNAL_URL=http://keycloak:8080`; `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm`; `KEYCLOAK_REALM=crm`; `KEYCLOAK_AUDIENCES=account,crm-frontend,crm-notification,crm-integration,crm-loadtest` (последний — только для демо, его убирает `prod-hardening`, §4.4); `KEYDB_URL=redis://keydb:6379/0`; `S3_ENDPOINT=http://minio:9000`; `S3_BUCKET_FILES=crm-files`; `S3_BUCKET_IMPORTS=crm-imports`; `S3_BUCKET_EXPORTS=crm-exports`; `LMS_BASE_URL=http://lms-stub:8020`; `CMS_BASE_URL=http://cms-stub:8030`; `NOTIFICATION_BASE_URL=http://notification:8010`; `BACKEND_BASE_URL=http://backend:8000`; `STUCK_DEFAULT_DAYS=14` (сидирует `app_setting['stuck_threshold_days_default']`; фактические пороги per-workflow/per-этап хранятся в БД и настраиваются в админке/конструкторе); `DB_POOL_SIZE=4`, `DB_MAX_OVERFLOW=2` — пул на процесс uvicorn, бюджет соединений — §8.4 | backend, notification, jobs |
+| `crm-config` | `APP_ENV=k8s`; `KEYCLOAK_INTERNAL_URL=http://keycloak:8080`; `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm`; `KEYCLOAK_REALM=crm`; `KEYCLOAK_AUDIENCES=account,crm-frontend,crm-notification,crm-integration,crm-loadtest` (последний — только для демо, его убирает `prod-hardening`, §4.4); `KEYDB_URL=redis://keydb:6379/0`; `S3_ENDPOINT=http://minio:9000`; `S3_BUCKET_FILES=crm-files`; `S3_BUCKET_IMPORTS=crm-imports`; `S3_BUCKET_EXPORTS=crm-exports`; `LMS_BASE_URL=http://lms-stub:8020`; `CMS_BASE_URL=http://cms-stub:8030`; `NOTIFICATION_BASE_URL=http://notification:8010`; `BACKEND_BASE_URL=http://backend:8000`; `STUCK_DEFAULT_DAYS=14` (сидирует `app_setting['stuck_threshold_days_default']`; фактические пороги per-workflow/per-этап хранятся в БД и настраиваются в админке/конструкторе); `DB_POOL_SIZE=4`, `DB_MAX_OVERFLOW=2` — пул на процесс uvicorn, бюджет соединений — §8.4; `AI_SUMMARY_PROVIDER=gigachat` (сводки ИИ через шлюз; `rules` — без ИИ), `LLM_GATEWAY_URL=http://llm-gateway:8040` | backend, notification, jobs |
 | `frontend-env` | файл `config.js` (`KEYCLOAK_URL` патчат overlay k3d и vm): `window.__ENV__={KEYCLOAK_URL:"http://id.crm.local",KEYCLOAK_REALM:"crm",KEYCLOAK_CLIENT_ID:"crm-frontend",API_BASE:"/api"}` | frontend (volume) |
 | `postgres-init` | `01-init.sql` | postgres (initdb) |
 | `keycloak-realm` | `crm-realm.json` | keycloak (import) |
+| `llm-gateway-ca` | `russian_trusted_bundle.pem` — Russian Trusted Root CA + Sub CA НУЦ Минцифры (цепочка `*.devices.sberbank.ru`, в certifi её нет); `configMapGenerator` base с хеш-суффиксом — смена бандла вызывает rollout. **Sub CA действует до 06.03.2027**: ротация — заменить PEM в `deploy/k8s/base/llm-gateway/certs/` и `make k8s-apply`, пересборка образа не нужна | llm-gateway (volume `/etc/alma/certs`) |
 
 **Secrets (все `type: Opaque`; создаются `secretGenerator` overlay-я из gitignored `secrets.env`):**
 
@@ -685,13 +716,16 @@ spec:
 | `crm-keycloak-clients` | `NOTIFICATION_CLIENT_SECRET`, `INTEGRATION_CLIENT_SECRET`, `LOADTEST_CLIENT_SECRET` | notification, stubs (опц.), k6 | client secrets confidential-клиентов (те же значения подставляются в realm-JSON при генерации, см. `make k8s-secrets`) |
 | `crm-telegram` | `TELEGRAM_BOT_TOKEN` | **только notification** | backend токена бота не видит — часть DMZ-стори |
 | `crm-internal` | `INTERNAL_API_TOKEN` — 32 hex; `LMS_WEBHOOK_SECRET`, `CMS_WEBHOOK_SECRET` — per-system секреты HMAC-подписи webhook'ов (api-contract.md §13.6) | backend, notification, stubs, CronJob | межсервисные вызовы внутри контура: заголовок `X-Internal-Token`; подпись `X-Webhook-Signature` |
+| `crm-llm` | `GIGACHAT_CREDENTIALS` (Authorization key; пусто — шлюз отвечает `503 llm_not_configured`, CRM предлагает сводку по правилам), `GIGACHAT_SCOPE`, `GIGACHAT_MODEL_STRONG`, `GIGACHAT_MODEL_FAST`; `LLM_GATEWAY_TOKEN` — случайный hex (`make k8s-secrets`) | **`GIGACHAT_*` — только llm-gateway** (`envFrom`); `LLM_GATEWAY_TOKEN` — llm-gateway и контейнер backend точечно через `secretKeyRef` | ключ GigaChat в backend не попадает. Заполняется `make llm-secret LLM_SRC=<файл с GIGACHAT_*> [OVERLAY=…]` — скрипт `deploy/scripts/llm-secret.sh` печатает только имена ключей, файл — `chmod 600` |
 
 Правила:
 - в репозитории лежат только `secrets.env.example` с плейсхолдерами; `make k8s-secrets` генерирует `secrets.env` со случайными значениями;
 - поды получают секреты через `envFrom`/`valueFrom`, никакие секреты не попадают в ConfigMap, аргументы командной строки или образы;
 - матрица «какой под какой Secret видит» выше — минимально необходимая; это же ограничивает blast radius при компрометации пода (152-ФЗ).
 
-`KEYCLOAK_ISSUER` и `KC_HOSTNAME` в base указывают на `id.crm.local`; overlay k3d меняет их на `http://id.crm.localhost`, overlay vm — на `https://id.crm.<IP>.nip.io`. Настройки без значения в ConfigMap берутся из кода (`backend/app/core/config.py`) и переопределяются env: ключи идемпотентности — `IDEMPOTENCY_ENABLED` (вкл.), `IDEMPOTENCY_TTL_HOURS` (24), `IDEMPOTENCY_LEASE_SECONDS` (60); TTL кэша каталога ролей в памяти процесса — `RBAC_CATALOG_TTL_SECONDS` (5).
+Fail-closed при `APP_ENV=k8s`: backend не стартует с `AI_SUMMARY_PROVIDER=stub` или с `gigachat` и пустым/dev-токеном шлюза; llm-gateway — с пустым или dev-токеном и с `GIGACHAT_VERIFY_SSL=false`. При любом `APP_ENV` шлюз с настоящим `GIGACHAT_CREDENTIALS` не принимает пустой или dev-токен (401 на все вызовы), а в compose опубликован только на `127.0.0.1:8040`. Ошибки валидации настроек backend и шлюза не печатают значения из env (`hide_input_in_errors`).
+
+`KEYCLOAK_ISSUER` и `KC_HOSTNAME` в base указывают на `id.crm.local`; overlay k3d меняет их на `http://id.crm.localhost`, overlay vm — на `https://id.crm.<IP>.nip.io`. Настройки без значения в ConfigMap берутся из кода (`backend/app/core/config.py`) и переопределяются env: ключи идемпотентности — `IDEMPOTENCY_ENABLED` (вкл.), `IDEMPOTENCY_TTL_HOURS` (24), `IDEMPOTENCY_LEASE_SECONDS` (60); TTL кэша каталога ролей в памяти процесса — `RBAC_CATALOG_TTL_SECONDS` (5); сводки ИИ — `AI_SUMMARY_GATEWAY_TIMEOUT_SECONDS` (330 = очередь 180 + бюджет 120 + запас), `AI_SUMMARY_CACHE_TTL_SECONDS` (3600), `AI_SUMMARY_JOB_STALE_SECONDS` (900), `AI_SUMMARY_RETENTION_DAYS` (7), `AI_SUMMARY_LLM_ATTEMPTS` (2), `AI_SUMMARY_USER_HOURLY_LIMIT` (10 новых задач GigaChat на пользователя в час — один пользователь не выбирает дневной бюджет шлюза за всех), `AI_SUMMARY_FORCE_COOLDOWN_SECONDS` (300).
 
 ### 3.8 Jobs: миграции, бакеты, сиды
 
@@ -881,9 +915,11 @@ flowchart LR
     subgraph internet["Интернет"]
         TG["Telegram Bot API"]
         MAX["Max / Exchange - каналы-заглушки"]
+        GIGA["GigaChat API (Сбер, РФ)"]
     end
     subgraph dmz["DMZ - в проде отдельный сегмент; в прототипе tier=dmz + NetworkPolicy"]
         NT["notification-gateway"]
+        LGW["llm-gateway (ключ GigaChat)"]
     end
     subgraph closed["Закрытый контур - namespace crm, default-deny"]
         direction TB
@@ -900,14 +936,16 @@ flowchart LR
         KC --> PG
     end
     BE -- "единственный канал точка-точка: POST /notify + ответные API-вызовы по ролям" --> NT
-    NT -- "единственный egress наружу (443)" --> TG
+    NT -- "egress наружу: только 443 к Telegram" --> TG
     NT -.-> MAX
+    BE -- "сводки ИИ: POST /v1/chat, только агрегаты и псевдонимы" --> LGW
+    LGW -- "egress наружу: OAuth 9443, chat 443" --> GIGA
 ```
 
 Ключевые тезисы:
 1. **Default-deny на весь namespace** — любой трафик, не разрешённый явно, запрещён (включая egress в интернет: ядро CRM физически не может выйти наружу).
-2. **Точка-точка**: backend разговаривает только с lms-stub, cms-stub, postgres, minio, keydb, keycloak и notification. Заглушки не видят БД. Frontend (nginx со статикой) вообще ни с кем не разговаривает.
-3. **notification — прообраз DMZ**: единственный под с разрешённым egress в интернет; секрет бота видит только он; в целевой архитектуре переезжает в отдельный сегмент без изменения кода (общение с ядром уже только по HTTP точка-точка).
+2. **Точка-точка**: backend разговаривает только с lms-stub, cms-stub, postgres, minio, keydb, keycloak, notification и llm-gateway. Заглушки не видят БД. Frontend (nginx со статикой) вообще ни с кем не разговаривает.
+3. **notification и llm-gateway — прообраз DMZ**: только у них есть egress в интернет — у notification до Telegram (443), у llm-gateway до GigaChat (443 и 9443, OAuth Сбера); секрет бота видит только notification, ключ GigaChat — только llm-gateway. В целевой архитектуре оба переезжают в отдельный сегмент без изменения кода (с ядром — только HTTP точка-точка); шлюз можно переключить на on-prem GigaChat (`GIGACHAT_API_URL`, `GIGACHAT_AUTH_URL`).
 4. Runtime-выхода в интернет у ядра нет и по коду (обогащение из открытых источников — только разовая предзагрузка через админку — решение кейсодержателя), и по сети (NetworkPolicy) — двойной ответ.
 
 Полные манифесты — два эталонных, остальные по матрице:
@@ -923,7 +961,7 @@ spec:
   policyTypes: [Ingress, Egress]
 ```
 
-`networkpolicy/40-notification-dmz.yaml` (единственный egress наружу):
+`networkpolicy/40-notification-dmz.yaml` (egress наружу только к Telegram):
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -954,13 +992,31 @@ spec:
       ports: [{port: 443}]
 ```
 
+`networkpolicy/41-llm-gateway-dmz.yaml` (второй и последний под с egress: только GigaChat):
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: llm-gateway-dmz}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: llm-gateway}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app.kubernetes.io/name: backend}}}]   # POST /v1/chat
+      ports: [{port: 8040}]
+  egress:
+    - to:                                    # GigaChat: OAuth ngw…:9443, chat …:443; DNS — 10-allow-dns
+        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}
+      ports: [{port: 443}, {port: 9443}]
+```
+
 Матрица остальных политик (каждая строка — отдельный манифест по образцу выше):
 
 | Политика | podSelector | Ingress от | Egress к |
 |---|---|---|---|
 | `10-allow-dns` | все поды | — | kube-system:53/UDP,TCP |
 | `20-allow-from-ingress` | frontend, backend, keycloak, lms-stub, cms-stub, minio | namespace ingress-контроллера (`ingress-nginx` / `kube-system` для traefik — задаётся в overlay) | — |
-| `30-backend` | backend | ingress-контроллер; поды `role=job` (CronJob); notification; lms-stub, cms-stub (callbacks) | postgres:5432, minio:9000, keydb:6379, keycloak:8080, lms-stub:8020, cms-stub:8030, notification:8010 |
+| `30-backend` | backend | ingress-контроллер; поды `role=job` (CronJob); notification; lms-stub, cms-stub (callbacks) | postgres:5432, minio:9000, keydb:6379, keycloak:8080, lms-stub:8020, cms-stub:8030, notification:8010, llm-gateway:8040 (сводки ИИ, `POST /v1/chat`) |
 | `31-data-layer` | postgres / minio / keydb | postgres ← backend, keycloak, `role=job`; minio ← backend, `role=job`, ingress-контроллер (Console); keydb ← backend | — (egress не нужен) |
 | `32-keycloak` | keycloak | ingress-контроллер; backend; notification; `role=job` | postgres:5432 |
 | `35-jobs-stubs`: `jobs-egress` | поды `role=job` (Jobs и CronJob) | — | postgres:5432 (миграции, сид), minio:9000, keydb:6379, keycloak:8080, backend:8000 (триггеры stuck-check, purge-deleted, idempotency-purge) |
@@ -969,9 +1025,9 @@ spec:
 
 NetworkPolicy требует разрешения с обеих сторон: egress backend → заглушки (`30-backend`) без `stubs-ingress` отправлял бы outbox-доставку в ретраи и DLQ.
 
-Overlay `vm` добавляет к матрице две точки: `allow-acme-solver` (поды-солверы cert-manager http01 сквозь default-deny) и egress notification до одного IP:порта HTTP-прокси для Telegram Bot API (`patches/netpol-notification-proxy.json`) — DMZ-принцип сохраняется: выход наружу по-прежнему только у notification.
+Overlay `vm` добавляет к матрице две точки: `allow-acme-solver` (поды-солверы cert-manager http01 сквозь default-deny) и egress notification до одного IP:порта HTTP-прокси для Telegram Bot API (`patches/netpol-notification-proxy.json`) — DMZ-принцип сохраняется: выход наружу по-прежнему только у DMZ-подов notification и llm-gateway.
 
-**Enforcement по средам:** k3s (k3d) enforce'ит NetworkPolicy из коробки (встроенный kube-router контроллер); minikube с дефолтным CNI — **нет**, поэтому `make k8s-up-minikube` стартует кластер с `--cni=calico`. Это проверяемо на демо: `kubectl exec` в backend → `curl https://api.telegram.org` падает по timeout, из notification — проходит.
+**Enforcement по средам:** k3s (k3d) enforce'ит NetworkPolicy из коробки (встроенный kube-router контроллер); minikube с дефолтным CNI — **нет**, поэтому `make k8s-up-minikube` стартует кластер с `--cni=calico`. Это проверяемо на демо: `kubectl exec` в backend → `curl https://api.telegram.org` и `curl https://gigachat.devices.sberbank.ru` падают по timeout, из notification проходит Telegram, из llm-gateway — GigaChat (`make llm-smoke-k8s`, результат — `docs/evidence/k8s-evidence.md`).
 
 ---
 
@@ -994,6 +1050,7 @@ Base остаётся полностью рабочим и нейтральны�
 | Ресурсы | как в base | как в base | под скромную VM: backend requests 100m/128Mi, HPA 1→4 реплики; Keycloak requests 512Mi, limit 1Gi |
 | Образы | `minikube image load crm/*:dev` | `k3d image import -c crm crm/*:dev` | `crm/*:vm` под linux/amd64: сборка на машине разработчика, `scp` и `k3s ctr images import` |
 | Секреты | `make k8s-secrets` локально | `make k8s-secrets` локально | генерируются на самой VM (`gen-secrets.sh deploy/k8s/overlays/vm`) и не покидают её |
+| Ключ GigaChat (`crm-llm`) | `make llm-secret LLM_SRC=… OVERLAY=deploy/k8s/overlays/minikube` | `make llm-secret LLM_SRC=…` (оверлей k3d по умолчанию) | кладётся на VPS вручную (`/root/alma-secrets/gigachat.env`), `vm-deploy.sh` переносит его в секрет оверлея; нет файла — сводки только по правилам |
 
 ### 4.2 k3d и minikube
 
@@ -1020,6 +1077,8 @@ secretGenerator:
     envs: [secrets/crm-telegram.env]
   - name: crm-internal
     envs: [secrets/crm-internal.env]
+  - name: crm-llm                # GIGACHAT_* — только llm-gateway; backend берёт один LLM_GATEWAY_TOKEN
+    envs: [secrets/crm-llm.env]
 generatorOptions:
   disableNameSuffixHash: true    # имена секретов зашиты в envFrom подов
 patches:
@@ -1039,6 +1098,8 @@ images:
   - name: crm/frontend
     newTag: dev
   - name: crm/notification
+    newTag: dev
+  - name: crm/llm-gateway
     newTag: dev
   - name: crm/lms-stub
     newTag: dev
@@ -1216,6 +1277,10 @@ services:
       LMS_WEBHOOK_SECRET: ${LMS_WEBHOOK_SECRET:-dev-lms-secret}
       CMS_WEBHOOK_SECRET: ${CMS_WEBHOOK_SECRET:-dev-cms-secret}
       STUCK_DEFAULT_DAYS: "14"
+      # сводки ИИ: gigachat — через llm-gateway (пустой ключ => сводка по правилам), rules — без ИИ
+      AI_SUMMARY_PROVIDER: ${AI_SUMMARY_PROVIDER:-gigachat}
+      LLM_GATEWAY_URL: http://llm-gateway:8040
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-dev-llm-token}
     volumes: [../../backend:/app]        # hot-reload
     ports: ["8000:8000"]
     depends_on:
@@ -1239,6 +1304,25 @@ services:
     ports: ["8010:8010"]
     depends_on:
       keycloak: {condition: service_healthy}
+
+  # шлюз к GigaChat: единственный держатель ключа (в k8s — DMZ-под с egress)
+  llm-gateway:
+    build: {context: ../../services/llm-gateway, target: builder}
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8040", "--reload"]
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-gigachat}          # stub — без сети и ключа
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:-dev-llm-token}
+      GIGACHAT_CREDENTIALS: ${GIGACHAT_CREDENTIALS:-}  # пусто => 503 llm_not_configured
+      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      GIGACHAT_MODEL_STRONG: ${GIGACHAT_MODEL_STRONG:-GigaChat-2-Pro}
+      GIGACHAT_MODEL_FAST: ${GIGACHAT_MODEL_FAST:-GigaChat-2}
+      GIGACHAT_CA_BUNDLE: /etc/alma/certs/russian_trusted_bundle.pem
+      LLM_MAX_CONCURRENCY: "1"                          # бесплатный тариф — один поток
+    volumes:
+      - ../../services/llm-gateway:/app
+      - /app/.venv                                      # venv образа, а не хостовый
+      - ../k8s/base/llm-gateway/certs:/etc/alma/certs:ro  # тот же PEM, что в ConfigMap
+    ports: ["127.0.0.1:8040:8040"]                      # только loopback: 0.0.0.0 — это LAN
 
   lms-stub:
     build: {context: ../../services/lms-stub}
@@ -1265,6 +1349,8 @@ volumes:
   miniodata:
 ```
 
+Ключ GigaChat для compose — в `deploy/compose/.env` (`make llm-secret LLM_SRC=<файл с GIGACHAT_*> OVERLAY=compose`); существующий `.env` генератор не перетирает, поэтому у всех новых переменных — дефолты `${…:-…}`. Без ключа шлюз отвечает `503 llm_not_configured`, кнопка «Сводка ИИ» предлагает сводку по правилам; `AI_SUMMARY_PROVIDER=stub` у backend — детерминированный ответ без шлюза и сети.
+
 Фронтенд в dev-режиме запускается на хосте: `npm run dev` (vite, порт 5173) с прокси в `vite.config.ts`:
 
 ```ts
@@ -1281,10 +1367,10 @@ Realm один на все среды — `deploy/keycloak/realm-crm.json`: в �
 
 | Группа | Цель | Что делает |
 |---|---|---|
-| Разработка | `dev` | compose-стек (инфра + backend/notification/заглушки) + подсказка про `npm run dev` |
+| Разработка | `dev` | compose-стек (инфра + backend/notification/llm-gateway/заглушки) + подсказка про `npm run dev` |
 | | `dev-env` | сгенерировать `deploy/compose/.env`, если его нет (PII-ключи и пр., `deploy/scripts/gen-dotenv.sh`) |
 | | `dev-down` | остановить compose-стек |
-| Образы | `build-images` | собрать `crm/backend`, `crm/frontend`, `crm/notification`, `crm/lms-stub`, `crm/cms-stub` с тегом `:dev` |
+| Образы | `build-images` | собрать `crm/backend`, `crm/frontend`, `crm/notification`, `crm/llm-gateway`, `crm/lms-stub`, `crm/cms-stub` с тегом `:dev` |
 | Kubernetes | `realm-sync` | регенерировать ConfigMap `keycloak-realm` из `deploy/keycloak/realm-crm.json` |
 | | `k8s-secrets` | сгенерировать gitignored-секреты overlay (`OVERLAY=…`); повторный запуск не перетирает |
 | | `k8s-up` | k3d: кластер + импорт образов + `k8s-apply` + подсказка по хостам |
@@ -1292,6 +1378,9 @@ Realm один на все среды — `deploy/keycloak/realm-crm.json`: в �
 | | `k8s-apply` | идемпотентный apply: Jobs `db-migrate`, `seed-demo`, `minio-init` пересоздаются, затем `kubectl wait` по контрольным точкам §7 |
 | | `k8s-validate` | рендер overlay k3d, minikube и vm + kubeconform `-strict` |
 | | `k8s-down` | удалить кластер (k3d или minikube) |
+| Сводки ИИ | `llm-secret` | ключ GigaChat в gitignored-секрет: `LLM_SRC=<файл с GIGACHAT_*>`, `OVERLAY=<оверлей>` или `OVERLAY=compose` (`deploy/compose/.env`); печатает только имена ключей |
+| | `llm-smoke` | живой смоук GigaChat с этой машины (env из `LLM_ENV`, по умолчанию секрет оверлея k3d; бандл НУЦ из репозитория): OAuth, `tier=fast`, `tier=strong` со схемой сводки; тратит токены |
+| | `llm-smoke-k8s` | тот же смоук из пода `llm-gateway` — проверка egress 443/9443 через NetworkPolicy |
 | Публичный VPS | `vm-install` | bootstrap VPS: swap, k3s, ожидание node Ready (идемпотентен) |
 | | `vm-deploy` | amd64-образы → импорт на VPS, `rsync deploy/`, секреты, cert-manager, apply overlay `vm`, smoke (§4.3) |
 | | `vm-smoke` | только smoke-проверки публичных URL |
@@ -1319,6 +1408,7 @@ k8s-apply: ## идемпотентный apply: Jobs пересоздаются 
 	kubectl -n $(NS) wait --for=condition=complete job/minio-init --timeout=180s
 	kubectl -n $(NS) wait --for=condition=available deploy/keycloak --timeout=600s
 	kubectl -n $(NS) wait --for=condition=available deploy/backend --timeout=300s
+	kubectl -n $(NS) wait --for=condition=available deploy/llm-gateway --timeout=180s
 	@echo "Стенд готов: http://crm.localhost (k3d, без /etc/hosts); minikube — http://crm.local (make hosts)"
 ```
 
@@ -1343,6 +1433,7 @@ flowchart TD
     B --> E
     E --> F["Job seed-demo: демо-данные (идемпотентен)"]
     C --> G["notification: wait-keycloak → бот запущен"]
+    A3["llm-gateway — без зависимостей (ключ GigaChat из Secret crm-llm)"] --> H
     A2["frontend, lms-stub, cms-stub — без зависимостей"] --> H["Ingress маршрутизирует, readiness-гейты снимаются"]
     E --> H
     F --> I["CronJob: stuck-check и idempotency-purge — ежечасно, purge-deleted — ночью"]
@@ -1351,7 +1442,7 @@ flowchart TD
 
 Контрольные точки готовности (их же выполняет `make k8s-apply` через `kubectl wait`):
 
-1. `pod/postgres-0 Ready` → 2. `job/db-migrate Complete` и `job/minio-init Complete` → 3. `deploy/keycloak Available` (до 5 минут: JVM + импорт realm) → 4. `deploy/backend Available` → 5. `job/seed-demo Complete` → стенд готов.
+1. `pod/postgres-0 Ready` → 2. `job/db-migrate Complete` и `job/minio-init Complete` → 3. `deploy/keycloak Available` (до 5 минут: JVM + импорт realm) → 4. `deploy/backend Available` → 5. `deploy/llm-gateway Available` → 6. `job/seed-demo Complete` → стенд готов.
 
 Устойчивость к рестартам: любой под можно убить (`kubectl delete pod`) — самовосстановление без ручных действий; это готовый демо-сценарий: HPA + второй backend-под не дают ни одной ошибки во фронте.
 
@@ -1494,7 +1585,8 @@ export default function (data) {
 | KeyDB как кэш | §3.4 keydb (Deployment, LRU 192mb, без персистентности — осознанно) |
 | Монолит или микросервисы; «для микросервисов простого compose мало — нужен minikube/k3s» | §1 обоснование; мы даём **и** minikube, **и** k3d(k3s), **и** публичный стенд на k3s — overlay §4 |
 | Нагрузочное + план масштабирования 300+ | §8 целиком: k6, HPA §3.10, расчёт ёмкости §8.4 |
-| Telegram-бот; notification-gateway в DMZ (закрытый контур) | §3.11 (единственный egress + Mermaid-диаграмма DMZ), §3.3 notification, Secret `crm-telegram` только у него |
+| Telegram-бот; notification-gateway в DMZ (закрытый контур) | §3.11 (egress только к Telegram + Mermaid-диаграмма DMZ), §3.3 notification, Secret `crm-telegram` только у него |
+| ИИ — только если дополняет и работает офлайн (N6) | «Сводка ИИ»: по правилам — без сети; GigaChat — через DMZ-под `llm-gateway` (§2.5, §3.3, §3.7 `crm-llm`, §3.11 `41-llm-gateway-dmz`), ядро без egress; on-prem GigaChat — переменными `GIGACHAT_*_URL` |
 | «Зависшие» заявки, настраиваемый порог, эскалация | §3.9 CronJob (триггер) + `STUCK_DEFAULT_DAYS` в ConfigMap + каскад порогов в БД; демо-фактура в сиде §3.8 |
 | Изменение схемы «на лету», работа не встаёт | backend: пакетный перенос, ограниченное ожидание локов, сводные уведомления (workflow-engine.md §6.3–6.8); замер — `make bench-migration` (§6) |
 | Двусторонние интеграции LMS/CMS на заглушках, проверяемые | §1 (stubs — отдельные процессы), §3.6 (`lms`/`cms.crm.localhost`, на VPS — `lms`/`cms.crm…nip.io` — UI журнала вызовов), NetworkPolicy точка-точка §3.11 (`stubs-ingress`/`stubs-egress`) |
@@ -1513,4 +1605,5 @@ export default function (data) {
 3. **`crm.local` и minikube на macOS**: драйвер docker требует `minikube tunnel`; локальный k3d-путь основной именно поэтому (127.0.0.1 из коробки), а вход в UI — через `*.localhost` (secure context для PKCE, §3.6).
 4. ~~Пины образов~~ — **решено**: `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`, `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z`, `eqalpha/keydb` v6.3.4 по digest, `curlimages/curl:8.10.1`, `postgres:16-alpine`, `quay.io/keycloak/keycloak:26.0`.
 5. ~~Итоговый список ролей realm~~ — **решено**: в realm — `admin`, `head_kam`, `kam`, `observer` (стартовое назначение при первом входе) + сервисные `svc_notification`, `svc_integration`; дальше роли людей живут в БД Альмы и настраиваются в интерфейсе. Realm правится в одном месте — `deploy/keycloak/realm-crm.json`, ConfigMap пересобирает `make realm-sync`.
-6. **Аварийный доступ к ролям.** Если в Альме не осталось пользователя с правом управления ролями (интерфейс и сервер это предотвращают, но БД могли править руками) — `kubectl exec deploy/backend -- python -m app.tools.rbac grant-admin <username>`, действие пишется в аудит.
+6. **GigaChat из закрытого контура.** Egress закрыт совсем — `AI_SUMMARY_PROVIDER=rules` (или пустой ключ шлюза): кнопка «Сводка ИИ» строит сводку по правилам. GigaChat заказчика on-prem — `GIGACHAT_API_URL` и `GIGACHAT_AUTH_URL` шлюза, код backend не меняется. Бесплатный тариф `GIGACHAT_API_PERS` — один поток: при 3+ одновременных сводках ожидание до 2–3 минут, больше 8 ждущих — `llm_busy`; сглаживают кэш на час и дедупликация. Дневной счётчик токенов шлюза — в памяти пода, рестарт его обнуляет. **Sub CA НУЦ истекает 06.03.2027** — ротация бандла (ConfigMap `llm-gateway-ca`, §3.7).
+7. **Аварийный доступ к ролям.** Если в Альме не осталось пользователя с правом управления ролями (интерфейс и сервер это предотвращают, но БД могли править руками) — `kubectl exec deploy/backend -- python -m app.tools.rbac grant-admin <username>`, действие пишется в аудит.

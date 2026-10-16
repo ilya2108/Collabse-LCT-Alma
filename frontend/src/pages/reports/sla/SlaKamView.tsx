@@ -35,6 +35,8 @@ import {
  * 4 KPI (у «Просрочено» первым — среднее сверх нормы, рядом медиана, максимум и n),
  * старение, просроченные заявки, «Уложились в норму по этапам», тренд КАМа, опоздание
  * закрытых этапов, напоминания. Справочно «по команде» — только при широкой области.
+ * Слоты `headerExtra` (справа в строке с именем — кнопка «Сводка ИИ») и `aiPanel`
+ * (под шапкой, перед итогом) заполняет SlaTab.
  */
 
 interface SlaKamViewProps {
@@ -49,6 +51,10 @@ interface SlaKamViewProps {
   boardLink: string | null;
   caption: (source: string) => string;
   exportCaption: string[];
+  /** Справа в строке с именем КАМа (кнопка «Сводка ИИ»). */
+  headerExtra?: ReactNode;
+  /** Под шапкой, перед итогом (панель «Сводка ИИ»). */
+  aiPanel?: ReactNode;
 }
 
 const WF_LABEL = { b2b: 'Вузы', b2c: 'Клиенты' } as const;
@@ -64,6 +70,8 @@ export function SlaKamView({
   boardLink,
   caption,
   exportCaption,
+  headerExtra,
+  aiPanel,
 }: SlaKamViewProps): ReactNode {
   const navigate = useNavigate();
   const pending = loading || !report;
@@ -104,7 +112,10 @@ export function SlaKamView({
             <Skeleton className="h-4 w-48 rounded-sm" />
           </div>
         )}
+        {headerExtra ? <div className="ml-auto flex items-center gap-2">{headerExtra}</div> : null}
       </div>
+
+      {aiPanel}
 
       <SlaHeadline
         headline={report?.headline ?? null}

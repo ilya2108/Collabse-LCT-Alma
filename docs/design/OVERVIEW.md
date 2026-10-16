@@ -13,7 +13,7 @@
 
 | Документ | Зона ответственности |
 |---|---|
-| `docs/design/data-model.md` | PostgreSQL 16: 37 таблиц, DDL, миграции 0001–0009, роли и права в БД, шифрование ПДн, ключи идемпотентности, KeyDB-ключи, seed и сброс стенда |
+| `docs/design/data-model.md` | PostgreSQL 16: 38 таблиц, DDL, миграции 0001–0010, роли и права в БД, шифрование ПДн, ключи идемпотентности, KeyDB-ключи, seed и сброс стенда |
 | `docs/design/api-contract.md` | REST `/api/v1`, Idempotency-Key, каталог прав и доступ к эндпоинтам, импорт/экспорт, отчёты, интеграционный конверт |
 | `docs/design/workflow-engine.md` | Семантика движка: графы, миграции и массовый перенос заявок, локи, SLA, инварианты |
 | `docs/design/deployment.md` | k8s (kustomize base + overlays), compose, секреты, NetworkPolicy, k6 |
@@ -29,19 +29,22 @@ CRM — ядро работы КАМов с вузами (B2B) и физлица
 workflow-графа с ветвлениями, возвратами и согласованием опасных изменений; заявки мигрируют
 на новую схему «на лету» одной транзакцией, перенос заявок удаляемого этапа — один
 SQL-оператор на этап. Роли и права настраиваются в интерфейсе без программиста: каталог из
-61 права, область роли — процессы B2B/B2C и записи «все / только свои». Вокруг ядра: договоры
+62 прав, область роли — процессы B2B/B2C и записи «все / только свои». Вокруг ядра: договоры
 «1 договор — N продуктов» с лицензиями на ИТ-продукты, справочник ИТ-направлений, ручное
 ранжирование программ и востребованность по трём показателям, диалоговый импорт
 XLSX/XLS/CSV/JSON с интерактивным маппингом и устойчивостью к кодировкам (включая составную
 «Таблицу КАМов»), интерактивные дашборды ECharts с мультифильтрами и экспортом PNG/PDF/XLSX,
-отчёт «Активность КАМов» с выгрузкой XLSX и PDF и «Взаимодействия за период» по выбранным
+отчёт «Активность КАМов» с выгрузкой XLSX и PDF, вкладкой «Просрочки», «Сводкой ИИ» (сводка
+фактов по команде и по КАМу: по правилам — офлайн, или GigaChat через внутренний шлюз — только
+агрегаты и псевдонимы, числа сверяются с отчётом) и «Взаимодействия за период» по выбранным
 колонкам, файлы в статусах заявки (10 форматов), Talent Pool студентов с
 шифрованием ПДн (152-ФЗ), двусторонние интеграции с LMS/CMS на заглушках через единый
 JSON-конверт и outbox, Telegram-бот нотификаций с авторизацией через self-hosted Keycloak и
 эскалацией «зависших» заявок по k8s CronJob. Мутации API идемпотентны по заголовку
 `Idempotency-Key`. Интерфейс — адаптивный веб от 375 px со встроенной справкой (`/help`).
 Всё разворачивается в Kubernetes (minikube/k3d, k3s на VPS) в закрытом контуре:
-default-deny NetworkPolicy, единственный egress наружу — notification-service (DMZ).
+default-deny NetworkPolicy, у ядра egress наружу нет; выходят только два DMZ-пода —
+notification-service (Telegram) и llm-gateway (GigaChat, сводки ИИ).
 
 ## 2. Иерархия авторитетности документов (правило разрешения конфликтов)
 
@@ -79,7 +82,7 @@ default-deny NetworkPolicy, единственный egress наружу — not
 их в «Администрирование → Роли и права» и «Пользователи», изменения действуют со следующего
 запроса, без перезахода (data-model §3, api-contract §10.5, §12).
 
-- **Права** определяет код: каталог из 61 права в 8 группах (`core/rbac_catalog.py`). Право с
+- **Права** определяет код: каталог из 62 прав в 8 группах (`core/rbac_catalog.py`). Право с
   областью (заявки, конструктор процессов, отчёты) действует только в процессах роли.
 - **Роль** = набор прав + область: процессы (`b2b`, `b2c` или оба) и записи (все заявки
   процесса или только те, где пользователь ответственный). Права нескольких ролей
@@ -123,6 +126,7 @@ flowchart TB
     LMS["LMS (на хакатоне — lms-stub)"]
     CMS["CMS-сайт (на хакатоне — cms-stub)"]
     TG["Telegram Bot API\n(интернет; в проде — через DMZ)"]
+    GIGA["GigaChat API (Сбер, РФ)\nOAuth :9443, chat :443"]
     MAX["Max / Email (Exchange)\nканалы-заглушки"]
 
     KAM -->|"HTTPS, JWT"| CRM
@@ -131,7 +135,8 @@ flowchart TB
     CRM <-->|"OIDC + PKCE, JWKS"| KC
     CRM <-->|"JSON API, двусторонне:\nстатус, ответственный, вуз,\nпрограмма, продукт + db/s3-ключи"| LMS
     CRM <-->|"JSON API, двусторонне:\nкаталог программ ↔ лиды"| CMS
-    CRM -->|"нотификации, эскалации\n(единственный egress)"| TG
+    CRM -->|"нотификации, эскалации\n(egress через DMZ: notification)"| TG
+    CRM -.->|"сводки ИИ: только агрегаты и псевдонимы\n(egress через DMZ: llm-gateway, за флагом)"| GIGA
     CRM -.->|"адаптеры каналов"| MAX
 ```
 
@@ -147,10 +152,11 @@ flowchart TB
         subgraph BE["backend :8000 — модульный монолит (FastAPI, SQLAlchemy 2 async, Alembic, Pydantic v2)"]
             M1["auth/iam"] --- M11["access (роли и права)"] --- M2["workflow"] --- M3["requests"]
             M4["crm (вузы/договоры/каталог)"] --- M5["import_export"] --- M6["talent_pool"]
-            M7["reporting"] --- M8["integrations"] --- M9["notifications(outbox)"] --- M10["files"]
+            M7["reporting"] --- M12["ai_summary"] --- M8["integrations"] --- M9["notifications(outbox)"] --- M10["files"]
         end
 
-        NT["notification-service :8010\nFastAPI + aiogram 3\ntier=dmz, единственный egress"]
+        NT["notification-service :8010\nFastAPI + aiogram 3\ntier=dmz, egress: Telegram"]
+        LGW["llm-gateway :8040\nFastAPI + httpx, 1 реплика\ntier=dmz, egress: только GigaChat"]
         LST["lms-stub :8020\nFastAPI + мини-UI журнала"]
         CST["cms-stub :8030\nFastAPI + демо-форма лида"]
         KCC["keycloak :8080\nstart --import-realm"]
@@ -163,6 +169,7 @@ flowchart TB
         JOBS["Jobs: db-migrate, minio-init, seed-demo"]
     end
     TGAPI["Telegram Bot API (интернет)"]
+    GIGAAPI["GigaChat API (интернет, РФ)"]
 
     ING --> FE
     ING -->|"/api"| BE
@@ -175,6 +182,8 @@ flowchart TB
     NT -->|"client credentials"| KCC
     NT -->|"/internal/bot/* (права привязанного)"| BE
     NT -->|"long-polling, 443"| TGAPI
+    BE -->|"POST /v1/chat\n(X-Internal-Token)"| LGW
+    LGW -->|"OAuth 9443, chat 443"| GIGAAPI
     CRON --> BE
     JOBS --> PG & S3
     KCC --> PG
@@ -192,6 +201,7 @@ flowchart TB
 | `import_export` | `import_session`, `import_row_error` | `/import/sessions*` (включая `kam_catalog`), `/export/jobs*` (включая `report:interactions`), `/admin/dictionaries*` | api-contract §6–7, §10.1 |
 | `talent_pool` | `student`, `student_status_history`, `federal_project`, `activity`, `activity_schedule`, `student_activity` | `/students*` (+reveal), `/activities*` | api-contract §8 |
 | `reporting` | — (читает всё в области зрителя) | `/reports/*` (+ `/reports/dashboard`, `/reports/kam-activity`, `/reports/kam-activity/summary`, `/reports/interactions`); PDF (fpdf2, шрифты DejaVu) и многолистовой XLSX отчёта КАМов, XLSX/PDF взаимодействий — через `/export/jobs` | api-contract §7.2, §7.2.1 |
+| `ai_summary` | `ai_summary_job` | `/reports/ai-summaries*`: «Сводка ИИ» поверх отчёта КАМов — факты (allowlist, псевдонимы), кэш и дедупликация задач, вызов llm-gateway, проверка чисел, сводка по правилам | api-contract §7.2.3 |
 | `integrations` | `integration_event`, `external_link` | `/integrations/{lms,cms}/webhook`, `/admin/integration/*`, relay | api-contract §13 |
 | `notifications` | `notification_rule`, `notification`, `app_setting` | `/notifications*`, `/internal/bot/*`, relay → :8010 | api-contract §9 |
 | `files` | `file_object` | `/files/{id}/download`, вложения сущностей | data-model §9.2 |
@@ -199,7 +209,9 @@ flowchart TB
 | `core` (сквозное) | `idempotency_key` | outbox-emit/relay и транспорт интеграций, SSE-хаб `/events/stream`, KeyDB cache-aside, middleware Idempotency-Key, ядро прав (`rbac_catalog`, `access`, `require_permission`) | data-model §3, §9.6, §10 |
 
 Сателлиты: `services/notification` (aiogram 3 + FastAPI, каналы telegram/email-stub/max-stub),
-`services/lms-stub`, `services/cms-stub` (маленькие FastAPI с мини-UI журнала обмена).
+`services/llm-gateway` (FastAPI + httpx: единственный, кто знает ключ GigaChat; очередь на один
+поток, дневной лимит токенов, TLS НУЦ Минцифры), `services/lms-stub`, `services/cms-stub`
+(маленькие FastAPI с мини-UI журнала обмена).
 
 ---
 
@@ -245,6 +257,16 @@ flowchart TB
    проверяет право в процессе конкретной заявки и её область; заявка вне области — 404,
    процесс вне области — 403. Фронт строит меню, маршруты и кнопки по `hasPermission(code, wf)`
    из `/auth/me`, backend дублирует все проверки (data-model §3.4, ux §3).
+10. **Сводки ИИ** (api-contract §7.2.3) — не агент и не советчик, а сводка фактов по клику.
+    Backend собирает отчёты «Сводка для заказчика» и «Просрочки» (кэш 60 с) → факты по
+    allowlist (числа, очищенные названия этапов, метки B2B/B2C, псевдонимы `КАМ-01…`; без ФИО,
+    вузов, клиентов, заголовков и комментариев) → sha256 фактов = «версия данных». Кэш на час и
+    дедупликация задач в полёте — таблица PG `ai_summary_job` (частичный UNIQUE, общая для
+    реплик); задача выполняется фоном: `POST llm-gateway:8040/v1/chat` → JSON по схеме → проверка
+    кодом: каждое число и дата ответа сверяются с фактами, советы (`NO_ADVICE_RE`), чужие
+    псевдонимы и ссылки вычищаются; при сбое GigaChat интерфейс предлагает сводку по правилам
+    (тот же текстовый шаблон из тех же фактов, офлайн). ФИО подставляются вместо псевдонимов при
+    чтении на стороне CRM. Аудит `ai.summary_requested` / `ai.summary_generated` — без текста.
 
 ---
 
@@ -273,7 +295,7 @@ flowchart TB
 | Р-19 | Раскрытие ПДн | Выдачи ПДн студентов маскированы для всех ролей; открытые значения — только `POST /students/{id}/reveal` (право `students:reveal`, 60 с в UI, аудит-событие `student.pii_revealed`); observer — без раскрытия и без файлов студентов. Контакты физлиц B2C в карточке заявки открыты только с правом `clients:pii` (по умолчанию у всех системных ролей, кроме observer) |
 | Р-20 | Ключи ПДн | Secret `crm-pii`: `PII_FERNET_KEYS` (MultiFernet, первый активный) + `PII_HMAC_KEY` (blind index); ротация `python -m app.tools.rekey` |
 | Р-21 | Где живут роли (в коде — Р-F2-1, Р-F2-2) | **БД CRM**: назначения — массив `app_user.roles`, роли — `app_role`; Keycloak — только вход, роли токена — лишь стартовое назначение при первом входе. Отвергнуто: composite roles и группы Keycloak (консоль Keycloak, права приходят только с новым токеном, область B2B/B2C в claims не выразить), таблица связей `app_user_role` (двойная запись с массивом без выигрыша) |
-| Р-22 | Модель прав (Р-F2-3, Р-F2-4) | Права определяет код (61 право, `core/rbac_catalog.py`), миграция засевает копию для внешних ключей, тест сверяет БД с кодом. Роль = права + область: `workflow_types ⊆ {b2b,b2c}` и `record_scope ∈ {all, own}`; права нескольких ролей объединяются по процессу. Отвергнуто: Casbin/OPA (новая зависимость) |
+| Р-22 | Модель прав (Р-F2-3, Р-F2-4) | Права определяет код (62 права, `core/rbac_catalog.py`), миграция засевает копию для внешних ключей, тест сверяет БД с кодом. Роль = права + область: `workflow_types ⊆ {b2b,b2c}` и `record_scope ∈ {all, own}`; права нескольких ролей объединяются по процессу. Отвергнуто: Casbin/OPA (новая зависимость) |
 | Р-23 | Кэш прав (Р-F2-8) | Каталог ролей — в памяти процесса, TTL 5 с, сброс на всех репликах по SSE `access.changed`; `app_user` читается на каждом запросе, перезаход не нужен. Не KeyDB: лишний сетевой запрос на каждый HTTP-запрос и ещё одна точка отказа |
 | Р-24 | Защита от потери управления (Р-F2-9) | `admin` заблокирована; снять с себя `admin:roles` нельзя; всегда остаётся активный пользователь с `admin:roles` — проверка под advisory-локом `rbac` (409 `access_lockout`); аварийно — `python -m app.tools.rbac grant-admin <username>` с записью в аудит |
 | Р-25 | Объект вне области роли (Р-F2-10) | **404**, как несуществующий: карточка, история, комментарии, переходы и файлы заявки. Коллекция с явным процессом вне области — 403 с понятным текстом |
@@ -287,6 +309,18 @@ flowchart TB
 | Р-33 | Смена ответственного за вуз | Отдельное право `universities:assign` (0006) у руководителя и администратора; сравнивается значение `kam_user_id`, а не наличие поля; аудит `university.kam_changed`. Передача портфеля КАМа — одна ручка с `dry_run`, аудит по каждой заявке и вузу |
 | Р-34 | «Таблица КАМов» и лицензии | Составной импорт `kam_catalog`: договор ищется по номеру (upsert), строка `contract_product` хранит лицензию (дата подписания, срок, окончание, статус передачи, 0008). Отвергнуто: отдельная таблица лицензий (лицензия — это и есть «договор × продукт») |
 | Р-35 | Сброс демо-стенда | `seed --reset` от якорной даты одной транзакцией (Job из приостановленного CronJob-шаблона `demo-reset`); пользователи, роли, настройки и аудит сохраняются. Отвергнуто: `TRUNCATE app_user` (теряются `keycloak_sub` и привязки Telegram) |
+| Р-36 | Где живёт ключ GigaChat и кто ходит наружу (сводки ИИ, Р1) | Отдельный сервис `services/llm-gateway` (:8040) — второй и последний под с egress после notification; ключ видит только он, ядро остаётся без egress. Шлюз переносится в DMZ или переключается на on-prem GigaChat (`GIGACHAT_API_URL`/`GIGACHAT_AUTH_URL`) без правки backend |
+| Р-37 | SDK или свой клиент (Р2) | Чистый `httpx`: явный контроль OAuth, TLS-бандла НУЦ, ретраев и семафора; тесты на `httpx.MockTransport`. Wire-формат — как у SDK `gigachat` 0.2.3, отлаженного в «Орбите» |
+| Р-38 | Где логика сводки (Р3) | Шлюз «глупый»: сообщения → текст и usage. Промпт, разбор JSON, проверка чисел и псевдонимы — в backend (`modules/ai_summary`): ключ и предметная логика в разных подах |
+| Р-39 | Хранилище задач (Р4) | Таблица PG `ai_summary_job` (миграция 0010), не KeyDB: POST и опрос попадают в разные реплики и воркеры, KeyDB — `allkeys-lru` без persistence; нужны атомарная дедупликация в полёте (частичный UNIQUE + `ON CONFLICT DO NOTHING`) и кэш, переживающий рестарты |
+| Р-40 | Кэш сводок (Р5) | 1 ч по ключу (вид, КАМ, область, параметры, провайдер, версия промпта, sha256 фактов); хеш фактов и есть «версия данных»: изменились цифры — новый ключ. Повторный клик и клик другого руководителя с той же областью — 0 токенов |
+| Р-41 | Кому доступно (Р6) | Новое право `reports:ai_summary` (с областью) — по умолчанию у admin и head_kam, у kam и observer нет; своей роли можно выдать с областью «только свои». Причина — один поток GigaChat и совет экспертов «не делать ИИ-агента» |
+| Р-42 | Фичефлаг (Р7) | `ai_summaries` (по умолчанию выключен, демо-сид включает) **заменил** пустой заблокированный `llm_features`: иначе в админке рядом были бы заблокированный «LLM-функции» и работающие сводки ИИ |
+| Р-43 | Провайдер и офлайн (Р8) | `AI_SUMMARY_PROVIDER = gigachat \| rules \| stub` (stub в контуре запрещён). Сводка по правилам доступна всегда — кнопкой и при сбое GigaChat; это решение Q&A N6 «работает офлайн» |
+| Р-44 | Что уходит наружу (Р9) | Только числа, очищенные названия этапов и процессов, подписи метрик и псевдонимы `КАМ-01…`; без ФИО, вузов, клиентов, заголовков заявок, комментариев и денег (152-ФЗ, защита от prompt injection, минимизация) |
+| Р-45 | Как не дать модели придумать (Р10) | Ответ — JSON по схеме; каждая фраза проверяется кодом: числа (должны быть во входе с допуском округления), советы (`NO_ADVICE_RE`), псевдонимы, ссылки. Не прошедшие фразы удаляются; удалено много — `failed: llm_bad_output` и предложение сводки по правилам |
+| Р-46 | Сертификаты НУЦ Минцифры (Р11) | `deploy/k8s/base/llm-gateway/certs/russian_trusted_bundle.pem` — внутри корня kustomization (`kubectl kustomize` по умолчанию не читает файлы вне него); одна копия для ConfigMap `llm-gateway-ca` и compose; Sub CA действует до 06.03.2027 |
+| Р-47 | Порты egress шлюза (Р12) | TCP 443 и 9443 вне приватных сетей: OAuth Сбера — `ngw.devices.sberbank.ru:9443`, без него токен не получить |
 
 ---
 
@@ -321,7 +355,8 @@ flowchart TB
    работа не встаёт» — это одна ACID-транзакция над схемой, заявками, историей и outbox'ами.
    В микросервисах это сага с компенсациями — риск без выгоды на хакатоне.
 2. **Границы сервисов — только там, где они настоящие**: notification-service (другой контур
-   безопасности — единственный egress в интернет, DMZ-стори; long-polling runtime), lms-stub и
+   безопасности — egress в интернет только к Telegram, DMZ-стори; long-polling runtime),
+   llm-gateway (тот же довод: ключ GigaChat и выход наружу — только у него), lms-stub и
    cms-stub (по определению *внешние* системы — двусторонность проверяется честно, по сети).
 3. **k8s даёт операционные примитивы, отвечающие требованиям напрямую**: HPA 2→6 реплик
    (план на 300+ пользователей), CronJob (зависшие заявки, очистка ключей идемпотентности и
@@ -356,7 +391,8 @@ flowchart TB
 | Сохранённые ответы мутаций (`Idempotency-Key`): Fernet-шифртекст, тело запроса не хранится (только SHA-256), TTL 24 ч и почасовая очистка CronJob `idempotency-purge`; ротация ключей их перешифровывает | data-model §8.5, §9.6 |
 | Доступ к ПДн — по правам роли: раскрытие студента (`students:reveal`, с аудитом), контакты физлиц B2C (`clients:pii`), файлы (`files:business`) | data-model §3.3, §8.3 |
 | Право на забвение: `DELETE /students/{id}` удаляет студента физически и сразу (аудит `student.deleted`); удалённые файлы и комментарии физически удаляет CronJob `purge-deleted` через 30 дней | api-contract §8.1, §11.2 |
-| Закрытый контур: default-deny NetworkPolicy, у ядра нет egress в интернет ни по коду, ни по сети; notification — прообраз DMZ | deployment §3.11 |
+| Закрытый контур: default-deny NetworkPolicy, у ядра нет egress в интернет ни по коду, ни по сети; notification и llm-gateway — прообраз DMZ (выход только к Telegram и GigaChat) | deployment §3.11 |
+| Сводки ИИ: в GigaChat уходят только агрегаты отчётов, очищенные названия этапов и псевдонимы `КАМ-01…`; ФИО подставляются на стороне CRM при чтении; клиенты B2C, студенты и свободный текст (комментарии, заголовки заявок) не отправляются. GigaChat — оператор в РФ, трансграничной передачи нет; можно переключить на on-prem GigaChat (`GIGACHAT_*_URL`). Функция за правом и фичефлагом, аудит каждого запроса без текста сводки | api-contract §7.2.3, compliance §8.1 |
 | Нет CDN: шрифты/иконки/JS в бандле; файлы — только через backend (proxy) | ux §1.1, api-contract §3.2 |
 | Безопасность библиотек: пины версий, `uv.lock`/`npm ci`; автоматическое сканирование уязвимостей в CI не подключено | deployment §9 |
 
@@ -380,7 +416,7 @@ flowchart TB
 | W10 | Один вуз: договор как правило один, продуктов несколько (могут расширяться) | `contract` (владелец вуз XOR контрагент) + `contract_product` M:N с `added_by/added_at`; второй активный договор — UI-warning, не запрет (data-model §4.6, api-contract §3.2, ux §9.1) |
 | W11 | Параллельных взаимодействий ≤ 2, разные направления/роли; не переусложнять | Несколько открытых `deal` на вуз без constraint; warning при 3-й активной; kam читает всё/пишет своё (data-model §6.1, workflow-engine §4.1, api-contract §12.2) |
 | A1 | Keycloak в своей инфраструктуре (endpoint не дадут) | Self-hosted Keycloak 26, `start --import-realm` из ConfigMap, БД в том же PG (deployment §3.4) |
-| A2 | RBAC по ролям из ТЗ; отображение UI строго по ролевой модели — кор | Роли и права §2.2: 4 системные роли + свои роли из интерфейса, каталог из 61 права, разграничение B2B/B2C и «все / только свои» (data-model §3); доступ к эндпоинтам — api-contract §12; `permissions` и `access` из `/auth/me`; фронт — `hasPermission(code, wf)` в guard'ах/`Can`/menuConfig, backend дублирует все проверки (ux §3) |
+| A2 | RBAC по ролям из ТЗ; отображение UI строго по ролевой модели — кор | Роли и права §2.2: 4 системные роли + свои роли из интерфейса, каталог из 62 прав, разграничение B2B/B2C и «все / только свои» (data-model §3); доступ к эндпоинтам — api-contract §12; `permissions` и `access` из `/auth/me`; фронт — `hasPermission(code, wf)` в guard'ах/`Can`/menuConfig, backend дублирует все проверки (ux §3) |
 | A3 | README: публичное описание пользователей по ролям (без передачи паролей экспертам напрямую) | Преднастроенные пользователи realm-JSON → README (deployment §3.4, ux §3.1); публично, без приватных VPN-конфигов |
 | I1 | CRM↔LMS и CRM↔CMS двусторонние, на заглушках; двусторонность проверяется | 4 направления на одном конверте (api-contract §13.2–13.4); заглушки — отдельные процессы с UI журнала на lms/cms.crm.local (deployment §1, §3.6); монитор интеграций с журналом ←/→ и тест-событиями (ux §14.5); демо-шаги 3, 8 |
 | I2 | JSON по API; можно асинхронно через шину данных | Конверт `IntegrationEvent`; outbox PostgreSQL + асинхронная фоновая доставка (HTTP + HMAC, ретраи, DLQ); шина заказчика подключается сменным адаптером `IntegrationTransport` без смены конверта (Р-27, api-contract §13.1, §13.7) |
@@ -390,7 +426,7 @@ flowchart TB
 | E1 | Поддержка XLSX **и XLS** (старый Excel); устойчивость к битым кодировкам при загрузке/выгрузке | `openpyxl`/`xlrd 2.x` по magic bytes; charset-normalizer с перебором 5 кодировок; экспорт CSV utf-8(BOM)/cp1251, разделитель `;` (api-contract §6.2, §7.1); демо-шаг 4 «чиним кракозябры селектом» (ux §11.2) |
 | E2 | Маппинг полей — интерактивный диалоговый менеджер | 5-шаговая сессия импорта, `suggested_mapping` + ручной маппер + шаблоны, построчный отчёт ошибок XLSX (api-contract §6, ux §11) |
 | E3 | Отчёты: интерактивные дашборды (фильтры, теги) с экспортом в растровые/файловые форматы; Grafana или своё | Своё: ECharts-дашборд с drill-down по URL и мультифильтрами (ux §6), JSON-агрегаты `/reports/*` (api-contract §7.2), PNG графика с шапкой и PDF всей панели на фронте, XLSX/CSV/PDF через `/export/jobs`; отчёт «Активность КАМов» — детализация, сводка и «Взаимодействия за период» по выбранным колонкам, выгрузка XLSX и PDF (api-contract §7.2.1, ux §6.4, Р-29, Р-30) |
-| D1 | PostgreSQL + MinIO S3 — одобренная схема | PG 16 (37 таблиц) + MinIO (3 бакета), `file_object` с ключами связи; StatefulSet+PVC (data-model, deployment §3.4) |
+| D1 | PostgreSQL + MinIO S3 — одобренная схема | PG 16 (38 таблиц) + MinIO (3 бакета), `file_object` с ключами связи; StatefulSet+PVC (data-model, deployment §3.4) |
 | D2 | Студенты пофамильно: ФИО + email (минимальная персуха); шифрование/обезличивание в БД | `student.full_name_enc/email_enc` (Fernet) + HMAC blind index + `display_name`-псевдонимизация (data-model §7–8); маскирование+reveal (§7.4 выше) |
 | D3 | Проверять безопасность библиотек; всё в закрытом контуре | Пины, lock-файлы; без CDN; NetworkPolicy default-deny (§7.4) |
 | D4 | ЭЦП тестировать не нужно | В системе отсутствует — осознанно (нет соответствующих API/таблиц) |
@@ -399,7 +435,7 @@ flowchart TB
 | N3 | Нагрузка: свой отчёт нагрузочного тестирования; план масштабирования на 300+ (реплики/балансировка) | k6-сценарий 300→400 VU с thresholds (прогон 16.09: p95 90,7 мс, p99 1,07 с — превышение на 7%), HPA 2→6, расчёт ёмкости и бюджет соединений PostgreSQL, `docs/evidence/load-report.md` (deployment §8); профили НФТ «50 пользователей» и «10 отчётов» подготовлены, прогон — впереди |
 | N4 | Диаграммы: C4/BPMN, связей, программно-аппаратная, БД | C4 контекст+контейнеры (этот документ §3–4), ERD ×5 (data-model §2), sequence/state/flowchart в api-contract/workflow-engine/ux, топология и DMZ-контур (deployment §3.2, §3.11) |
 | N5 | Мобильная версия — адаптивный веб-интерфейс от 375 px; доступ с мобильных через VPN | Адаптивный веб-интерфейс от 375 px, канбан scroll-snap, тач-drag (ux §4.3); мобильного приложения нет |
-| N6 | LLM — только если реально дополняет и работает офлайн; не приоритет | Не делаем; фичефлаг `llm_features` выключен с подписью «в закрытом контуре — выключено» (ux §14.3) |
+| N6 | LLM — только если реально дополняет и работает офлайн; не приоритет | «Сводка ИИ» в отчёте КАМов — сводка фактов по клику, не агент и не советчик: по правилам работает офлайн, GigaChat — опция за флагом `ai_summaries` и правом `reports:ai_summary` через DMZ-шлюз `llm-gateway`; числа ответа сверяются с отчётом кодом (§5 п. 10, Р-36…Р-47, api-contract §7.2.3, ux §6.4) |
 | N7 | Ранжирование программ: ручное изменение приоритетов КАМами/админами; автоформула — бонус | `priority_rank` + drag/▲▼ + audit (data-model §4.5, api-contract §3.4, ux §9.4); востребованность — три показателя (заявки на обучение, обучающиеся, параллельные потоки), при флаге `auto_ranking` — справочный индекс 0–100 рядом с ручным приоритетом (api-contract §7.2) |
 | N8 | Встроенный мессенджер: в идеале да, заглушки допустимы | Комментарии заявки: @упоминания, SSE-realtime; файлы (MinIO) прикладываются к заявке и к переходу, не к комментарию (data-model §6.3, ux §8.1) |
 | N9 | Figma — плюс, не обязателен; брендбук — «рюшечки», главное юзерфрендли и гибкость | Токен-система Tailwind v4 + shadcn/ui под ДС «Ростелекома» (redesign.md, brand-rt.md), юзерфрендли-принципы «ноль тупиков», пресеты таблиц, туры и встроенная справка (ux §1–2, §4.2); Figma — по остаточному принципу |
@@ -413,7 +449,7 @@ flowchart TB
 | Команды бота отдают данные строго по ролевой модели | `/internal/bot/users/{chat_id}/*`: backend резолвит chat_id → user и применяет его права и область заявок; непривязанный — отказ (api-contract §9.3) |
 | События: переходы по этапам; «зависшие» с настраиваемым порогом 1–2 недели; эскалация ответственному и вышестоящей роли (руководителю КАМа) | Реестр событий §5.3; порог 14 дней (процесс — 1–60, этап — 1–365, каскад); ступень 1 — ответственный, ступень 2 (1.5×) — manager_id (workflow-engine §8, Р-5/Р-6) |
 | Адресация: по нику ТГ, по email или по роли — настраиваемо | `notification_rule.recipient_type`: responsible / manager_of_responsible / role / user / tg_username / email (data-model §9.4) |
-| Закрытый контур: notification-gateway в DMZ (точка-точка), отразить на диаграмме | NetworkPolicy: notification — единственный egress наружу; Mermaid-диаграмма DMZ-контура (deployment §3.11); §4 этого документа |
+| Закрытый контур: notification-gateway в DMZ (точка-точка), отразить на диаграмме | NetworkPolicy: notification — egress только к Telegram (второй DMZ-под — llm-gateway, только к GigaChat); Mermaid-диаграмма DMZ-контура (deployment §3.11); §4 этого документа |
 
 ### 8.3 Решения кейсодержателя: Talent Pool
 
@@ -439,7 +475,7 @@ workflow — **отсутствуют в схеме БД, API и UI намере
 ### 9.1 Порты (зафиксированы)
 
 backend 8000 · frontend 80 (nginx-unprivileged 8080 внутри) · notification 8010 ·
-lms-stub 8020 · cms-stub 8030 · keycloak 8080 · postgres 5432 · minio 9000/9001 · keydb 6379.
+lms-stub 8020 · cms-stub 8030 · llm-gateway 8040 (только внутри кластера) · keycloak 8080 · postgres 5432 · minio 9000/9001 · keydb 6379.
 Ingress-хосты: `crm.local` (`/` — фронт, `/api` — backend, CORS не нужен), `id.crm.local`,
 `lms.crm.local`, `cms.crm.local`, `minio.crm.local`.
 
@@ -449,6 +485,7 @@ Ingress-хосты: `crm.local` (`/` — фронт, `/api` — backend, CORS н
 backend/                  # модульный монолит FastAPI (модули — §4.1)
 frontend/                 # React 18 + TS + Vite
 services/notification/    # FastAPI + aiogram 3 (Telegram-бот)
+services/llm-gateway/     # FastAPI + httpx: шлюз GigaChat для сводок ИИ (ключ видит только он)
 services/lms-stub/        # заглушка LMS
 services/cms-stub/        # заглушка CMS
 deploy/k8s/base/          # kustomize base (Deployments, StatefulSets, Jobs, CronJobs, NetworkPolicy)
@@ -479,7 +516,9 @@ README.md  Makefile  LICENSE
 1. **Контур организаторов** (заявка до ~25.09): ВМ → k3d + nip.io; managed k8s → третий
    overlay (deployment §10.1). Base не меняется.
 2. **Egress в контуре закрыт совсем** → notification в режиме console-заглушки (пустой
-   `TELEGRAM_BOT_TOKEN` уже поддержан), демо бота — с ноутбука команды.
+   `TELEGRAM_BOT_TOKEN` уже поддержан), демо бота — с ноутбука команды; сводки ИИ — по
+   правилам (`AI_SUMMARY_PROVIDER=rules` или пустой ключ шлюза → кнопка «Сводка по правилам»)
+   либо on-prem GigaChat заказчика (`GIGACHAT_API_URL`, `GIGACHAT_AUTH_URL`).
 3. **Реальный контракт LMS/CMS** → меняется только транспортный адаптер (Р-16).
 4. **Обезличенные данные** → пополнение словаря синонимов маппинга и сида (Р-17).
 5. Пины образов `minio/minio`, `eqalpha/keydb` — зафиксировать тегами при первом коммите

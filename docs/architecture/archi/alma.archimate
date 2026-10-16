@@ -13,14 +13,14 @@
       <documentation>Все заявки и справочники, распределение заявок, правка схемы процесса через согласование</documentation>
       <property key="Вид" value="Функциональная схема"/>
       <property key="Код роли" value="head_kam"/>
-      <property key="Прав в наборе" value="41"/>
+      <property key="Прав в наборе" value="42"/>
       <property key="Источник" value="backend/app/core/rbac_catalog.py"/>
     </element>
     <element xsi:type="archimate:BusinessRole" name="Администратор" id="alma-role-admin">
       <documentation>Полный доступ. Права и область не редактируются — это защищает систему от потери управления</documentation>
       <property key="Вид" value="Функциональная схема"/>
       <property key="Код роли" value="admin"/>
-      <property key="Прав в наборе" value="60"/>
+      <property key="Прав в наборе" value="61"/>
       <property key="Источник" value="backend/app/core/rbac_catalog.py"/>
     </element>
     <element xsi:type="archimate:BusinessRole" name="Наблюдатель" id="alma-role-observer">
@@ -246,6 +246,13 @@
       <property key="Права" value="reports:read, reports:all"/>
       <property key="Экран" value="/reports/kam-activity"/>
     </element>
+    <element xsi:type="archimate:ApplicationService" name="Сводка ИИ по отчёту КАМов" id="alma-svc-ai-summary">
+      <documentation>Сводка фактов по команде и по КАМу поверх цифр «Сводки для заказчика» и «Просрочек»: GigaChat через llm-gateway получает только агрегаты и псевдонимы, числа ответа сверяются с отчётом; без GigaChat — сводка по правилам. За фичефлагом ai_summaries.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/reports/ai-summaries*"/>
+      <property key="Права" value="reports:ai_summary"/>
+      <property key="Экран" value="/reports/kam-activity"/>
+    </element>
     <element xsi:type="archimate:ApplicationService" name="Экспорт XLSX, CSV, JSON, PDF" id="alma-svc-export">
       <documentation>Выгрузка реестров и отчётов; ПДн маскируются по правам выгружающего.</documentation>
       <property key="Вид" value="Функциональная схема"/>
@@ -403,6 +410,10 @@
       <documentation>Каналы-заглушки notification-service: сообщение пишется в журнал, адаптер заменяется без смены кода ядра.</documentation>
       <property key="Вид" value="Компонентная схема"/>
     </element>
+    <element xsi:type="archimate:ApplicationComponent" name="GigaChat API (Сбер)" id="alma-ext-gigachat">
+      <documentation>Модель для «Сводки ИИ»: OAuth ngw.devices.sberbank.ru:9443, чат gigachat.devices.sberbank.ru:443; доступен только из llm-gateway. Оператор в РФ; on-prem GigaChat подключается переменными GIGACHAT_*_URL.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
     <element xsi:type="archimate:ApplicationComponent" name="frontend — интерфейс" id="alma-ac-frontend">
       <documentation>SPA на React 18 и TypeScript: реестры, доска, конструктор процессов, панели ECharts, справка. Отдаётся nginx-unprivileged.</documentation>
       <property key="Вид" value="Компонентная схема"/>
@@ -444,12 +455,20 @@
       <property key="Манифест" value="deploy/k8s/base/keycloak"/>
     </element>
     <element xsi:type="archimate:ApplicationComponent" name="notification-service" id="alma-ac-notification">
-      <documentation>Служба уведомлений и Telegram-бот: HTTP-relay каналов и long-polling aiogram. Единственный под с выходом в интернет; токен бота видит только он.</documentation>
+      <documentation>Служба уведомлений и Telegram-бот: HTTP-relay каналов и long-polling aiogram. Выход в интернет — только к Telegram; токен бота видит только он.</documentation>
       <property key="Вид" value="Компонентная схема"/>
       <property key="Каталог" value="services/notification"/>
       <property key="Технологии" value="FastAPI, aiogram 3"/>
       <property key="Порт" value="8010"/>
       <property key="Манифест" value="deploy/k8s/base/notification"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="llm-gateway — шлюз GigaChat" id="alma-ac-llm-gateway">
+      <documentation>Единственный, кто знает ключ GigaChat и ходит к нему (443, 9443): очередь на один поток, дневной лимит токенов, OAuth и TLS НУЦ Минцифры. Промпт, факты и проверка ответа — в модуле ai_summary backend.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="services/llm-gateway"/>
+      <property key="Технологии" value="FastAPI, httpx"/>
+      <property key="Порт" value="8040"/>
+      <property key="Манифест" value="deploy/k8s/base/llm-gateway"/>
     </element>
     <element xsi:type="archimate:ApplicationComponent" name="auth — вход и профиль" id="alma-mod-auth">
       <documentation>Профиль, роли и права из БД.</documentation>
@@ -490,6 +509,11 @@
       <documentation>Агрегаты дашборда, отчёт «Активность КАМов», PDF (fpdf2) и XLSX.</documentation>
       <property key="Вид" value="Компонентная схема"/>
       <property key="Каталог" value="backend/app/modules/reporting"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="ai_summary — сводки ИИ" id="alma-mod-ai-summary">
+      <documentation>Факты отчётов с псевдонимами КАМов, задачи и кэш (ai_summary_job), вызов llm-gateway, проверка чисел и советов, сводка по правилам.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/ai_summary"/>
     </element>
     <element xsi:type="archimate:ApplicationComponent" name="integrations — LMS и CMS" id="alma-mod-integrations">
       <documentation>Вебхуки LMS и CMS, конверт с HMAC, outbox, журнал обмена.</documentation>
@@ -582,6 +606,11 @@
       <property key="Вид" value="Компонентная схема"/>
       <property key="Dockerfile" value="services/notification/Dockerfile"/>
     </element>
+    <element xsi:type="archimate:Artifact" name="crm/llm-gateway" id="alma-art-llm-gateway">
+      <documentation>Образ контейнера компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Dockerfile" value="services/llm-gateway/Dockerfile"/>
+    </element>
     <element xsi:type="archimate:Artifact" name="crm/lms-stub" id="alma-art-lms-stub">
       <documentation>Образ контейнера компонента.</documentation>
       <property key="Вид" value="Компонентная схема"/>
@@ -598,8 +627,12 @@
       <documentation>Default-deny NetworkPolicy, разрешения точка-точка между подами (deploy/k8s/base/networkpolicy).</documentation>
       <property key="Вид" value="Компонентная схема"/>
     </element>
-    <element xsi:type="archimate:Constraint" name="Единственный egress — notification-service, порт 443" id="alma-con-single-egress">
-      <documentation>Токен Telegram-бота хранится только в этом поде; с ядром — только HTTP точка-точка.</documentation>
+    <element xsi:type="archimate:Constraint" name="Выход наружу — только DMZ-поды" id="alma-con-single-egress">
+      <documentation>notification-service — 443 к Telegram, llm-gateway — 443 и 9443 к GigaChat; токен бота и ключ GigaChat хранятся только в своих подах; с ядром — HTTP точка-точка.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Constraint" name="В GigaChat — только агрегаты и псевдонимы" id="alma-con-ai-facts">
+      <documentation>ФИО, вузы, клиенты B2C, заголовки заявок и комментарии наружу не уходят; числа ответа сверяются с отчётом кодом, советы удаляются.</documentation>
       <property key="Вид" value="Компонентная схема"/>
     </element>
     <element xsi:type="archimate:Constraint" name="LMS и CMS на стенде — заглушки" id="alma-con-stubs">
@@ -676,7 +709,7 @@
       <property key="Метка" value="tier=iam"/>
     </element>
     <element xsi:type="archimate:Grouping" name="tier=dmz — выход наружу" id="alma-grp-tier-dmz">
-      <documentation>notification-service; в целевой архитектуре — отдельный сегмент DMZ.</documentation>
+      <documentation>notification-service и llm-gateway; в целевой архитектуре — отдельный сегмент DMZ.</documentation>
       <property key="Вид" value="Компонентная схема"/>
       <property key="Метка" value="tier=dmz"/>
     </element>
@@ -800,6 +833,8 @@
     <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-interactions--fn-analytics" source="alma-svc-interactions" target="alma-fn-analytics"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-sla" source="alma-grp-svc-reports" target="alma-svc-sla"/>
     <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-sla--fn-kam-control" source="alma-svc-sla" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-ai-summary" source="alma-grp-svc-reports" target="alma-svc-ai-summary"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-ai-summary--fn-kam-control" source="alma-svc-ai-summary" target="alma-fn-kam-control"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-export" source="alma-grp-svc-reports" target="alma-svc-export"/>
     <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-export--fn-analytics" source="alma-svc-export" target="alma-fn-analytics"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-access--svc-login" source="alma-grp-svc-access" target="alma-svc-login"/>
@@ -852,6 +887,7 @@
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-cms" source="alma-grp-external" target="alma-ext-cms"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-telegram" source="alma-grp-external" target="alma-ext-telegram"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-channels" source="alma-grp-external" target="alma-ext-channels"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-gigachat" source="alma-grp-external" target="alma-ext-gigachat"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-app" source="alma-node-k8s" target="alma-grp-tier-app"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-iam" source="alma-node-k8s" target="alma-grp-tier-iam"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-dmz" source="alma-node-k8s" target="alma-grp-tier-dmz"/>
@@ -864,6 +900,7 @@
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-app--ac-cms-stub" source="alma-grp-tier-app" target="alma-ac-cms-stub"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-iam--ac-keycloak" source="alma-grp-tier-iam" target="alma-ac-keycloak"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-dmz--ac-notification" source="alma-grp-tier-dmz" target="alma-ac-notification"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-dmz--ac-llm-gateway" source="alma-grp-tier-dmz" target="alma-ac-llm-gateway"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-auth" source="alma-ac-backend" target="alma-mod-auth"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-access" source="alma-ac-backend" target="alma-mod-access"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-workflow" source="alma-ac-backend" target="alma-mod-workflow"/>
@@ -872,6 +909,7 @@
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-import-export" source="alma-ac-backend" target="alma-mod-import-export"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-talent" source="alma-ac-backend" target="alma-mod-talent"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-reporting" source="alma-ac-backend" target="alma-mod-reporting"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-ai-summary" source="alma-ac-backend" target="alma-mod-ai-summary"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-integrations" source="alma-ac-backend" target="alma-mod-integrations"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-notifications" source="alma-ac-backend" target="alma-mod-notifications"/>
     <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-files" source="alma-ac-backend" target="alma-mod-files"/>
@@ -900,6 +938,9 @@
     <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-notification" source="alma-node-k8s" target="alma-art-notification"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-notification" source="alma-grp-images" target="alma-art-notification"/>
     <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-notification--ac-notification" source="alma-art-notification" target="alma-ac-notification"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-llm-gateway" source="alma-node-k8s" target="alma-art-llm-gateway"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-llm-gateway" source="alma-grp-images" target="alma-art-llm-gateway"/>
+    <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-llm-gateway--ac-llm-gateway" source="alma-art-llm-gateway" target="alma-ac-llm-gateway"/>
     <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-lms-stub" source="alma-node-k8s" target="alma-art-lms-stub"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-lms-stub" source="alma-grp-images" target="alma-art-lms-stub"/>
     <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-lms-stub--ac-lms-stub" source="alma-art-lms-stub" target="alma-ac-lms-stub"/>
@@ -910,6 +951,8 @@
     <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-no-egress--node-k8s" source="alma-con-no-egress" target="alma-node-k8s"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-single-egress" source="alma-grp-constraints" target="alma-con-single-egress"/>
     <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-single-egress--ac-notification" source="alma-con-single-egress" target="alma-ac-notification"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-ai-facts" source="alma-grp-constraints" target="alma-con-ai-facts"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-ai-facts--mod-ai-summary" source="alma-con-ai-facts" target="alma-mod-ai-summary"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-stubs" source="alma-grp-constraints" target="alma-con-stubs"/>
     <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-stubs--ac-lms-stub" source="alma-con-stubs" target="alma-ac-lms-stub"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-cache" source="alma-grp-constraints" target="alma-con-cache"/>
@@ -917,6 +960,7 @@
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-pii" source="alma-grp-constraints" target="alma-con-pii"/>
     <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-pii--sw-postgres" source="alma-con-pii" target="alma-sw-postgres"/>
     <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-stubs--ac-cms-stub" source="alma-con-stubs" target="alma-ac-cms-stub"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-single-egress--ac-llm-gateway" source="alma-con-single-egress" target="alma-ac-llm-gateway"/>
     <element xsi:type="archimate:ServingRelationship" name="SPA в браузере" id="alma-rel-v-ac-frontend--actor-users" source="alma-ac-frontend" target="alma-actor-users"/>
     <element xsi:type="archimate:ServingRelationship" name="/" id="alma-rel-v-sw-ingress--ac-frontend" source="alma-sw-ingress" target="alma-ac-frontend"/>
     <element xsi:type="archimate:ServingRelationship" name="/api" id="alma-rel-v-sw-ingress--ac-backend" source="alma-sw-ingress" target="alma-ac-backend"/>
@@ -938,6 +982,8 @@
     <element xsi:type="archimate:AssociationRelationship" name="заменяет на стенде" id="alma-rel-o-ac-cms-stub--ext-cms" source="alma-ac-cms-stub" target="alma-ext-cms"/>
     <element xsi:type="archimate:FlowRelationship" name="443, long-polling" id="alma-rel-f-ac-notification--ext-telegram" source="alma-ac-notification" target="alma-ext-telegram"/>
     <element xsi:type="archimate:FlowRelationship" name="адаптеры-заглушки" id="alma-rel-f-ac-notification--ext-channels" source="alma-ac-notification" target="alma-ext-channels"/>
+    <element xsi:type="archimate:FlowRelationship" name="сводки ИИ: POST /v1/chat, X-Internal-Token" id="alma-rel-f-ac-backend--ac-llm-gateway" source="alma-ac-backend" target="alma-ac-llm-gateway"/>
+    <element xsi:type="archimate:FlowRelationship" name="OAuth 9443, chat 443" id="alma-rel-f-ac-llm-gateway--ext-gigachat" source="alma-ac-llm-gateway" target="alma-ext-gigachat"/>
     <element xsi:type="archimate:ServingRelationship" name="БД crm" id="alma-rel-v-sw-postgres--ac-backend" source="alma-sw-postgres" target="alma-ac-backend"/>
     <element xsi:type="archimate:ServingRelationship" name="БД keycloak" id="alma-rel-v-sw-postgres--ac-keycloak" source="alma-sw-postgres" target="alma-ac-keycloak"/>
     <element xsi:type="archimate:ServingRelationship" name="кэш, pub/sub SSE" id="alma-rel-v-sw-keydb--ac-backend" source="alma-sw-keydb" target="alma-ac-backend"/>
@@ -967,6 +1013,8 @@
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-kam-activity" source="alma-mod-reporting" target="alma-svc-kam-activity"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-interactions" source="alma-mod-reporting" target="alma-svc-interactions"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-sla" source="alma-mod-reporting" target="alma-svc-sla"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-ai-summary--svc-ai-summary" source="alma-mod-ai-summary" target="alma-svc-ai-summary"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-ac-llm-gateway--svc-ai-summary" source="alma-ac-llm-gateway" target="alma-svc-ai-summary"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-import-export--svc-export" source="alma-mod-import-export" target="alma-svc-export"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-auth--svc-login" source="alma-mod-auth" target="alma-svc-login"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-ac-keycloak--svc-login" source="alma-ac-keycloak" target="alma-svc-login"/>
@@ -1090,7 +1138,7 @@
         <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-talent" targetConnections="alma-vf-c-rel-i-role-kam--fn-talent alma-vf-c-rel-i-role-head-kam--fn-talent alma-vf-c-rel-i-role-admin--fn-talent alma-vf-c-rel-v-svc-students--fn-talent alma-vf-c-rel-v-svc-reveal--fn-talent alma-vf-c-rel-v-svc-activities--fn-talent" archimateElement="alma-fn-talent">
           <bounds x="450" y="32" width="190" height="58"/>
         </child>
-        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-kam-control" targetConnections="alma-vf-c-rel-i-role-head-kam--fn-kam-control alma-vf-c-rel-i-role-admin--fn-kam-control alma-vf-c-rel-i-role-observer--fn-kam-control alma-vf-c-rel-v-svc-kam-activity--fn-kam-control alma-vf-c-rel-v-svc-interactions--fn-kam-control alma-vf-c-rel-v-svc-sla--fn-kam-control alma-vf-c-rel-v-svc-stuck--fn-kam-control" archimateElement="alma-fn-kam-control">
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-kam-control" targetConnections="alma-vf-c-rel-i-role-head-kam--fn-kam-control alma-vf-c-rel-i-role-admin--fn-kam-control alma-vf-c-rel-i-role-observer--fn-kam-control alma-vf-c-rel-v-svc-kam-activity--fn-kam-control alma-vf-c-rel-v-svc-interactions--fn-kam-control alma-vf-c-rel-v-svc-sla--fn-kam-control alma-vf-c-rel-v-svc-ai-summary--fn-kam-control alma-vf-c-rel-v-svc-stuck--fn-kam-control" archimateElement="alma-fn-kam-control">
           <bounds x="670" y="32" width="190" height="58"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-analytics" targetConnections="alma-vf-c-rel-i-role-kam--fn-analytics alma-vf-c-rel-i-role-head-kam--fn-analytics alma-vf-c-rel-i-role-admin--fn-analytics alma-vf-c-rel-i-role-observer--fn-analytics alma-vf-c-rel-v-svc-dashboard--fn-analytics alma-vf-c-rel-v-svc-interactions--fn-analytics alma-vf-c-rel-v-svc-export--fn-analytics" archimateElement="alma-fn-analytics">
@@ -1185,7 +1233,7 @@
         </child>
       </child>
       <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-reports" archimateElement="alma-grp-svc-reports">
-        <bounds x="680" y="440" width="210" height="362"/>
+        <bounds x="680" y="440" width="210" height="427"/>
         <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-dashboard" archimateElement="alma-svc-dashboard">
           <bounds x="10" y="32" width="190" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-dashboard--fn-analytics" source="alma-vf-svc-dashboard" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-dashboard--fn-analytics"/>
@@ -1203,8 +1251,12 @@
           <bounds x="10" y="227" width="190" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-sla--fn-kam-control" source="alma-vf-svc-sla" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-sla--fn-kam-control"/>
         </child>
-        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-export" archimateElement="alma-svc-export">
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-ai-summary" archimateElement="alma-svc-ai-summary">
           <bounds x="10" y="292" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-ai-summary--fn-kam-control" source="alma-vf-svc-ai-summary" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-ai-summary--fn-kam-control"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-export" archimateElement="alma-svc-export">
+          <bounds x="10" y="357" width="190" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-export--fn-analytics" source="alma-vf-svc-export" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-export--fn-analytics"/>
         </child>
       </child>
@@ -1322,22 +1374,25 @@
       <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-external" archimateElement="alma-grp-external">
         <bounds x="700" y="80" width="1080" height="100"/>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-lms" targetConnections="alma-vc-c-rel-o-ac-lms-stub--ext-lms" archimateElement="alma-ext-lms">
-          <bounds x="20" y="32" width="245" height="55"/>
+          <bounds x="20" y="32" width="195" height="55"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-cms" targetConnections="alma-vc-c-rel-o-ac-cms-stub--ext-cms" archimateElement="alma-ext-cms">
-          <bounds x="282" y="32" width="245" height="55"/>
+          <bounds x="230" y="32" width="195" height="55"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-telegram" targetConnections="alma-vc-c-rel-f-ac-notification--ext-telegram" archimateElement="alma-ext-telegram">
-          <bounds x="544" y="32" width="245" height="55"/>
+          <bounds x="440" y="32" width="195" height="55"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-channels" targetConnections="alma-vc-c-rel-f-ac-notification--ext-channels" archimateElement="alma-ext-channels">
-          <bounds x="806" y="32" width="245" height="55"/>
+          <bounds x="650" y="32" width="195" height="55"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-gigachat" targetConnections="alma-vc-c-rel-f-ac-llm-gateway--ext-gigachat" archimateElement="alma-ext-gigachat">
+          <bounds x="860" y="32" width="195" height="55"/>
         </child>
       </child>
       <child xsi:type="archimate:DiagramObject" id="alma-vc-node-k8s" targetConnections="alma-vc-c-rel-o-con-no-egress--node-k8s" archimateElement="alma-node-k8s">
-        <bounds x="20" y="220" width="1760" height="570"/>
+        <bounds x="20" y="220" width="1760" height="630"/>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-app" archimateElement="alma-grp-tier-app">
-          <bounds x="20" y="40" width="1180" height="390"/>
+          <bounds x="20" y="40" width="1180" height="450"/>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-sw-ingress" archimateElement="alma-sw-ingress">
             <bounds x="20" y="35" width="220" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--ac-frontend" source="alma-vc-sw-ingress" target="alma-vc-ac-frontend" archimateRelationship="alma-rel-v-sw-ingress--ac-frontend"/>
@@ -1352,12 +1407,13 @@
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-frontend--actor-users" source="alma-vc-ac-frontend" target="alma-vc-actor-users" archimateRelationship="alma-rel-v-ac-frontend--actor-users"/>
           </child>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-backend" targetConnections="alma-vc-c-rel-r-art-backend--ac-backend alma-vc-c-rel-v-sw-ingress--ac-backend alma-vc-c-rel-v-ac-keycloak--ac-backend alma-vc-c-rel-f-ac-lms-stub--ac-backend alma-vc-c-rel-f-ac-cms-stub--ac-backend alma-vc-c-rel-v-sw-postgres--ac-backend alma-vc-c-rel-v-sw-keydb--ac-backend alma-vc-c-rel-v-sw-minio--ac-backend alma-vc-c-rel-t-tp-cronjobs--ac-backend" archimateElement="alma-ac-backend">
-            <bounds x="20" y="110" width="905" height="255"/>
+            <bounds x="20" y="110" width="905" height="320"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-backend--ac-frontend" source="alma-vc-ac-backend" target="alma-vc-ac-frontend" archimateRelationship="alma-rel-v-ac-backend--ac-frontend"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-notification" source="alma-vc-ac-backend" target="alma-vc-ac-notification" archimateRelationship="alma-rel-f-ac-backend--ac-notification"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-backend--ac-notification" source="alma-vc-ac-backend" target="alma-vc-ac-notification" archimateRelationship="alma-rel-v-ac-backend--ac-notification"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-lms-stub" source="alma-vc-ac-backend" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-f-ac-backend--ac-lms-stub"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-cms-stub" source="alma-vc-ac-backend" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-f-ac-backend--ac-cms-stub"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-llm-gateway" source="alma-vc-ac-backend" target="alma-vc-ac-llm-gateway" archimateRelationship="alma-rel-f-ac-backend--ac-llm-gateway"/>
             <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-auth" archimateElement="alma-mod-auth">
               <bounds x="15" y="40" width="165" height="55"/>
             </child>
@@ -1382,26 +1438,29 @@
             <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-reporting" archimateElement="alma-mod-reporting">
               <bounds x="367" y="108" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-integrations" archimateElement="alma-mod-integrations">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-ai-summary" targetConnections="alma-vc-c-rel-o-con-ai-facts--mod-ai-summary" archimateElement="alma-mod-ai-summary">
               <bounds x="543" y="108" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-notifications" archimateElement="alma-mod-notifications">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-integrations" archimateElement="alma-mod-integrations">
               <bounds x="719" y="108" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-files" archimateElement="alma-mod-files">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-notifications" archimateElement="alma-mod-notifications">
               <bounds x="15" y="176" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-admin" archimateElement="alma-mod-admin">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-files" archimateElement="alma-mod-files">
               <bounds x="191" y="176" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-ui" archimateElement="alma-mod-ui">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-admin" archimateElement="alma-mod-admin">
               <bounds x="367" y="176" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-internal" archimateElement="alma-mod-internal">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-ui" archimateElement="alma-mod-ui">
               <bounds x="543" y="176" width="165" height="55"/>
             </child>
-            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-core" archimateElement="alma-mod-core">
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-internal" archimateElement="alma-mod-internal">
               <bounds x="719" y="176" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-core" archimateElement="alma-mod-core">
+              <bounds x="15" y="244" width="165" height="55"/>
             </child>
           </child>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-lms-stub" targetConnections="alma-vc-c-rel-r-art-lms-stub--ac-lms-stub alma-vc-c-rel-o-con-stubs--ac-lms-stub alma-vc-c-rel-v-sw-ingress--ac-lms-stub alma-vc-c-rel-f-ac-backend--ac-lms-stub" archimateElement="alma-ac-lms-stub">
@@ -1425,15 +1484,19 @@
           </child>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-dmz" archimateElement="alma-grp-tier-dmz">
-          <bounds x="1490" y="40" width="250" height="100"/>
+          <bounds x="1490" y="40" width="250" height="170"/>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-notification" targetConnections="alma-vc-c-rel-r-art-notification--ac-notification alma-vc-c-rel-o-con-single-egress--ac-notification alma-vc-c-rel-v-ac-keycloak--ac-notification alma-vc-c-rel-f-ac-backend--ac-notification alma-vc-c-rel-v-ac-backend--ac-notification alma-vc-c-rel-v-sw-keydb--ac-notification" archimateElement="alma-ac-notification">
             <bounds x="20" y="32" width="210" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-notification--ext-telegram" source="alma-vc-ac-notification" target="alma-vc-ext-telegram" archimateRelationship="alma-rel-f-ac-notification--ext-telegram"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-notification--ext-channels" source="alma-vc-ac-notification" target="alma-vc-ext-channels" archimateRelationship="alma-rel-f-ac-notification--ext-channels"/>
           </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-llm-gateway" targetConnections="alma-vc-c-rel-r-art-llm-gateway--ac-llm-gateway alma-vc-c-rel-o-con-single-egress--ac-llm-gateway alma-vc-c-rel-f-ac-backend--ac-llm-gateway" archimateElement="alma-ac-llm-gateway">
+            <bounds x="20" y="100" width="210" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-llm-gateway--ext-gigachat" source="alma-vc-ac-llm-gateway" target="alma-vc-ext-gigachat" archimateRelationship="alma-rel-f-ac-llm-gateway--ext-gigachat"/>
+          </child>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-data" archimateElement="alma-grp-tier-data">
-          <bounds x="1220" y="160" width="520" height="100"/>
+          <bounds x="1220" y="230" width="520" height="100"/>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-sw-postgres" targetConnections="alma-vc-c-rel-o-con-pii--sw-postgres alma-vc-c-rel-o-tp-jobs--sw-postgres" archimateElement="alma-sw-postgres">
             <bounds x="15" y="32" width="158" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-postgres--ac-backend" source="alma-vc-sw-postgres" target="alma-vc-ac-backend" archimateRelationship="alma-rel-v-sw-postgres--ac-backend"/>
@@ -1450,7 +1513,7 @@
           </child>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-jobs" archimateElement="alma-grp-jobs">
-          <bounds x="1220" y="280" width="520" height="110"/>
+          <bounds x="1220" y="350" width="520" height="110"/>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-tp-cronjobs" archimateElement="alma-tp-cronjobs">
             <bounds x="15" y="32" width="240" height="65"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-t-tp-cronjobs--ac-backend" source="alma-vc-tp-cronjobs" target="alma-vc-ac-backend" archimateRelationship="alma-rel-t-tp-cronjobs--ac-backend"/>
@@ -1462,7 +1525,7 @@
           </child>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-images" archimateElement="alma-grp-images">
-          <bounds x="20" y="450" width="1720" height="100"/>
+          <bounds x="20" y="510" width="1720" height="100"/>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-art-backend" archimateElement="alma-art-backend">
             <bounds x="20" y="32" width="200" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-backend--ac-backend" source="alma-vc-art-backend" target="alma-vc-ac-backend" archimateRelationship="alma-rel-r-art-backend--ac-backend"/>
@@ -1475,38 +1538,47 @@
             <bounds x="460" y="32" width="200" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-notification--ac-notification" source="alma-vc-art-notification" target="alma-vc-ac-notification" archimateRelationship="alma-rel-r-art-notification--ac-notification"/>
           </child>
-          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-lms-stub" archimateElement="alma-art-lms-stub">
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-llm-gateway" archimateElement="alma-art-llm-gateway">
             <bounds x="680" y="32" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-llm-gateway--ac-llm-gateway" source="alma-vc-art-llm-gateway" target="alma-vc-ac-llm-gateway" archimateRelationship="alma-rel-r-art-llm-gateway--ac-llm-gateway"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-lms-stub" archimateElement="alma-art-lms-stub">
+            <bounds x="900" y="32" width="200" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-lms-stub--ac-lms-stub" source="alma-vc-art-lms-stub" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-r-art-lms-stub--ac-lms-stub"/>
           </child>
           <child xsi:type="archimate:DiagramObject" id="alma-vc-art-cms-stub" archimateElement="alma-art-cms-stub">
-            <bounds x="900" y="32" width="200" height="55"/>
+            <bounds x="1120" y="32" width="200" height="55"/>
             <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-cms-stub--ac-cms-stub" source="alma-vc-art-cms-stub" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-r-art-cms-stub--ac-cms-stub"/>
           </child>
         </child>
       </child>
       <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-constraints" archimateElement="alma-grp-constraints">
-        <bounds x="20" y="820" width="1760" height="100"/>
+        <bounds x="20" y="880" width="1760" height="100"/>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-con-no-egress" archimateElement="alma-con-no-egress">
-          <bounds x="20" y="32" width="330" height="55"/>
+          <bounds x="20" y="32" width="272" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-no-egress--node-k8s" source="alma-vc-con-no-egress" target="alma-vc-node-k8s" archimateRelationship="alma-rel-o-con-no-egress--node-k8s"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-con-single-egress" archimateElement="alma-con-single-egress">
-          <bounds x="366" y="32" width="330" height="55"/>
+          <bounds x="308" y="32" width="272" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-single-egress--ac-notification" source="alma-vc-con-single-egress" target="alma-vc-ac-notification" archimateRelationship="alma-rel-o-con-single-egress--ac-notification"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-single-egress--ac-llm-gateway" source="alma-vc-con-single-egress" target="alma-vc-ac-llm-gateway" archimateRelationship="alma-rel-o-con-single-egress--ac-llm-gateway"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-con-stubs" archimateElement="alma-con-stubs">
-          <bounds x="712" y="32" width="330" height="55"/>
+          <bounds x="596" y="32" width="272" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-stubs--ac-lms-stub" source="alma-vc-con-stubs" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-o-con-stubs--ac-lms-stub"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-stubs--ac-cms-stub" source="alma-vc-con-stubs" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-o-con-stubs--ac-cms-stub"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-con-cache" archimateElement="alma-con-cache">
-          <bounds x="1058" y="32" width="330" height="55"/>
+          <bounds x="884" y="32" width="272" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-cache--sw-keydb" source="alma-vc-con-cache" target="alma-vc-sw-keydb" archimateRelationship="alma-rel-o-con-cache--sw-keydb"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vc-con-pii" archimateElement="alma-con-pii">
-          <bounds x="1404" y="32" width="330" height="55"/>
+          <bounds x="1172" y="32" width="272" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-pii--sw-postgres" source="alma-vc-con-pii" target="alma-vc-sw-postgres" archimateRelationship="alma-rel-o-con-pii--sw-postgres"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-con-ai-facts" archimateElement="alma-con-ai-facts">
+          <bounds x="1460" y="32" width="272" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-ai-facts--mod-ai-summary" source="alma-vc-con-ai-facts" target="alma-vc-mod-ai-summary" archimateRelationship="alma-rel-o-con-ai-facts--mod-ai-summary"/>
         </child>
       </child>
     </element>

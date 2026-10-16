@@ -1,6 +1,7 @@
 """Все модели SQLAlchemy (таблицы data-model.md §13 и последующих миграций)."""
 
 from app.models.access import AppPermission, AppRole, AppRolePermission
+from app.models.ai_summary import AiSummaryJob
 from app.models.base import Base
 from app.models.crm import (
     Contract,
@@ -82,4 +83,5 @@ __all__ = [
     "AppSetting",
     "AuditLog",
     "IdempotencyKey",
+    "AiSummaryJob",
 ]

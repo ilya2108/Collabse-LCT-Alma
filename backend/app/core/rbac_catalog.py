@@ -392,6 +392,15 @@ PERMISSIONS: tuple[PermissionDef, ...] = (
         requires=("reports:read",),
     ),
     PermissionDef(
+        "reports:ai_summary",
+        "reports",
+        "Сводки ИИ по отчёту КАМов",
+        "Кнопка «Сводка ИИ» в отчёте «Активность КАМов»: текстовая сводка фактов по команде и "
+        "по КАМу (GigaChat получает только агрегаты и псевдонимы; без него — сводка по правилам)",
+        scoped=True,
+        requires=("reports:read",),
+    ),
+    PermissionDef(
         "export:run",
         "reports",
         "Экспорт данных (ПДн маскируются по правам)",
@@ -560,6 +569,8 @@ _HEAD_KAM = (_KAM - {"requests:kam"}) | frozenset(
         "students:files_delete",
         "activities:write",
         "reports:all",
+        # сводки ИИ: нагрузка на один поток GigaChat — по умолчанию только руководителю
+        "reports:ai_summary",
         "notification_rules:read",
         "admin:users",  # список пользователей — чтение
     }

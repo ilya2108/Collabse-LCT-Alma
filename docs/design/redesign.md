@@ -639,7 +639,7 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 
 - Все таблицы (users, audit, журнал обмена) — `DataTable`; audit: быстрый чип-фильтр «Раскрытия ПДн» — `StatusBadge talent` кликабельный.
 - `/admin/approvals`: входящие — карточки со строкой автор+дата+workflow, диффом-плашками (как impact-preview 6.6) и парой кнопок «Согласовать и опубликовать» primary / «Вернуть» outline+textarea; пусто — иллюстрация `registry-empty` с текстом «Согласований нет».
-- Фичефлаги — строки-карточки: имя `font-mono text-sm`, описание одной строкой, Switch, «изменён кем/когда» `text-xs text-muted-foreground`; `llm_features` — disabled c подписью-тултипом.
+- Фичефлаги — строки-карточки: имя `font-mono text-sm`, описание одной строкой, Switch, «изменён кем/когда» `text-xs text-muted-foreground`; заблокированных флагов нет (прежний `llm_features` заменён рабочим `ai_summaries` — «Сводка ИИ»).
 - Интеграции: две карточки-коннектора со статус-точкой (пульс `animate-pulse` у живого; reduce — статично) и счётчиками «→ N / ← M» `tabular-nums`; журнал — DataTable, направление — иконка `ArrowRight`/`ArrowLeft` в tint-круге, кнопка `{}` — `Dialog` с `<pre>` JSON (`bg-sidebar text-sidebar-muted rounded-md p-4 text-xs`).
 
 ---

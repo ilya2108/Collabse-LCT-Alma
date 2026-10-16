@@ -1,0 +1,24 @@
+# llm-gateway — второй и последний под с egress в интернет: только GigaChat
+# (OAuth ngw…:9443, chat …:443), только не в кластерные/приватные сети. Ключ GigaChat
+# видит только он. Проверка: curl https://gigachat.devices.sberbank.ru из backend —
+# соединение отклонено (k3s/kube-router отвечает сразу, curl exit 7), а не таймаут.
+#
+# Ограничение NetworkPolicy: по FQDN она не фильтрует, поэтому 443/9443 открыты на любой
+# публичный адрес (тот же шаблон, что у notification). Целевая архитектура — egress-прокси
+# с allowlist ngw.devices.sberbank.ru и gigachat.devices.sberbank.ru (GIGACHAT_PROXY_URL
+# шлюз уже поддерживает) или FQDN-политика Cilium/Calico; на VM-оверлее — ещё и публичный
+# IP узла в except (иначе через него виден Traefik).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: llm-gateway-dmz}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: llm-gateway}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: # единственный клиент: backend → POST /v1/chat (сводки ИИ)
+        - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
+      ports: [{port: 8040}]
+  egress:
+    - to: # GigaChat: OAuth на 9443, chat на 443; DNS даёт 10-allow-dns
+        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}
+      ports: [{port: 443}, {port: 9443}]

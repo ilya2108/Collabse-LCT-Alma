@@ -17,6 +17,7 @@
 | `import_export` | 5-шаговый импорт (XLSX/XLS/CSV/JSON, кодировки `utf-8-sig→utf-8→cp1251→koi8-r→cp866`, объединённые ячейки, файл без строки заголовков), составной импорт «Таблица КАМов» (`kam_catalog`), экспорт (фильтры строкой или списком, `report:kam-activity` и `report:interactions` в XLSX/PDF), справочники админки | `/import/sessions*`, `/export/jobs*`, `/admin/dictionaries*` |
 | `talent_pool` | студенты (Fernet + HMAC blind index, маскирование всегда, `/reveal` под аудит), воронка, файлы, активности | `/students*`, `/activities*` |
 | `reporting` | 8 JSON-агрегатов дашборда (фильтры — списки id, `IN` во всех секциях) + отчёт «Активность КАМов» (детализация и сводка, PDF на fpdf2, многолистовой XLSX) + «Взаимодействия за период» по выбранным колонкам; кэш KeyDB 60 с, область отчётов `report_scope` | `/reports/*`, `/reports/kam-activity`, `/reports/kam-activity/summary`, `/reports/interactions` |
+| `ai_summary` | «Сводка ИИ» в отчёте «Активность КАМов»: факты из отчётов по allowlist с псевдонимами КАМов, кэш и дедупликация задач в таблице `ai_summary_job`, вызов llm-gateway (GigaChat), проверка чисел и советов в ответе, сводка по правилам без ИИ; право `reports:ai_summary`, флаг `ai_summaries`, аудит `ai.summary_*` | `POST /reports/ai-summaries`, `GET /reports/ai-summaries/{id}` |
 | `integrations` | конверт IntegrationEvent, транспорт `IntegrationTransport` (HTTP + HMAC), вебхуки HMAC, DLQ + ручной retry | `/integrations/{lms,cms}/webhook`, `/admin/integration/*` |
 | `notifications` | настройки каналов/событий, in-app лента + маркеры прочтения, тест-отправка, привязка Telegram (код 6 цифр TTL 10 мин, KeyDB GETDEL), CRUD правил `notification_rule`, данные для команд бота | `/notifications*`, `/notifications/rules*`, `/internal/bot/*` |
 | `files` | MinIO: 3 бакета, ключ `{entity_type}/{entity_id}/{file_id}/{safe_name}`, proxy/presigned; белый список вложений заявки (`check_attachment_format`); файл заявки — только в зоне видимости заявки | `GET /files/{id}/download` |
@@ -31,18 +32,19 @@
 прав (`rbac_catalog`) и модель доступа (`access`: права по процессам, `DealScope`),
 PII-криптография, KeyDB cache-aside с деградацией в PG, middleware Idempotency-Key с
 хранилищем в PG, три транзакционных outbox'а (notification / integration_event /
-audit_log) + фоновый relay и сменный транспорт интеграций, SSE-хаб. OpenAPI — 157
-методов, у 86 мутирующих — заголовок `Idempotency-Key`.
+audit_log) + фоновый relay и сменный транспорт интеграций, SSE-хаб. OpenAPI — 161
+метод, у 87 мутирующих — заголовок `Idempotency-Key`.
 
 ## Роли и права
 
-- **Права — код.** `core/rbac_catalog.py`: 61 право в 8 группах. 18 прав — «с
+- **Права — код.** `core/rbac_catalog.py`: 62 права в 8 группах. 19 прав — «с
   областью»: действуют только в процессах роли (B2B, B2C) и с её областью записей
   (`all` / `own`), остальные общие (справочники, админка). У прав есть зависимости
   (`requires`): редактор не даст сохранить правку без просмотра.
 - **Роли — данные.** Таблицы `app_role` / `app_role_permission` (миграция 0004
-  засевает каталог из кода, 0006 добавляет `universities:assign`). Системные роли:
-  admin — 60 прав, заблокирована от правки; head_kam — 41; kam — 28; observer — 14.
+  засевает каталог из кода, 0006 добавляет `universities:assign`, 0010 —
+  `reports:ai_summary` с выдачей admin и head_kam). Системные роли:
+  admin — 61 право, заблокирована от правки; head_kam — 42; kam — 28; observer — 14.
   Наборы подобраны так, что доступ
   базовых ролей к каждому эндпоинту совпал с прежней матрицей —
   регрессия `tests/test_access_matrix.py`. Свои роли — `POST /admin/roles`;
@@ -135,6 +137,47 @@ audit_log) + фоновый relay и сменный транспорт инте�
 - Индексы под отчёт — миграция 0005. Демо-история ~20 КАМов —
   `python -m app.tools.seed_activity`, основной сид вызывает её сам.
 
+## «Сводка ИИ» (`modules/ai_summary`)
+
+Не агент и не советчик: по клику — текстовая сводка фактов поверх уже посчитанных цифр
+«Сводки для заказчика» и «Просрочек» по команде (`kind: team`) или по КАМу (`kam`).
+Контракт — api-contract.md §7.2.3.
+
+- **Доступ.** Право `reports:ai_summary` (с областью; по умолчанию admin и head_kam) и
+  фичефлаг `ai_summaries` (выключен — 422); область — `scope.ai_scope`: область отчётов в
+  процессах с правом. 403/404 — от самих отчётов.
+- **Факты** (`facts.py`) — allowlist: числа отчётов, очищенные названия этапов и
+  направлений, метки B2B/B2C, даты периода, псевдонимы `КАМ-01…` (id отсортированы; больше
+  30 КАМов — суммой в `others`). Ни ФИО, ни вузов, ни клиентов B2C, ни заголовков, ни
+  комментариев, ни денег. sha256 канонических фактов — «версия данных».
+- **Задачи** (`service.py`, таблица `ai_summary_job`, миграция 0010): режим `rules` —
+  сводка сразу (200); иначе готовая с тем же ключом за час — 200 `reused`, новая —
+  `INSERT … ON CONFLICT DO NOTHING` по частичному UNIQUE задач в полёте (202 и
+  `runner.spawn`), конфликт — присоединение к задаче в полёте. Выполнение фоном в
+  процессе: `queued → running`, вызов шлюза вне транзакции, результат и аудит одной
+  транзакцией; зависшие дольше 15 мин — `failed: interrupted`, старше 7 дней — удаляются.
+- **Провайдеры** (`providers.py`, `gateway.py`): `gigachat` — `POST {LLM_GATEWAY_URL}/v1/chat`
+  с `X-Internal-Token` (ключ GigaChat видит только `services/llm-gateway`); ошибки шлюза
+  сводятся к кодам задачи `llm_busy`, `llm_timeout`, `llm_unavailable`,
+  `llm_not_configured`, `llm_budget_exceeded`; `stub` — сводка по правилам в форме ответа
+  модели, без сети (dev и тесты; при `APP_ENV=k8s` запрещён).
+- **Проверка** (`parse.py`, `verify.py`): JSON по схеме (`AiSummaryLlmOut`, плоская);
+  каждая фраза — псевдонимы только выданные, без ссылок и разметки, без советов
+  (`NO_ADVICE_RE` из `reporting/sla.py`), вопросы с «?», числа и даты — из фактов (дробные
+  с допуском 0,05 и округлением до целого). Удалён заголовок, осталось меньше двух фраз или
+  удалено больше половины — `failed: llm_bad_output`. Вторая попытка модели — только при
+  неразобранном JSON и если с начала задачи прошло меньше 200 с.
+- **Сводка по правилам** (`rules.py`) — тот же формат из тех же фактов, проходит `verify`
+  без удалений; работает офлайн.
+- **ФИО** подставляются вместо псевдонимов только при чтении (`render_job`), «Фамилия И. О.».
+- **Аудит** `ai.summary_requested` (на каждый POST, `outcome`) и `ai.summary_generated`
+  (итог, токены, `checks`) — без текста сводки, фактов и ФИО.
+- **Живой прогон** при поднятом шлюзе: `set -a; . ../deploy/compose/.env; set +a;
+  ALMA_LLM_LIVE=1 LLM_GATEWAY_URL=http://localhost:8040 ./.venv/bin/python -m pytest -q
+  tests/test_ai_summary_live.py -s` (токен шлюза — случайный из `.env`: с настоящим ключом
+  шлюз `dev-llm-token` не принимает)
+  (17.10.2026: GigaChat-2-Pro, ≈ 3–3,7 тыс. токенов на входе, 6–7 с, все числа сверены).
+
 ## Демо-сид и сброс стенда
 
 - `python -m app.tools.seed` — идемпотентный сид: процессы, справочники (в том числе
@@ -178,7 +221,7 @@ audit_log) + фоновый relay и сменный транспорт инте�
 | Настройки нотификаций пользователя | `notify:settings:{user_id}` |
 | Маркеры прочтения in-app ленты | `notify:read:{user_id}` |
 | Пресеты UI пользователя | `ui:presets:{user_id}` |
-| Фичефлаги (`auto_ranking`, `report_pdf` — включён по умолчанию, `llm_features`) | `feature_flags` |
+| Фичефлаги (`auto_ranking`, `report_pdf` — включён по умолчанию, `ai_summaries` — выключен по умолчанию, демо-сид включает) | `feature_flags` |
 | Справочники-списки (`regions`, `tags`, …) | `dict:{name}` |
 | Версия документа `/admin/settings` | `settings_version` |
 
@@ -190,7 +233,7 @@ app/
                # (права), access (роли, права по процессам, DealScope), pii, cache (KeyDB),
                # idempotency (+ idempotency_store), outbox (+relay), integration_transport,
                # sse, events (реестр событий), audit, pagination
-  models/      # 37 таблиц по data-model.md (optimistic locking — системная xmin)
+  models/      # 38 таблиц по data-model.md (optimistic locking — системная xmin)
   modules/     # см. таблицу выше
   tools/       # seed (+ seed_activity, --reset), check_migrations, rekey (ротация PII),
                # rbac (аварийный admin), bench_migration (замер переноса заявок)
@@ -198,7 +241,9 @@ alembic/       # 0001 начальная схема (raw DDL из data-model.md 
                # 0002 маскирование ПДн лидов, 0003 idempotency_key,
                # 0004 роли и права, 0005 индексы отчёта «Активность КАМов»,
                # 0006 файлы в статусах, право universities:assign, порог этапа до 365,
-               # 0007 ИТ-направления, 0008 лицензии в contract_product и kam_catalog
+               # 0007 ИТ-направления, 0008 лицензии в contract_product и kam_catalog,
+               # 0009 индекс журнала напоминаний («Просрочки»),
+               # 0010 ai_summary_job и право reports:ai_summary
 tests/         # юнит-тесты без инфраструктуры (KeyDB-деградация проверяется)
   db/          # интеграционные тесты на PostgreSQL: схема из миграций, фабрики данных
 ```
@@ -238,11 +283,15 @@ OpenAPI — `http://localhost:8000/api/v1/docs`.
 | `RBAC_CATALOG_TTL_SECONDS` | TTL кэша каталога ролей в процессе (5 с) |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | пул соединений на процесс uvicorn (4 + 2): 6 подов × 2 воркера × 6 = 72 при `max_connections=150` (`tests/test_connection_budget.py`) |
 | `DEMO_ANCHOR_DATE` | «сейчас» демо-данных для `seed --reset` (ГГГГ-ММ-ДД — 09:00 МСК) |
+| `AI_SUMMARY_PROVIDER` | сводки ИИ: `rules` (по умолчанию в коде; без ИИ), `gigachat` (через llm-gateway; в k8s ConfigMap), `stub` (без сети, только dev и тесты) |
+| `LLM_GATEWAY_URL`, `LLM_GATEWAY_TOKEN` | адрес llm-gateway (`http://localhost:8040`) и его `X-Internal-Token` (Secret `crm-llm`, один ключ; в k8s пустой или `dev-llm-token` при `gigachat` — падение на старте) |
+| `AI_SUMMARY_GATEWAY_TIMEOUT_SECONDS` (330), `AI_SUMMARY_CACHE_TTL_SECONDS` (3600), `AI_SUMMARY_JOB_STALE_SECONDS` (900), `AI_SUMMARY_RETENTION_DAYS` (7), `AI_SUMMARY_LLM_ATTEMPTS` (2) | ожидание шлюза (очередь 180 + бюджет 120 + запас), кэш готовой сводки, «прервано» для зависших задач, хранение задач, попыток модели (вторая — ремонт JSON) |
+| `AI_SUMMARY_USER_HOURLY_LIMIT` (10), `AI_SUMMARY_FORCE_COOLDOWN_SECONDS` (300) | новых задач GigaChat на пользователя за скользящий час (сверх — `failed: rate_limited`; 0 — без лимита), «Обновить» чаще — отдаёт свежую готовую сводку |
 
 ## Проверки
 
 ```bash
-./.venv/bin/python -m pytest -q                    # 1 819 тестов (1 620 юнит + 199 tests/db)
+./.venv/bin/python -m pytest -q                    # 2 074 теста (1 833 юнит + 241 tests/db)
 ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без PostgreSQL — ошибка
 ./.venv/bin/python -m ruff check app tests
 ./.venv/bin/python -m app.tools.check_migrations   # exit 0 = схема на head
@@ -296,3 +345,6 @@ ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без 
   передача портфеля КАМа; справочник ИТ-направлений (0007); импорт «Таблица КАМов» с
   лицензиями (0008); единый `ErrorEnvelope` в OpenAPI и закрытый каталог кодов
   ошибок; бюджет соединений PostgreSQL; `seed --reset` для сброса стенда.
+- **B7** — вкладка «Просрочки» (`reporting/sla*.py`, 0009) и «Сводка ИИ» (`ai_summary`,
+  0010): сводка фактов по команде и по КАМу через llm-gateway или по правилам, проверка
+  чисел кодом, право `reports:ai_summary`, флаг `ai_summaries` вместо `llm_features`.

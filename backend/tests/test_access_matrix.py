@@ -200,6 +200,9 @@ NEW_ENDPOINT_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("GET", "/reports/interactions"): ALL,  # «Взаимодействия за период» (ТЗ ФТ4)
     ("GET", "/reports/sla"): ALL,  # «Просрочки»
     ("GET", "/reports/sla/kams/{kam_id}"): ALL,
+    # «Сводка ИИ» (reports:ai_summary — по умолчанию admin и head_kam, флаг ai_summaries)
+    ("POST", "/reports/ai-summaries"): AH,
+    ("GET", "/reports/ai-summaries/{job_id}"): AH,
     ("GET", "/requests/{request_id}/files"): ALL,
     ("POST", "/requests/{request_id}/files"): AHK,
     ("DELETE", "/requests/{request_id}/files/{file_id}"): AHK,

@@ -24,6 +24,8 @@ resources:
   - frontend/service.yaml
   - notification/deployment.yaml
   - notification/service.yaml
+  - llm-gateway/deployment.yaml # шлюз GigaChat (сводки ИИ): второй под с egress
+  - llm-gateway/service.yaml
   - lms-stub/deployment.yaml
   - lms-stub/service.yaml
   - cms-stub/deployment.yaml
@@ -44,6 +46,14 @@ resources:
   - networkpolicy/32-keycloak.yaml
   - networkpolicy/35-jobs-stubs.yaml
   - networkpolicy/40-notification-dmz.yaml
+  - networkpolicy/41-llm-gateway-dmz.yaml
+# Сертификаты НУЦ Минцифры для TLS до GigaChat. Генератор — в base, а не в оверлеях:
+# kustomize не читает файлы вне корня kustomization (LoadRestrictionsRootOnly), поэтому
+# PEM лежит рядом с манифестом шлюза. Хеш-суффикс имени оставлен: kustomize сам перепишет
+# ссылку в volume, а смена бандла (ротация Sub CA до 06.03.2027) вызовет rollout.
+configMapGenerator:
+  - name: llm-gateway-ca
+    files: [llm-gateway/certs/russian_trusted_bundle.pem]
 labels:
   - includeSelectors: false
     pairs:

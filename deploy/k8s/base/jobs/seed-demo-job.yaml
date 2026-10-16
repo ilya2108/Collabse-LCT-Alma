@@ -40,6 +40,8 @@ spec:
             - secretRef: {name: crm-db}
             # check_migrations строит полный Settings — см. backend/deployment.yaml
             - secretRef: {name: crm-internal}
+          env: # шлюз не нужен: rules перекрывает gigachat из crm-config — токен не требуется
+            - {name: AI_SUMMARY_PROVIDER, value: rules}
       containers:
         - name: seed
           image: crm/backend:dev
@@ -51,3 +53,5 @@ spec:
             - secretRef: {name: crm-pii}
             - secretRef: {name: crm-s3}
             - secretRef: {name: crm-internal}
+          env: # сиду шлюз не нужен — см. init-контейнер выше (секрет crm-llm не монтируется)
+            - {name: AI_SUMMARY_PROVIDER, value: rules}

@@ -27,6 +27,8 @@ secretGenerator:
     envs: [secrets/crm-telegram.env]
   - name: crm-internal
     envs: [secrets/crm-internal.env]
+  - name: crm-llm # GIGACHAT_* — только llm-gateway; backend берёт один LLM_GATEWAY_TOKEN
+    envs: [secrets/crm-llm.env]
 generatorOptions:
   disableNameSuffixHash: true # имена секретов зашиты в envFrom подов
 patches:
@@ -63,6 +65,8 @@ images:
   - name: crm/frontend
     newTag: vm
   - name: crm/notification
+    newTag: vm
+  - name: crm/llm-gateway
     newTag: vm
   - name: crm/lms-stub
     newTag: vm

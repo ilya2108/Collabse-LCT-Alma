@@ -379,7 +379,7 @@ async def test_permissions_catalog(api, admin_user) -> None:  # noqa: ANN001
     groups = response.json()["groups"]
     assert [g["code"] for g in groups][0] == "requests"
     flat = {p["code"]: p for g in groups for p in g["permissions"]}
-    assert len(flat) == 61
+    assert len(flat) == 62
     assert flat["workflow:approve"]["requires"] == ["workflow:change"]
     assert flat["requests:read"]["scoped"] is True
 

@@ -80,7 +80,8 @@ export function SlaTeamView({
         onOverdueClick={boardLink ? () => navigate(boardLink) : undefined}
       />
 
-      <div className="grid grid-cols-12 items-stretch gap-4">
+      {/* items-start: график не тянется по высоте списка «кто требует внимания» (до 8 КАМов) */}
+      <div className="grid grid-cols-12 items-start gap-4">
         <div className="col-span-12 min-w-0 lg:col-span-7">
           <SlaStagesCard
             stages={report?.stages ?? {}}

@@ -616,6 +616,20 @@ SERVICES: tuple[ServiceDef, ...] = (
         "корзины задержки, атрибуция на дату.",
     ),
     ServiceDef(
+        "ai-summary",
+        "Сводка ИИ по отчёту КАМов",
+        "reports",
+        ("kam-control",),
+        "/api/v1/reports/ai-summaries*",
+        "reports:ai_summary",
+        "/reports/kam-activity",
+        ("mod-ai-summary", "ac-llm-gateway"),
+        "Сводка фактов по команде и по КАМу поверх цифр «Сводки для заказчика» и "
+        "«Просрочек»: GigaChat через llm-gateway получает только агрегаты и псевдонимы, "
+        "числа ответа сверяются с отчётом; без GigaChat — сводка по правилам. За фичефлагом "
+        "ai_summaries.",
+    ),
+    ServiceDef(
         "export",
         "Экспорт XLSX, CSV, JSON, PDF",
         "reports",
@@ -948,6 +962,13 @@ MODULES: tuple[tuple[str, str, str, str], ...] = (
         "Агрегаты дашборда, отчёт «Активность КАМов», PDF (fpdf2) и XLSX.",
     ),
     (
+        "ai-summary",
+        "ai_summary — сводки ИИ",
+        "app/modules/ai_summary",
+        "Факты отчётов с псевдонимами КАМов, задачи и кэш (ai_summary_job), вызов "
+        "llm-gateway, проверка чисел и советов, сводка по правилам.",
+    ),
+    (
         "integrations",
         "integrations — LMS и CMS",
         "app/modules/integrations",
@@ -1153,6 +1174,12 @@ def _build_component(model: Model) -> None:
             "Каналы-заглушки notification-service: сообщение пишется в журнал, адаптер "
             "заменяется без смены кода ядра.",
         ),
+        "gigachat": (
+            "GigaChat API (Сбер)",
+            "Модель для «Сводки ИИ»: OAuth ngw.devices.sberbank.ru:9443, чат "
+            "gigachat.devices.sberbank.ru:443; доступен только из llm-gateway. Оператор в РФ; "
+            "on-prem GigaChat подключается переменными GIGACHAT_*_URL.",
+        ),
     }
     for key, (name, doc) in ext.items():
         eid = add(f"alma-ext-{key}", "ApplicationComponent", name, doc, **vc)
@@ -1174,7 +1201,7 @@ def _build_component(model: Model) -> None:
         "iam": ("tier=iam — вход", "Self-hosted Keycloak, realm crm."),
         "dmz": (
             "tier=dmz — выход наружу",
-            "notification-service; в целевой архитектуре — отдельный сегмент DMZ.",
+            "notification-service и llm-gateway; в целевой архитектуре — отдельный сегмент DMZ.",
         ),
         "data": ("tier=data — хранилища", "PostgreSQL, MinIO, KeyDB."),
     }
@@ -1258,13 +1285,26 @@ def _build_component(model: Model) -> None:
         "notification": (
             "notification-service",
             "Служба уведомлений и Telegram-бот: HTTP-relay каналов и long-polling aiogram. "
-            "Единственный под с выходом в интернет; токен бота видит только он.",
+            "Выход в интернет — только к Telegram; токен бота видит только он.",
             "dmz",
             {
                 "Каталог": "services/notification",
                 "Технологии": "FastAPI, aiogram 3",
                 "Порт": "8010",
                 "Манифест": "deploy/k8s/base/notification",
+            },
+        ),
+        "llm-gateway": (
+            "llm-gateway — шлюз GigaChat",
+            "Единственный, кто знает ключ GigaChat и ходит к нему (443, 9443): очередь на "
+            "один поток, дневной лимит токенов, OAuth и TLS НУЦ Минцифры. Промпт, факты и "
+            "проверка ответа — в модуле ai_summary backend.",
+            "dmz",
+            {
+                "Каталог": "services/llm-gateway",
+                "Технологии": "FastAPI, httpx",
+                "Порт": "8040",
+                "Манифест": "deploy/k8s/base/llm-gateway",
             },
         ),
     }
@@ -1353,6 +1393,7 @@ def _build_component(model: Model) -> None:
         "backend": ("crm/backend", "backend/Dockerfile"),
         "frontend": ("crm/frontend", "frontend/Dockerfile"),
         "notification": ("crm/notification", "services/notification/Dockerfile"),
+        "llm-gateway": ("crm/llm-gateway", "services/llm-gateway/Dockerfile"),
         "lms-stub": ("crm/lms-stub", "services/lms-stub/Dockerfile"),
         "cms-stub": ("crm/cms-stub", "services/cms-stub/Dockerfile"),
     }
@@ -1384,9 +1425,16 @@ def _build_component(model: Model) -> None:
             node,
         ),
         "single-egress": (
-            "Единственный egress — notification-service, порт 443",
-            "Токен Telegram-бота хранится только в этом поде; с ядром — только HTTP точка-точка.",
+            "Выход наружу — только DMZ-поды",
+            "notification-service — 443 к Telegram, llm-gateway — 443 и 9443 к GigaChat; токен "
+            "бота и ключ GigaChat хранятся только в своих подах; с ядром — HTTP точка-точка.",
             "alma-ac-notification",
+        ),
+        "ai-facts": (
+            "В GigaChat — только агрегаты и псевдонимы",
+            "ФИО, вузы, клиенты B2C, заголовки заявок и комментарии наружу не уходят; числа "
+            "ответа сверяются с отчётом кодом, советы удаляются.",
+            "alma-mod-ai-summary",
         ),
         "stubs": (
             "LMS и CMS на стенде — заглушки",
@@ -1410,6 +1458,7 @@ def _build_component(model: Model) -> None:
         rel("AggregationRelationship", grp_constraints, cid)
         rel("AssociationRelationship", cid, target)
     rel("AssociationRelationship", "alma-con-stubs", "alma-ac-cms-stub")
+    rel("AssociationRelationship", "alma-con-single-egress", "alma-ac-llm-gateway")
 
     # взаимодействия
     rel("ServingRelationship", "alma-ac-frontend", users, "SPA в браузере")
@@ -1462,6 +1511,13 @@ def _build_component(model: Model) -> None:
         )
     rel("FlowRelationship", "alma-ac-notification", "alma-ext-telegram", "443, long-polling")
     rel("FlowRelationship", "alma-ac-notification", "alma-ext-channels", "адаптеры-заглушки")
+    rel(
+        "FlowRelationship",
+        "alma-ac-backend",
+        "alma-ac-llm-gateway",
+        "сводки ИИ: POST /v1/chat, X-Internal-Token",
+    )
+    rel("FlowRelationship", "alma-ac-llm-gateway", "alma-ext-gigachat", "OAuth 9443, chat 443")
     rel("ServingRelationship", "alma-sw-postgres", "alma-ac-backend", "БД crm")
     rel("ServingRelationship", "alma-sw-postgres", "alma-ac-keycloak", "БД keycloak")
     rel("ServingRelationship", "alma-sw-keydb", "alma-ac-backend", "кэш, pub/sub SSE")
@@ -1618,26 +1674,26 @@ def layout_functional(model: Model) -> View:
 def layout_component(model: Model) -> View:
     width = 1760
     users = Box("alma-actor-users", LEFT, 90, 240, 55)
-    ext_keys = ("lms", "cms", "telegram", "channels")
+    ext_keys = ("lms", "cms", "telegram", "channels", "gigachat")
     ext = Box(
         "alma-grp-external",
         700,
         80,
         LEFT + width - 700,
         100,
-        [Box(f"alma-ext-{k}", 20 + i * 262, 32, 245, 55) for i, k in enumerate(ext_keys)],
+        [Box(f"alma-ext-{k}", 20 + i * 210, 32, 195, 55) for i, k in enumerate(ext_keys)],
     )
     modules = [
         Box(_module_id(key), 15 + (i % 5) * 176, 40 + (i // 5) * 68, 165, 55)
         for i, (key, *_rest) in enumerate(MODULES)
     ]
-    backend = Box("alma-ac-backend", 20, 110, 905, 255, modules)
+    backend = Box("alma-ac-backend", 20, 110, 905, 320, modules)
     tier_app = Box(
         "alma-grp-tier-app",
         20,
         40,
         1180,
-        390,
+        450,
         [
             Box("alma-sw-ingress", 20, 35, 220, 55),
             Box("alma-ac-frontend", 280, 35, 260, 55),
@@ -1650,12 +1706,20 @@ def layout_component(model: Model) -> View:
         "alma-grp-tier-iam", 1220, 40, 250, 100, [Box("alma-ac-keycloak", 20, 32, 210, 55)]
     )
     tier_dmz = Box(
-        "alma-grp-tier-dmz", 1490, 40, 250, 100, [Box("alma-ac-notification", 20, 32, 210, 55)]
+        "alma-grp-tier-dmz",
+        1490,
+        40,
+        250,
+        170,
+        [
+            Box("alma-ac-notification", 20, 32, 210, 55),
+            Box("alma-ac-llm-gateway", 20, 100, 210, 55),
+        ],
     )
     tier_data = Box(
         "alma-grp-tier-data",
         1220,
-        160,
+        230,
         520,
         100,
         [
@@ -1666,16 +1730,16 @@ def layout_component(model: Model) -> View:
     jobs = Box(
         "alma-grp-jobs",
         1220,
-        280,
+        350,
         520,
         110,
         [Box("alma-tp-cronjobs", 15, 32, 240, 65), Box("alma-tp-jobs", 265, 32, 240, 65)],
     )
-    image_keys = ("backend", "frontend", "notification", "lms-stub", "cms-stub")
+    image_keys = ("backend", "frontend", "notification", "llm-gateway", "lms-stub", "cms-stub")
     images = Box(
         "alma-grp-images",
         20,
-        450,
+        510,
         1720,
         100,
         [Box(f"alma-art-{k}", 20 + i * 220, 32, 200, 55) for i, k in enumerate(image_keys)],
@@ -1685,17 +1749,17 @@ def layout_component(model: Model) -> View:
         LEFT,
         220,
         width,
-        570,
+        630,
         [tier_app, tier_iam, tier_dmz, tier_data, jobs, images],
     )
-    con_keys = ("no-egress", "single-egress", "stubs", "cache", "pii")
+    con_keys = ("no-egress", "single-egress", "stubs", "cache", "pii", "ai-facts")
     constraints = Box(
         "alma-grp-constraints",
         LEFT,
-        820,
+        880,
         width,
         100,
-        [Box(f"alma-con-{k}", 20 + i * 346, 32, 330, 55) for i, k in enumerate(con_keys)],
+        [Box(f"alma-con-{k}", 20 + i * 288, 32, 272, 55) for i, k in enumerate(con_keys)],
     )
     note = (
         "Компонентная схема «Альмы»: модули backend, сервисы-сателлиты, хранилища и "

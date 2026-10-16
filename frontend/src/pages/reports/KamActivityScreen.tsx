@@ -52,6 +52,10 @@ import { KamActivityFilters, type FiltersPatch } from './KamActivityFilters';
 import { KamActivityInteractions } from './KamActivityInteractions';
 import { KamActivitySummary } from './KamActivitySummary';
 import { KamActivityTree } from './KamActivityTree';
+import { AiSummaryButton } from './ai/AiSummaryButton';
+import { AiSummaryPanel } from './ai/AiSummaryPanel';
+import { pageTarget } from './ai/aiSummaryModel';
+import { useAiSummary } from './ai/useAiSummary';
 import {
   asOfText,
   filtersFromParams,
@@ -74,6 +78,9 @@ import { SlaTab } from './sla/SlaTab';
  * (заявки дольше нормы этапа, api-contract.md §7.2.2) — с одной семантикой периода;
  * по умолчанию — «Месяц». Фильтры в URL (ссылку можно переслать), карточка заявки —
  * поверх отчёта (`request=`), выгрузки — серверные, через журнал выгрузок.
+ * Кнопка «Сводка ИИ» в шапке (право `reports:ai_summary`, флаг `ai_summaries`) — сводка
+ * фактов по команде (при «только свои» — по себе); панель — над вкладками, от вкладки
+ * не зависит. Сводка по КАМу — в его разборе на вкладке «Просрочки».
  */
 
 const DEFINITIONS: Array<[string, string]> = [
@@ -186,7 +193,7 @@ function DetailKpis({ report, loading }: { report: KamActivityReport | null; loa
 }
 
 export function KamActivityScreen(): ReactNode {
-  const { hasPermission, profile, workflowTypes } = useAuth();
+  const { hasPermission, profile, workflowTypes, user } = useAuth();
   const { md } = useBreakpoint();
   const [searchParams, setSearchParams] = useSearchParams();
   const defaultTab: KamActivityTab = profile === 'observer' ? 'summary' : 'detail';
@@ -299,6 +306,20 @@ export function KamActivityScreen(): ReactNode {
     (kamId: string) => patchParams({ tab: 'detail', kam: [kamId] }),
     [patchParams],
   );
+  // чип КАМа в сводке ИИ → его разбор на вкладке «Просрочки» (в истории — «Назад» вернёт)
+  const openKamSla = useCallback(
+    (kamId: string) =>
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('tab', 'sla');
+        next.set('sla_kam', kamId);
+        return next;
+      }),
+    [setSearchParams],
+  );
+
+  const aiTarget = pageTarget(ownOnly, user?.id);
+  const ai = useAiSummary({ kind: aiTarget.kind, kamId: aiTarget.kamId, params });
 
   const runExport = async (format: KamActivityExportFormat): Promise<void> => {
     setExporting(format);
@@ -442,7 +463,14 @@ export function KamActivityScreen(): ReactNode {
             ? 'С какими вузами вы работали за период и на каких этапах остановились заявки'
             : 'Кто из КАМов, когда и с какими вузами работал — и на каких этапах остановились заявки'
         }
-        extra={filters.tab === 'sla' ? undefined : exportMenu}
+        extra={
+          ai.available || filters.tab !== 'sla' ? (
+            <>
+              <AiSummaryButton controller={ai} />
+              {filters.tab === 'sla' ? null : exportMenu}
+            </>
+          ) : undefined
+        }
       />
 
       <KamActivityFilters
@@ -463,6 +491,8 @@ export function KamActivityScreen(): ReactNode {
         </span>
         <HowItWorks />
       </div>
+
+      <AiSummaryPanel controller={ai} onSelectKam={ownOnly ? undefined : openKamSla} />
 
       <Tabs
         value={filters.tab}
