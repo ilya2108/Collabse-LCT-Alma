@@ -13,7 +13,6 @@ import {
 import type { University } from '@/shared/api/types';
 import { Can } from '@/shared/auth/Can';
 import { useAuth } from '@/shared/auth/AuthContext';
-import { IMPORT_ROLES } from '@/shared/auth/roles';
 import { formatDate, formatText } from '@/shared/lib/format';
 import { toastSuccess, toastError } from '@/shared/lib/toast';
 import { Button } from '@/shared/ui/button';
@@ -127,7 +126,7 @@ function CreateUniversitySheet({
   onClose: () => void;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { user, hasRole } = useAuth();
+  const { user, hasPermission } = useAuth();
   const form = useForm<UniversityFormValues>({
     resolver: zodResolver(universitySchema),
     mode: 'onTouched',
@@ -239,7 +238,8 @@ function CreateUniversitySheet({
                 )}
               />
             </div>
-            {hasRole('admin', 'head_kam') ? (
+            {/* КАМа вуза назначает тот, кто правит чужие вузы (crm:write_any) */}
+            {hasPermission('crm:write_any') ? (
               <FormField
                 control={form.control}
                 name="kam_user_id"
@@ -248,7 +248,7 @@ function CreateUniversitySheet({
                     <FormLabel>Ответственный КАМ</FormLabel>
                     <FormControl>
                       <UserCombobox
-                        role="kam"
+                        permission="requests:kam"
                         placeholder="КАМ вуза"
                         className="w-full"
                         value={field.value}
@@ -332,7 +332,7 @@ export function UniversitiesPage(): ReactNode {
                 Создать вуз
               </Button>
             </Can>
-            <Can roles={IMPORT_ROLES}>
+            <Can permission="import:run">
               <Button variant="outline" onClick={() => navigate('/import')}>
                 <FileUp aria-hidden="true" />
                 Импортировать из Excel

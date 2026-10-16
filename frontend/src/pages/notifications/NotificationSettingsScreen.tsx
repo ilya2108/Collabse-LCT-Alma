@@ -144,7 +144,7 @@ function SwitchRow({
 }
 
 export function NotificationSettingsScreen(): ReactNode {
-  const { user, hasRole } = useAuth();
+  const { user, hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { completeChecklistItem } = useOnboarding();
   const [linkModalOpen, setLinkModalOpen] = useState(false);
@@ -221,8 +221,9 @@ export function NotificationSettingsScreen(): ReactNode {
   });
 
   // --- Пороги и эскалация (admin: GET/PUT /admin/settings §10.3) --------------
-  const isAdmin = hasRole('admin');
-  const isManager = hasRole('admin', 'head_kam');
+  // пороги и эскалация — системные настройки; правила для руководителей — notification_rules:read
+  const isAdmin = hasPermission('admin:settings');
+  const isManager = hasPermission('notification_rules:read');
   const adminSettingsQuery = useQuery({
     queryKey: ['admin-settings'],
     queryFn: ({ signal }) => getAdminSettings(signal),

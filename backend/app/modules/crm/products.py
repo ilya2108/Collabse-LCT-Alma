@@ -14,7 +14,7 @@ from app.core.cache import get_cache
 from app.core.db import get_session
 from app.core.errors import conflict
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_permission
 from app.models.crm import Product, Program
 from app.models.user import AppUser
 from app.modules.crm.deps import check_version, get_or_404
@@ -43,7 +43,7 @@ async def _ensure_unique_code(
 @router.get("", summary="Каталог продуктов")
 async def list_products(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("products:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     search: Annotated[str | None, Query()] = None,
     is_active: Annotated[bool | None, Query()] = None,
@@ -69,7 +69,7 @@ async def list_products(
 async def create_product(
     body: ProductCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
+    _user: Annotated[AppUser, Depends(require_permission("products:write"))],
 ) -> ProductOut:
     await _ensure_unique_code(session, body.code)
     product = Product(**body.model_dump())
@@ -83,7 +83,7 @@ async def create_product(
 async def get_product(
     product_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("products:read"))],
 ) -> ProductOut:
     product = await get_or_404(session, Product, product_id, "Продукт не найден")
     return ProductOut.model_validate(product)
@@ -94,7 +94,7 @@ async def update_product(
     product_id: uuid.UUID,
     body: ProductUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
+    _user: Annotated[AppUser, Depends(require_permission("products:write"))],
 ) -> ProductOut:
     product = await get_or_404(session, Product, product_id, "Продукт не найден")
     check_version(product, body.version)
@@ -112,7 +112,7 @@ async def update_product(
 async def delete_product(
     product_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin"))],
+    _user: Annotated[AppUser, Depends(require_permission("products:delete"))],
 ) -> dict[str, bool]:
     product = await get_or_404(session, Product, product_id, "Продукт не найден")
     linked_programs = (

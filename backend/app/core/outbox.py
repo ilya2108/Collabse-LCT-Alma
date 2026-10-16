@@ -4,7 +4,9 @@
 - `notification` — получатели вычисляются backend'ом по `notification_rule`;
   relay доставляет в notification-service `POST :8010/api/v1/send`
   (X-Internal-Token, идемпотентность по `notification_id`);
-- `integration_event` (outbound) — конверт IntegrationEvent, HTTP+HMAC к заглушкам,
+- `integration_event` (outbound) — конверт IntegrationEvent; outbox в PG — источник
+  истины, доставку выполняет транспорт `IntegrationTransport` (app.core.integration_transport,
+  сейчас HTTP + HMAC к заглушкам; корпоративная шина — новая реализация того же протокола),
   ретраи 1м → 5м → 30м → 2ч → 6ч (только сеть/5xx), 4xx и исчерпание попыток → DLQ
   (`status='dead'`), просмотр/ручной retry — в админке;
 - `audit_log` — см. app.core.audit.
@@ -16,8 +18,6 @@ Relay-воркеры — asyncio-таски в lifespan приложения (п
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import logging
 import time
 import uuid
@@ -26,7 +26,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-import orjson
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,12 +34,13 @@ from app.core.config import get_settings
 from app.core.db import get_session_factory
 from app.core.events import (
     EVENT_INTEGRATION_DELIVERY_FAILED,
-    INTG_CRM_PROGRAM_PUBLISHED,
-    INTG_CRM_PROGRAM_UNPUBLISHED,
-    INTG_CRM_PROGRAM_UPSERTED,
-    INTG_CRM_REQUEST_HANDED_OVER,
     SSE_NOTIFICATION_CREATED,
     notification_template,
+)
+from app.core.integration_transport import (
+    HttpIntegrationTransport,
+    IntegrationTransport,
+    sign_payload,  # noqa: F401 — реэкспорт (§13.6)
 )
 from app.core.sse import publish_event
 from app.models.deal import Deal
@@ -371,28 +371,6 @@ async def emit_integration_event(
     return event
 
 
-def sign_payload(secret: str, raw_body: bytes) -> str:
-    """`X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, raw_body)>` (§13.6)."""
-    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return f"sha256={digest}"
-
-
-def _integration_target_url(event_type: str, system: str) -> str | None:
-    settings = get_settings()
-    lms = settings.lms_base_url.rstrip("/")
-    cms = settings.cms_base_url.rstrip("/")
-    mapping = {
-        INTG_CRM_REQUEST_HANDED_OVER: f"{lms}/api/v1/enrollments",
-        INTG_CRM_PROGRAM_UPSERTED: f"{lms}/api/v1/programs/upsert",
-        INTG_CRM_PROGRAM_PUBLISHED: f"{cms}/api/v1/catalog/upsert",
-        INTG_CRM_PROGRAM_UNPUBLISHED: f"{cms}/api/v1/catalog/unpublish",
-    }
-    url = mapping.get(event_type)
-    if url is None:
-        logger.error("Неизвестный тип outbound-события %s (system=%s)", event_type, system)
-    return url
-
-
 async def _store_external_ids(
     session: AsyncSession, event: IntegrationEvent, response_body: dict[str, Any]
 ) -> None:
@@ -441,52 +419,25 @@ async def _mark_integration_dead(
 
 
 async def deliver_integration_event(
-    session: AsyncSession, event: IntegrationEvent, client: httpx.AsyncClient
+    session: AsyncSession, event: IntegrationEvent, transport: IntegrationTransport
 ) -> bool:
-    """Одна попытка доставки outbound-события. True — доставлено."""
-    settings = get_settings()
-    url = _integration_target_url(event.event_type, event.system)
-    if url is None:
-        await _mark_integration_dead(session, event, "Неизвестный тип события (нет адресата)")
-        return False
-    secret = (
-        settings.lms_webhook_secret if event.system == "lms" else settings.cms_webhook_secret
-    )
-    raw_body = orjson.dumps(event.payload)
-    try:
-        response = await client.post(
-            url,
-            content=raw_body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Webhook-Signature": sign_payload(secret, raw_body),
-            },
-        )
-    except httpx.HTTPError as exc:
-        await _register_integration_failure(session, event, f"Сетевая ошибка: {exc}")
-        return False
-
-    if response.status_code < 300:
+    """Одна попытка доставки outbound-события через транспорт; исход переводится
+    в состояние события (delivered / retrying / dead). True — доставлено."""
+    outcome = await transport.deliver(event)
+    if outcome.status == "delivered":
         event.status = "delivered"
         event.processed_at = _now()
         event.last_error = None
         event.next_retry_at = None
-        try:
-            body = response.json()
-        except ValueError:
-            body = {}
-        if isinstance(body, dict):
-            await _store_external_ids(session, event, body)
+        if outcome.response_body:
+            await _store_external_ids(session, event, outcome.response_body)
         return True
-    if 400 <= response.status_code < 500:
-        # ошибка контракта — не ретраим (§13.7), чинится руками через админку
-        await _mark_integration_dead(
-            session, event, f"HTTP {response.status_code}: {response.text[:500]}"
-        )
+    error = outcome.error or "Ошибка доставки"
+    if outcome.status == "dead":
+        # ошибка контракта или нет адресата — не ретраим (§13.7), чинится через админку
+        await _mark_integration_dead(session, event, error)
         return False
-    await _register_integration_failure(
-        session, event, f"HTTP {response.status_code}: {response.text[:500]}"
-    )
+    await _register_integration_failure(session, event, error)
     return False
 
 
@@ -524,8 +475,9 @@ async def run_integration_relay_pass(session: AsyncSession) -> int:
         return 0
     delivered = 0
     async with httpx.AsyncClient(timeout=10.0) as client:
+        transport = HttpIntegrationTransport(client)
         for event in events:
-            if await deliver_integration_event(session, event, client):
+            if await deliver_integration_event(session, event, transport):
                 delivered += 1
     await session.commit()
     return delivered

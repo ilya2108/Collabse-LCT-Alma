@@ -8,7 +8,7 @@ import {
   listRequestFiles,
   uploadRequestFile,
 } from '@/shared/api/endpoints/requests';
-import type { FileObject } from '@/shared/api/types';
+import type { FileObject, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { formatDateTime } from '@/shared/lib/format';
 import { toastError, toastSuccess } from '@/shared/lib/toast';
@@ -30,7 +30,8 @@ import { ErrorPanel, LoadingPanel } from './StatePanels';
 /**
  * Таб «Файлы» карточки заявки (ux.md §8.1, redesign.md §6.4): FileDropzone
  * (§3.9) + список строк — иконка типа, имя truncate, размер · автор · дата
- * мета-строкой. Скачивание через backend (RBAC), удаление — admin/head_kam.
+ * мета-строкой. Скачивание через backend (RBAC); загрузка и удаление своих —
+ * право `requests:files`, удаление чужих — ещё и `requests:write_any`.
  */
 
 const ACCEPT = ['.pdf', '.docx', '.xlsx', '.png', '.jpg', '.jpeg'];
@@ -45,14 +46,21 @@ function fileIcon(file: FileObject): LucideIcon {
 
 export function RequestFiles({
   requestId,
-  canEdit,
+  workflowType,
 }: {
   requestId: string;
-  canEdit: boolean;
+  /** Процесс заявки: право `requests:files` действует в нём (F2). */
+  workflowType: WorkflowType;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
-  const canDelete = hasRole('admin', 'head_kam');
+  const { user, hasPermission } = useAuth();
+  // Загрузка — право requests:files в процессе заявки; удаление — своих файлов
+  // или любых при праве на чужие заявки (requests:write_any).
+  const canEdit = hasPermission('requests:files', workflowType);
+  const canDelete = (file: FileObject): boolean =>
+    canEdit &&
+    (hasPermission('requests:write_any', workflowType) ||
+      (Boolean(user) && file.uploaded_by === user?.id));
 
   const filesQuery = useQuery({
     queryKey: ['request-files', requestId],
@@ -165,7 +173,7 @@ export function RequestFiles({
                 >
                   <Download aria-hidden="true" />
                 </Button>
-                {canDelete ? (
+                {canDelete(file) ? (
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
                       <Button

@@ -1,88 +1,24 @@
-"""Единственный источник истины по вычислению `permissions` для `GET /auth/me`.
+"""Совместимость: наборы прав системных ролей по умолчанию.
 
-RBAC-матрица — api-contract.md §12 (фронт скрывает разделы по этим строкам,
-backend всё равно дублирует проверки ролей на каждом эндпоинте).
+Каталог прав, наборы системных ролей и зависимости — `app/core/rbac_catalog.py`;
+эффективные права пользователя (свои роли из БД, область B2B/B2C) — `app/core/access.py`
+(`user.access`), их отдаёт `GET /auth/me`. Модуль оставлен для старых импортов и тестов:
+считает права только по статическому каталогу системных ролей.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-# --- базовые наборы --------------------------------------------------------------------
-
-_OBSERVER: frozenset[str] = frozenset(
-    {
-        "requests:read",
-        "universities:read",
-        "contracts:read",
-        "products:read",
-        "programs:read",
-        "students:read",  # все выдачи маскированы; раскрытие observer'у недоступно
-        "activities:read",
-        "reports:read",
-        "export:run",  # экспорт с маскированными ПДн
-        "workflow:read",
-        "notifications:self",
-        "admin:audit",  # §12.1: аудит и журнал интеграций observer читает
-    }
-)
-
-_KAM: frozenset[str] = _OBSERVER - {"admin:audit"} | frozenset(
-    {
-        "requests:write",
-        "requests:transition",
-        "requests:assign",  # взять неназначенную на себя
-        "comments:write",
-        "universities:write",
-        "contracts:write",
-        "programs:write",
-        "programs:priority",
-        "students:write",
-        "students:reveal",
-        "students:files",
-        "import:run",
-    }
-)
-
-_HEAD_KAM: frozenset[str] = _KAM | frozenset(
-    {
-        "products:write",
-        "contracts:delete",
-        "workflow:change",  # пакеты изменений и impact-preview
-        "activities:write",
-        "admin:users",  # список пользователей — read
-    }
-)
-
-_ADMIN: frozenset[str] = _HEAD_KAM | frozenset(
-    {
-        "universities:delete",
-        "products:delete",
-        "programs:delete",
-        "requests:delete",
-        "requests:reopen",
-        "students:delete",
-        "workflow:approve",
-        "import:dictionaries",
-        "admin:users_write",
-        "admin:settings",
-        "admin:dictionaries",
-        "admin:flags",
-        "admin:audit",
-        "admin:integrations",
-    }
-)
+from app.core.rbac_catalog import SYSTEM_ROLES
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
-    "admin": _ADMIN,
-    "head_kam": _HEAD_KAM,
-    "kam": _KAM,
-    "observer": _OBSERVER,
+    code: definition.permissions for code, definition in SYSTEM_ROLES.items()
 }
 
 
 def permissions_for_roles(roles: Iterable[str]) -> list[str]:
-    """Объединение permissions по всем ролям пользователя, отсортированный список."""
+    """Объединение прав системных ролей, отсортированный список (свои роли не учитываются)."""
     result: set[str] = set()
     for role in roles:
         result |= ROLE_PERMISSIONS.get(role, frozenset())

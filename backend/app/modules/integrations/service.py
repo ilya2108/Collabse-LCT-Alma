@@ -292,6 +292,8 @@ async def _find_or_create_counterparty(
 
 
 async def _lead_responsible(session: AsyncSession) -> AppUser:
+    # коды системных ролей неизменяемы и не удаляются (app.core.rbac_catalog), поэтому
+    # распределение лидов по-прежнему опирается на них, а не на права своих ролей
     for role in ("head_kam", "admin"):
         user = (
             (

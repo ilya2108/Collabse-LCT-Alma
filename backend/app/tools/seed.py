@@ -4,6 +4,8 @@
 - обе воронки строго по api-contract.md §5.1 (JSON — app/modules/workflow/seeds/);
 - справочник interaction_type, app_setting, дефолтные notification_rule;
 - демо-пользователей (зеркала realm-пользователей, manager_id: kam → head_kam);
+- каталог прав и системные роли (сверка с кодом) и демо-роли «КАМ B2B» / «КАМ B2C»
+  (права КАМа в одном процессе), вписанные в переходы своих процессов;
 - демо-домен: вузы, контакты, продукты, программы (с приоритетами), договоры
   («1 договор — N продуктов»), заявки B2B/B2C с историей (включая заведомо
   зависшие — фактура для демо CronJob), студентов Talent Pool (ПДн шифруются тем же
@@ -26,6 +28,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import reset_role_catalog
 from app.core.db import dispose_engine, get_session_factory
 from app.core.pii import (
     display_name_from_full_name,
@@ -34,6 +37,8 @@ from app.core.pii import (
 from app.models import (
     Activity,
     ActivitySchedule,
+    AppRole,
+    AppRolePermission,
     AppSetting,
     AppUser,
     Contract,
@@ -586,6 +591,93 @@ async def seed_workflows(
     return result
 
 
+# демо-роли F2 (Р-F2-11): права КАМа, но только в одном процессе; назначаются в Альме
+# (realm Keycloak не трогаем), на демо kam2@demo получает «КАМ B2C»
+DEMO_ROLES: list[dict[str, Any]] = [
+    {
+        "code": "kam_b2b",
+        "name": "КАМ B2B",
+        "description": "Права КАМа только в процессе B2B (вузы)",
+        "workflow_type": "b2b",
+    },
+    {
+        "code": "kam_b2c",
+        "name": "КАМ B2C",
+        "description": "Права КАМа только в процессе B2C (физлица и юрлица)",
+        "workflow_type": "b2c",
+    },
+]
+
+
+async def seed_demo_roles(
+    session: AsyncSession,
+    workflows: dict[str, tuple[Workflow, dict[str, WorkflowStage]]],
+) -> dict[str, AppRole]:
+    """Каталог прав (сверка с кодом), демо-роли «КАМ B2B»/«КАМ B2C» и их коды в переходах.
+
+    Идемпотентно: роль создаётся или приводится к правам системной роли kam и своему
+    процессу; код роли добавляется в `allowed_roles` переходов своего процесса, где есть
+    `kam`. Commit — здесь же, затем сброс кэша схем `wf:{id}` и каталога ролей.
+    """
+    from app.core.rbac_catalog import SYSTEM_ROLES
+    from app.modules.access.bootstrap import seed_rbac_catalog
+    from app.modules.workflow.service import invalidate_workflow_cache
+
+    await seed_rbac_catalog(session)
+    kam_permissions = SYSTEM_ROLES["kam"].permissions
+    roles: dict[str, AppRole] = {}
+    for spec in DEMO_ROLES:
+        role = (
+            await session.execute(select(AppRole).where(AppRole.code == spec["code"]))
+        ).scalar_one_or_none()
+        if role is None:
+            role = AppRole(code=spec["code"], is_system=False, is_locked=False)
+            session.add(role)
+        role.name = spec["name"]
+        role.description = spec["description"]
+        role.workflow_types = [spec["workflow_type"]]
+        role.record_scope = "all"
+        await session.flush()
+        current = set(
+            (
+                await session.execute(
+                    select(AppRolePermission.permission_code).where(
+                        AppRolePermission.role_id == role.id
+                    )
+                )
+            ).scalars()
+        )
+        session.add_all(
+            AppRolePermission(role_id=role.id, permission_code=code)
+            for code in sorted(kam_permissions - current)
+        )
+        roles[spec["code"]] = role
+
+        workflow, _stages = workflows[spec["workflow_type"]]
+        transitions = (
+            (
+                await session.execute(
+                    select(WorkflowTransition).where(
+                        WorkflowTransition.workflow_id == workflow.id,
+                        WorkflowTransition.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for transition in transitions:
+            allowed = list(transition.allowed_roles or [])
+            if "kam" in allowed and spec["code"] not in allowed:
+                transition.allowed_roles = [*allowed, spec["code"]]
+    await session.flush()
+    await session.commit()
+    for workflow, _stages in workflows.values():
+        await invalidate_workflow_cache(workflow.id)
+    reset_role_catalog()
+    return roles
+
+
 async def seed_interaction_types(session: AsyncSession, admin: AppUser) -> dict[str, uuid.UUID]:
     result: dict[str, uuid.UUID] = {}
     for code, name, description, sort_order in INTERACTION_TYPES:
@@ -1134,6 +1226,7 @@ async def run_seed() -> None:
         users = await seed_users(session)
         admin = users["admin@demo"]
         workflows = await seed_workflows(session, admin)
+        await seed_demo_roles(session, workflows)
         interaction_types = await seed_interaction_types(session, admin)
         await seed_app_settings(session)
         await seed_notification_rules(session, admin)

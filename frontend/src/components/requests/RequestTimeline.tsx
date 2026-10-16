@@ -216,10 +216,10 @@ function FilterChip({
 }
 
 export function RequestTimeline({ requestId }: { requestId: string }): ReactNode {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const [filter, setFilter] = useState<TimelineFilter>('all');
   const [jsonEvent, setJsonEvent] = useState<IntegrationEventRecord | null>(null);
-  const canSeeIntegrationLog = hasRole('admin', 'observer');
+  const canSeeIntegrationLog = hasPermission('admin:audit');
 
   const historyQuery = useQuery({
     queryKey: ['request-history', requestId],

@@ -1,11 +1,13 @@
-import { TriangleAlert } from 'lucide-react';
+import { LogOut, ShieldAlert, TriangleAlert } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { ErrorBrokenIllustration } from '@/app/localIllustrations';
+import { accessibleNavItems } from '@/app/menuConfig';
 import { errorMessage, isApiError } from '@/shared/api/errors';
+import type { WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
-import type { AppRole } from '@/shared/auth/roles';
+import type { PermissionCode } from '@/shared/auth/permissions';
 import { motionTokens } from '@/shared/lib/motion';
 import { Button } from '@/shared/ui/button';
 
@@ -107,17 +109,58 @@ function AuthErrorState({ title, onRetry }: { title: string; onRetry?: () => voi
 }
 
 /**
+ * Вход выполнен, но CRM закрыта (403 на /auth/me): учётной записи не назначены
+ * роли или она деактивирована. Роли назначает администратор в самой Альме
+ * (F2, Р-F2-1) — «Повторить» перечитывает профиль без перезахода.
+ */
+export function NoAccessScreen({
+  message,
+  onRetry,
+  onLogout,
+}: {
+  message: string;
+  onRetry: () => void;
+  onLogout: () => void;
+}): ReactNode {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-xl border border-border bg-card p-8 text-center shadow-card">
+        <span className="flex size-12 items-center justify-center rounded-full bg-status-warning-tint text-status-warning-deep">
+          <ShieldAlert className="size-6" aria-hidden="true" />
+        </span>
+        <h1 className="text-balance text-xl font-semibold">Нет доступа к CRM</h1>
+        <p className="text-sm text-muted-foreground">{message}</p>
+        <p className="text-xs text-muted-foreground">
+          Роли назначает администратор Альмы в разделе «Администрирование → Пользователи».
+          Перезаходить после назначения не нужно — нажмите «Проверить снова».
+        </p>
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:justify-center">
+          <Button onClick={onRetry}>Проверить снова</Button>
+          <Button variant="outline" onClick={onLogout}>
+            <LogOut aria-hidden="true" />
+            Выйти
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Guard аутентификации поверх layout'а: неаутентифицированных уводит на /login
  * с сохранением исходного deep-link (вернёмся после логина).
  */
 export function RequireAuth({ children }: { children: ReactNode }): ReactNode {
-  const { phase, retry } = useAuth();
+  const { phase, error, retry, logout } = useAuth();
   const location = useLocation();
 
   switch (phase) {
     case 'initializing':
       return <AuthSplash />;
     case 'error':
+      if (isApiError(error) && error.status === 403) {
+        return <NoAccessScreen message={error.message} onRetry={retry} onLogout={logout} />;
+      }
       return <AuthErrorScreen title="Не удалось войти в систему" onRetry={retry} />;
     case 'anonymous':
       return (
@@ -128,19 +171,47 @@ export function RequireAuth({ children }: { children: ReactNode }): ReactNode {
   }
 }
 
-interface RequireRoleProps {
-  roles: AppRole[];
+interface RequirePermissionProps {
+  /** Нужное право (с областью — в процессе `workflowType`, без него — хоть в одном). */
+  permission?: PermissionCode;
+  /** Достаточно любого из прав. */
+  anyOf?: PermissionCode[];
+  workflowType?: WorkflowType | null;
+  /**
+   * Нет права — увести на первый доступный раздел вместо /403. Для стартовой
+   * страницы /dashboard: своя роль без аналитики не должна упираться в «Нет доступа».
+   */
+  redirectHome?: boolean;
   children: ReactNode;
 }
 
 /**
- * Guard маршрута по ролям (ux.md §3.4): прямой URL не по роли → редирект на /403.
+ * Guard маршрута по правам (ux.md §3.4, F2): прямой URL без права → /403.
  * Скрытие пунктов меню делает menuConfig; guard страхует deep-link'и.
  */
-export function RequireRole({ roles, children }: RequireRoleProps): ReactNode {
-  const { hasRole } = useAuth();
-  if (!hasRole(...roles)) {
-    return <Navigate to="/403" replace />;
+export function RequirePermission({
+  permission,
+  anyOf,
+  workflowType,
+  redirectHome = false,
+  children,
+}: RequirePermissionProps): ReactNode {
+  const { hasPermission } = useAuth();
+  const permissionOk = !permission || hasPermission(permission, workflowType);
+  const anyOk =
+    !anyOf || anyOf.length === 0 || anyOf.some((code) => hasPermission(code, workflowType));
+  if (!permissionOk || !anyOk) {
+    return redirectHome ? <HomeRedirect /> : <Navigate to="/403" replace />;
   }
   return children;
+}
+
+/**
+ * Стартовая страница — первый доступный раздел меню (обычно «Аналитика»).
+ * `group` — первый доступный пункт группы (вход в «Администрирование» по /admin).
+ */
+export function HomeRedirect({ group }: { group?: string }): ReactNode {
+  const { hasPermission } = useAuth();
+  const first = accessibleNavItems((code) => hasPermission(code), group)[0];
+  return <Navigate to={first?.path ?? '/403'} replace />;
 }

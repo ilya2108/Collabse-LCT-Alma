@@ -31,10 +31,7 @@ export function createWorkflowChange(
   workflowId: string,
   payload: CreateChangePayload,
 ): Promise<WorkflowChangeRecord> {
-  return api.post<WorkflowChangeRecord>(`/workflows/${workflowId}/changes`, {
-    body: payload,
-    idempotencyKey: crypto.randomUUID(),
-  });
+  return api.post<WorkflowChangeRecord>(`/workflows/${workflowId}/changes`, { body: payload });
 }
 
 /** §5.2 не фиксирует конверт списка — терпимо принимаем массив и `{items}`. */

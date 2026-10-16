@@ -27,6 +27,7 @@ import { listRequests, performTransition } from '@/shared/api/endpoints/requests
 import { getWorkflow, listWorkflows } from '@/shared/api/endpoints/workflows';
 import type { ListEnvelope, RequestItem, UiPreset, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
+import { WORKFLOW_TYPE_TITLES } from '@/shared/auth/permissions';
 import { springs } from '@/shared/lib/motion';
 import { toastError } from '@/shared/lib/toast';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
@@ -61,18 +62,31 @@ interface PendingTransition {
   target: TransitionTarget;
 }
 
-/** Локальный сегмент B2B/B2C со скользящей подложкой (§3.10 SegmentedControl). */
+/**
+ * Локальный сегмент B2B/B2C со скользящей подложкой (§3.10 SegmentedControl).
+ * Показывает только процессы, доступные ролям пользователя (F2); один процесс —
+ * статичная плашка вместо переключателя.
+ */
 function WorkflowSegmented({
   value,
+  available,
   onChange,
 }: {
   value: WorkflowType;
+  available: readonly WorkflowType[];
   onChange: (value: WorkflowType) => void;
 }): ReactNode {
-  const options: Array<{ value: WorkflowType; label: string }> = [
-    { value: 'b2b', label: 'B2B (вузы)' },
-    { value: 'b2c', label: 'B2C (физлица и юрлица)' },
-  ];
+  const options = available.map((wf) => ({ value: wf, label: WORKFLOW_TYPE_TITLES[wf] }));
+  if (options.length === 1) {
+    return (
+      <span
+        data-tour="board-wf-switch"
+        className="inline-flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium"
+      >
+        {options[0]?.label}
+      </span>
+    );
+  }
   return (
     <div
       className="inline-flex h-9 items-center gap-0.5 rounded-md bg-muted p-0.5"
@@ -125,13 +139,17 @@ function BoardSkeleton(): ReactNode {
 export function BoardPage(): ReactNode {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user, roles, hasRole, hasPermission } = useAuth();
+  const { user, hasPermission, workflowTypes, transitionRoles } = useAuth();
   // Чек-лист онбординга §7.5: no-op без провайдера.
   const { completeChecklistItem } = useOnboarding();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // --- Фильтры из URL (§7.3) -------------------------------------------------
-  const wfType: WorkflowType = searchParams.get('wf') === 'b2c' ? 'b2c' : 'b2b';
+  // Процесс — только из доступных ролям (F2); чужой wf в ссылке → первый доступный.
+  const wfParam = searchParams.get('wf') as WorkflowType | null;
+  const wfType: WorkflowType =
+    wfParam && workflowTypes.includes(wfParam) ? wfParam : (workflowTypes[0] ?? 'b2b');
+  const noProcesses = workflowTypes.length === 0;
   const filterKam = searchParams.get('kam') ?? undefined;
   const filterUniversity = searchParams.get('university') ?? undefined;
   const filterProduct = searchParams.get('product') ?? undefined;
@@ -349,7 +367,11 @@ export function BoardPage(): ReactNode {
   const handleDragStart = ({ active }: DragStartEvent): void => {
     const request = (active.data.current as { request?: RequestItem } | undefined)?.request;
     if (!request || !schema) return;
-    allowedTargetsRef.current = transitionsFrom(schema, request.status.id, roles);
+    allowedTargetsRef.current = transitionsFrom(
+      schema,
+      request.status.id,
+      transitionRoles(request.workflow_type),
+    );
     setActiveRequest(request);
   };
 
@@ -396,15 +418,33 @@ export function BoardPage(): ReactNode {
   };
 
   const canDrag = (request: RequestItem): boolean =>
-    hasPermission('requests:transition') && canDragRequest(request, roles, user?.id);
+    canDragRequest(request, hasPermission, user?.id);
+  // чужая заявка без права на чужие — подсказка, чья она
   const dragHint = (request: RequestItem): string | undefined =>
-    hasRole('kam') && !hasRole('admin', 'head_kam') && request.assignee && request.assignee.id !== user?.id
+    hasPermission('requests:transition', request.workflow_type) &&
+    !hasPermission('requests:write_any', request.workflow_type) &&
+    request.assignee &&
+    request.assignee.id !== user?.id
       ? `Заявка КАМа: ${request.assignee.full_name}`
       : undefined;
+  const canCreate = hasPermission('requests:write', wfType);
+  /** Схема процесса не пришла: у ролей нет права «Просмотр схемы процесса». */
+  const schemaUnavailable = workflowsQuery.isSuccess && !workflowId;
 
   // --- Рендер ----------------------------------------------------------------------
   let body: ReactNode;
-  if (schemaQuery.isError || workflowsQuery.isError) {
+  if (noProcesses || schemaUnavailable) {
+    body = (
+      <BoardEmptyState
+        title={noProcesses ? 'Заявки недоступны вашей роли' : 'Схема процесса недоступна'}
+        description={
+          noProcesses
+            ? 'Ни одной из ваших ролей не открыт просмотр заявок. Обратитесь к администратору.'
+            : 'У ваших ролей нет права «Просмотр схемы процесса» — без него доску не построить. Обратитесь к администратору.'
+        }
+      />
+    );
+  } else if (schemaQuery.isError || workflowsQuery.isError) {
     body = (
       <ErrorPanel
         error={schemaQuery.error ?? workflowsQuery.error}
@@ -460,7 +500,7 @@ export function BoardPage(): ReactNode {
                       description="Создайте первую заявку или импортируйте данные из Excel"
                       actions={
                         <>
-                          {hasPermission('requests:write') ? (
+                          {canCreate ? (
                             <Button onClick={() => setCreateOpen(true)}>
                               <Plus aria-hidden="true" />
                               Создать заявку
@@ -507,7 +547,7 @@ export function BoardPage(): ReactNode {
       {/* заголовок экрана (§3.3 PageHeader-паттерн) */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <h1 className="text-xl font-semibold leading-7 text-balance">Доска заявок</h1>
-        {hasPermission('requests:write') ? (
+        {canCreate ? (
           <Button onClick={() => setCreateOpen(true)}>
             <Plus aria-hidden="true" />
             Создать заявку
@@ -541,6 +581,7 @@ export function BoardPage(): ReactNode {
       >
         <WorkflowSegmented
           value={wfType}
+          available={workflowTypes}
           onChange={(value) => {
             // одним вызовом: два последовательных setSearchParams в одном клике
             // считаются от одних и тех же (устаревших) параметров рендера —
@@ -591,14 +632,16 @@ export function BoardPage(): ReactNode {
             }}
           />
         </div>
-        {hasRole('admin', 'head_kam') ? (
+        {/* выбор КАМа — при доступе к списку пользователей; иначе «Только мои» (kam=<свой id>) */}
+        {hasPermission('admin:users') ? (
           <UserSelect
+            permission="requests:kam"
             style={{ width: 190 }}
             placeholder="КАМ"
             value={filterKam}
             onChange={(value) => setParam('kam', value)}
           />
-        ) : hasRole('kam') ? (
+        ) : hasPermission('requests:kam', wfType) ? (
           <label className="flex min-h-9 cursor-pointer items-center gap-2 text-sm">
             <Checkbox
               checked={filterKam === user?.id}

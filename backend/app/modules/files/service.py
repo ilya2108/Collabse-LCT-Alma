@@ -3,6 +3,10 @@
 api-contract.md §3.2: скачивание любого файла — `GET /files/{file_id}/download`,
 backend проверяет RBAC и отдаёт proxy-поток либо `302` на presigned URL (TTL 10 мин),
 режим `FILE_DELIVERY=proxy|presigned` (по умолчанию proxy — закрытый контур).
+
+Права (F2): чужие импорты и выгрузки — `files:others`; файлы договоров, студентов и
+заявок — `files:business`; файлы заявки и её комментариев вне области роли (процесс
+B2B/B2C, «только свои») не существуют для пользователя — 404 (`ensure_deal_file_visible`).
 """
 
 from __future__ import annotations
@@ -18,8 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app.core.config import get_settings
-from app.core.errors import ApiError, forbidden, validation_error
-from app.core.security import check_roles
+from app.core.errors import ApiError, forbidden, not_found, validation_error
+from app.models.deal import Deal, DealComment
 from app.models.service import FileObject
 from app.models.user import AppUser
 from app.modules.files.storage import build_s3_key, content_disposition, get_storage
@@ -27,11 +31,13 @@ from app.modules.files.storage import build_s3_key, content_disposition, get_sto
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024  # вложения (api-contract.md §1.4)
 MAX_IMPORT_BYTES = 20 * 1024 * 1024  # файлы импорта
 
-# файлы, приватные для автора (admin видит все): исходники/отчёты импорта и выгрузки
+# файлы, приватные для автора (с правом files:others — все): исходники/отчёты импорта
+# и выгрузки
 _OWNER_ONLY_ENTITY_TYPES = frozenset({"import_session", "report"})
-# наблюдателю скачивание закрыто: договоры (§12.1 «без скачивания файлов»),
-# студенты (Р-19), заявки и вложения комментариев
-_OBSERVER_DENIED_ENTITY_TYPES = frozenset({"contract", "student", "deal", "deal_comment"})
+# без права files:business (наблюдатель) скачивание закрыто: договоры (§12.1 «без
+# скачивания файлов»), студенты (Р-19), заявки и вложения комментариев
+_BUSINESS_ENTITY_TYPES = frozenset({"contract", "student", "deal", "deal_comment"})
+_DEAL_ENTITY_TYPES = frozenset({"deal", "deal_comment"})
 
 
 def file_too_large(limit_bytes: int) -> ApiError:
@@ -122,19 +128,35 @@ async def store_upload(
 
 
 def ensure_can_download(user: AppUser, file_object: FileObject) -> None:
-    """RBAC скачивания (§12.1): observer — без файлов договоров/студентов/заявок;
-    исходники импорта и выгрузки видят только автор и admin."""
-    is_admin = check_roles(user.roles, ("admin",))
+    """RBAC скачивания (§12.1): без `files:business` — без файлов договоров/студентов/
+    заявок; исходники импорта и выгрузки видят автор и владельцы `files:others`."""
     entity_type = file_object.entity_type or "other"
     if entity_type in _OWNER_ONLY_ENTITY_TYPES:
-        if not is_admin and file_object.uploaded_by != user.id:
+        if not user.access.has("files:others") and file_object.uploaded_by != user.id:
             raise forbidden("Файл доступен только его автору")
         return
-    if "observer" in (user.roles or []) and not check_roles(
-        user.roles, ("admin", "head_kam", "kam")
-    ):
-        if entity_type in _OBSERVER_DENIED_ENTITY_TYPES:
-            raise forbidden("Роли наблюдателя скачивание этих файлов недоступно")
+    if entity_type in _BUSINESS_ENTITY_TYPES and not user.access.has("files:business"):
+        raise forbidden("Вашей роли скачивание этих файлов недоступно")
+
+
+async def ensure_deal_file_visible(
+    session: AsyncSession, user: AppUser, file_object: FileObject
+) -> None:
+    """Файл заявки (или вложение её комментария) вне области роли — 404, как и сама
+    заявка (Р-F2-10). Прочие файлы не проверяет."""
+    entity_type = file_object.entity_type or "other"
+    if entity_type not in _DEAL_ENTITY_TYPES or file_object.entity_id is None:
+        return
+    deal_id = file_object.entity_id
+    if entity_type == "deal_comment":
+        comment = await session.get(DealComment, file_object.entity_id)
+        if comment is None:
+            raise not_found("Файл не найден")
+        deal_id = comment.deal_id
+    deal = await session.get(Deal, deal_id)
+    scope = user.access.deal_scope("requests:read", user.id)
+    if deal is None or not scope.allows(deal.pipeline, deal.responsible_user_id):
+        raise not_found("Файл не найден")
 
 
 async def deliver_file(file_object: FileObject) -> Response:

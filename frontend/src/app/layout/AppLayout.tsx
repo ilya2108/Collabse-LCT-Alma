@@ -13,6 +13,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/shared/ui/sheet';
+import { AccessChangeListener } from './AccessChangeListener';
 import { HeaderBar } from './HeaderBar';
 import { SiderLogo } from './SiderLogo';
 
@@ -33,6 +34,8 @@ export function AppLayout(): ReactNode {
 
   return (
     <div className="flex min-h-screen bg-background">
+      {/* SSE access.changed → перечитать /auth/me без перезахода (F2) */}
+      <AccessChangeListener />
       {sheetMode ? null : (
         <aside
           className={cn(

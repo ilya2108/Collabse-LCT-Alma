@@ -33,6 +33,7 @@ resources:
   - jobs/minio-init-job.yaml
   - cronjobs/stuck-check-cronjob.yaml
   - cronjobs/purge-deleted-cronjob.yaml
+  - cronjobs/idempotency-purge-cronjob.yaml
   - ingress/ingress.yaml
   - networkpolicy/00-default-deny.yaml
   - networkpolicy/10-allow-dns.yaml

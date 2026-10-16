@@ -189,10 +189,10 @@ function CreateProductSheet({ open, onClose }: { open: boolean; onClose: () => v
 
 export function ProductsPage(): ReactNode {
   const navigate = useNavigate();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
-  const canToggle = hasRole('admin', 'head_kam');
+  const canToggle = hasPermission('products:write');
 
   const toggleMutation = useMutation({
     mutationFn: ({ product, isActive }: { product: Product; isActive: boolean }) =>
@@ -267,7 +267,7 @@ export function ProductsPage(): ReactNode {
       <PageHeader
         title="Продукты"
         extra={
-          <Can roles={['admin', 'head_kam']}>
+          <Can permission="products:write">
             <Button onClick={() => setCreateOpen(true)}>
               <Plus aria-hidden="true" />
               Создать продукт

@@ -18,7 +18,7 @@ from app.models.user import AppUser
 from app.models.workflow import WorkflowStage, WorkflowTransition
 from app.modules.requests.serializers import client_kind_of
 from app.modules.workflow.conditions import evaluate_condition
-from app.modules.workflow.service import transition_role_allowed, user_can_write_deal
+from app.modules.workflow.service import transition_role_allowed
 
 
 async def build_request_context(session: AsyncSession, deal: Deal) -> dict[str, Any]:
@@ -46,14 +46,23 @@ async def available_transitions(
 ) -> list[dict[str, Any]]:
     """Рёбра из текущего этапа, доступные пользователю (api-contract.md §4.1, §9 движка).
 
-    Наружу не попадают рёбра, запрещённые RBAC (роль ∉ allowed_roles или нет права
-    писать заявку); condition — аннотация, не фильтр. Закрытая заявка (терминал)
-    действий не имеет — переоткрытие отдельным admin-эндпоинтом /reopen.
+    Наружу не попадают рёбра, запрещённые правами: нет `requests:transition` в процессе
+    заявки (чужая заявка — ещё и `requests:write_any`) или ни одна из ролей пользователя,
+    способных выполнять переходы в процессе, не входит в allowed_roles; condition —
+    аннотация, не фильтр. Закрытая заявка (терминал) действий не имеет — переоткрытие
+    отдельным эндпоинтом /reopen.
     """
     if deal.status != "open":
         return []
-    if not user_can_write_deal(user.roles, user.id, deal.responsible_user_id):
+    access = user.access
+    if not access.can_act_on_deal(
+        "requests:transition",
+        pipeline=deal.pipeline,
+        responsible_user_id=deal.responsible_user_id,
+        user_id=user.id,
+    ):
         return []
+    transition_roles = tuple(access.transition_roles(deal.pipeline))
     rows = (
         await session.execute(
             select(WorkflowTransition, WorkflowStage)
@@ -72,7 +81,7 @@ async def available_transitions(
     context = await build_request_context(session, deal)
     result: list[dict[str, Any]] = []
     for transition, to_stage in rows:
-        if not transition_role_allowed(user.roles, transition.allowed_roles):
+        if not transition_role_allowed(transition_roles, transition.allowed_roles):
             continue
         condition_ok = evaluate_condition(transition.condition, context)
         result.append(

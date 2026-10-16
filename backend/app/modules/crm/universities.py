@@ -15,7 +15,7 @@ from app.core.cache import get_cache
 from app.core.db import get_session
 from app.core.errors import conflict, not_found
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import get_current_user, require_permission
 from app.models.crm import Contract, University, UniversityContact
 from app.models.deal import Deal
 from app.models.talent import Student
@@ -59,7 +59,7 @@ async def _invalidate_dict_cache() -> None:
 @router.get("", summary="Реестр вузов")
 async def list_universities(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("universities:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     search: Annotated[str | None, Query(description="Название / ИНН / город")] = None,
     region: Annotated[str | None, Query()] = None,
@@ -107,7 +107,7 @@ async def list_universities(
     "",
     status_code=201,
     summary="Создать вуз",
-    dependencies=[Depends(require_roles("admin", "head_kam", "kam"))],
+    dependencies=[Depends(require_permission("universities:write"))],
 )
 async def create_university(
     body: UniversityCreate,
@@ -137,7 +137,7 @@ async def create_university(
 async def get_university(
     university_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("universities:read"))],
 ) -> UniversityOut:
     university = await get_or_404(session, University, university_id, "Вуз не найден")
     contracts_count = (
@@ -171,7 +171,7 @@ async def update_university(
     university_id: uuid.UUID,
     body: UniversityUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("universities:write"))],
 ) -> UniversityOut:
     university = await get_or_404(session, University, university_id, "Вуз не найден")
     ensure_can_write_owned(user, university.kam_user_id)
@@ -190,7 +190,7 @@ async def update_university(
 async def delete_university(
     university_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("universities:delete"))],
     request: Request,
 ) -> dict[str, bool]:
     university = await get_or_404(session, University, university_id, "Вуз не найден")
@@ -228,7 +228,7 @@ async def delete_university(
 async def list_contacts(
     university_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("universities:read"))],
 ) -> list[ContactOut]:
     await get_or_404(session, University, university_id, "Вуз не найден")
     rows = (
@@ -249,7 +249,7 @@ async def list_contacts(
     "/{university_id}/contacts",
     status_code=201,
     summary="Добавить контактное лицо",
-    dependencies=[Depends(require_roles("admin", "head_kam", "kam"))],
+    dependencies=[Depends(require_permission("universities:write"))],
 )
 async def create_contact(
     university_id: uuid.UUID,
@@ -266,7 +266,7 @@ async def create_contact(
 @router.patch(
     "/{university_id}/contacts/{contact_id}",
     summary="Изменить контактное лицо",
-    dependencies=[Depends(require_roles("admin", "head_kam", "kam"))],
+    dependencies=[Depends(require_permission("universities:write"))],
 )
 async def update_contact(
     university_id: uuid.UUID,
@@ -287,7 +287,7 @@ async def update_contact(
 @router.delete(
     "/{university_id}/contacts/{contact_id}",
     summary="Удалить контактное лицо",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
+    dependencies=[Depends(require_permission("contacts:delete"))],
 )
 async def delete_contact(
     university_id: uuid.UUID,

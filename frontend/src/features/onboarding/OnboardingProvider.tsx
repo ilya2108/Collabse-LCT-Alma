@@ -11,7 +11,7 @@ import {
 import { createPreset, listPresets, updatePreset } from '@/shared/api/endpoints/presets';
 import type { UiPresetState } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
-import type { AppRole } from '@/shared/auth/roles';
+import type { AccessProfile } from '@/shared/auth/permissions';
 import { ROLE_ONBOARDING } from './tours';
 import {
   DEFAULT_ONBOARDING_STATE,
@@ -27,8 +27,10 @@ import { WelcomeDialog } from './WelcomeDialog';
 /**
  * Провайдер онбординга (redesign.md §7.1): состояние per-user в /ui/presets
  * (screen: "onboarding", name: "state"), загрузка после auth, запись —
- * PATCH с debounce 1с (optimistic). Роль определяет набор туров/чек-листа
- * (берётся старшая: admin > head_kam > kam > observer). Монтируется внутри
+ * PATCH с debounce 1с (optimistic). Профиль интерфейса определяет набор
+ * туров/чек-листа: выводится из прав (F2) — admin:roles → admin, правка схемы или
+ * назначение любого → head_kam, создание заявок → kam, иначе observer; своя роль
+ * «КАМ B2C» получает онбординг КАМа. Монтируется внутри
  * Router (стадия Integrate); до монтирования useOnboarding отдаёт no-op.
  */
 
@@ -39,7 +41,7 @@ const SAVE_DEBOUNCE_MS = 1000;
 export interface OnboardingContextValue {
   /** Состояние загружено (после auth). */
   ready: boolean;
-  role: AppRole | null;
+  role: AccessProfile | null;
   state: OnboardingState;
   /** Конфиг роли: welcome, туры, чек-лист. */
   config: RoleOnboarding | null;
@@ -81,7 +83,7 @@ export function useOnboarding(): OnboardingContextValue {
 }
 
 export function OnboardingProvider({ children }: { children: ReactNode }): ReactNode {
-  const { phase, user, mainRole } = useAuth();
+  const { phase, user, profile } = useAuth();
   const [state, setState] = useState<OnboardingState>(DEFAULT_ONBOARDING_STATE);
   const [loaded, setLoaded] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
@@ -93,7 +95,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }): React
   const creatingRef = useRef(false);
   const pendingChecklistRef = useRef<Set<string>>(new Set());
 
-  const config = mainRole ? ROLE_ONBOARDING[mainRole] : null;
+  const config = profile ? ROLE_ONBOARDING[profile] : null;
 
   // --- Загрузка состояния после auth (§7.1) ---------------------------------
   useEffect(() => {
@@ -250,7 +252,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }): React
   const value = useMemo<OnboardingContextValue>(
     () => ({
       ready: loaded,
-      role: mainRole,
+      role: profile,
       state,
       config,
       tours: config?.tours ?? [],
@@ -264,7 +266,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }): React
     }),
     [
       loaded,
-      mainRole,
+      profile,
       state,
       config,
       activeTourId,

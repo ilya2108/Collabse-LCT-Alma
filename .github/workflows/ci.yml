@@ -58,6 +58,8 @@ jobs:
         run: npm ci
       - name: Проверка типов
         run: npx tsc --noEmit
+      - name: Юнит-тесты (node:test)
+        run: npm run test:unit
       - name: Сборка
         run: npm run build
 

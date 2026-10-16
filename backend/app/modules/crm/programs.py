@@ -19,7 +19,7 @@ from app.core.cache import get_cache
 from app.core.db import get_session
 from app.core.errors import validation_error
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_permission
 from app.models.crm import Product, Program, University
 from app.models.service import ExternalLink
 from app.models.user import AppUser
@@ -82,7 +82,7 @@ async def _validate_refs(session: AsyncSession, payload: dict[str, Any]) -> None
 @router.get("/programs", summary="Программы (сортировка по приоритету: меньше = выше)")
 async def list_programs(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("programs:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     product_id: Annotated[uuid.UUID | None, Query()] = None,
     university_id: Annotated[uuid.UUID | None, Query()] = None,
@@ -116,7 +116,7 @@ async def list_programs(
 async def create_program(
     body: ProgramCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    _user: Annotated[AppUser, Depends(require_permission("programs:write"))],
 ) -> ProgramOut:
     payload = body.model_dump()
     await _validate_refs(session, payload)
@@ -131,7 +131,7 @@ async def create_program(
 async def get_program(
     program_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("programs:read"))],
 ) -> ProgramOut:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
     links = await _external_ids(session, [program_id])
@@ -143,7 +143,7 @@ async def update_program(
     program_id: uuid.UUID,
     body: ProgramUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    _user: Annotated[AppUser, Depends(require_permission("programs:write"))],
 ) -> ProgramOut:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
     check_version(program, body.version)
@@ -161,7 +161,7 @@ async def update_program(
 async def delete_program(
     program_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin"))],
+    _user: Annotated[AppUser, Depends(require_permission("programs:delete"))],
 ) -> dict[str, bool]:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
     program.is_active = False
@@ -178,7 +178,7 @@ async def patch_priority(
     program_id: uuid.UUID,
     body: PriorityPatch,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("programs:priority"))],
     request: Request,
 ) -> ProgramOut:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
@@ -209,7 +209,7 @@ async def patch_priority(
 async def reorder_priorities(
     body: ReorderBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("programs:priority"))],
     request: Request,
 ) -> dict[str, int]:
     ids = [item.id for item in body.items]

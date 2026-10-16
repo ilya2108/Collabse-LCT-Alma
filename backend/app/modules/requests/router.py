@@ -6,9 +6,14 @@ POST /transitions (инвариант I-4, движок — app.modules.workflow
 Резолюции по иерархии data-model > api-contract (задокументированы и в итогах стадии):
 - DELETE /requests/{id} — «мягкое удаление» реализовано как status='archived'
   (в DDL deal нет deleted_at); архивные заявки исключены из всех выдач;
-- kam «берёт свободную заявку на себя»: свободной считается заявка, чей текущий
-  ответственный не имеет роли kam (responsible NOT NULL в DDL, поэтому NULL-назначения
-  не существует — лиды CMS назначаются head_kam до распределения).
+- «взять свободную заявку на себя» (`requests:assign` без `requests:assign_any`):
+  свободной считается заявка, чей текущий ответственный не ведёт портфель как КАМ —
+  нет права `requests:kam` в процессе заявки (responsible NOT NULL в DDL, поэтому
+  NULL-назначения не существует — лиды CMS назначаются head_kam до распределения).
+
+Права и область (F2): эндпоинты закрыты `require_permission`; область роли (процессы
+B2B/B2C, «только свои») фильтрует списки и доску, заявка вне области — 404 (Р-F2-10),
+доска и создание в процессе вне области — 403 с понятным текстом.
 """
 
 from __future__ import annotations
@@ -34,7 +39,8 @@ from app.core.events import (
 )
 from app.core.outbox import DirectRecipient, emit_event_notifications
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import check_roles, get_current_user, require_roles
+from app.core.rbac_catalog import WORKFLOW_TYPE_LABELS
+from app.core.security import require_permission
 from app.core.sse import publish_event
 from app.models.crm import Contract, Counterparty, InteractionType, Product, Program, University
 from app.models.deal import Deal, DealComment, DealStageHistory
@@ -62,7 +68,7 @@ from app.modules.workflow import service as workflow_service
 
 router = APIRouter(prefix="/requests", tags=["requests"])
 
-_READ = Depends(get_current_user)
+_READ = Depends(require_permission("requests:read"))
 
 _SORT_FIELDS = {
     "created_at": Deal.created_at,
@@ -78,11 +84,57 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def _load_deal(session: AsyncSession, request_id: uuid.UUID) -> Deal:
+async def _load_deal(session: AsyncSession, request_id: uuid.UUID, user: AppUser) -> Deal:
+    """Заявка в области пользователя; вне области — 404, как несуществующая (Р-F2-10)."""
     deal = await session.get(Deal, request_id)
     if deal is None or deal.status == "archived":
         raise not_found("Заявка не найдена")
+    scope = user.access.deal_scope("requests:read", user.id)
+    if not scope.allows(deal.pipeline, deal.responsible_user_id):
+        raise not_found("Заявка не найдена")
     return deal
+
+
+async def _deal_ref_in_scope(
+    session: AsyncSession, request_id: uuid.UUID, user: AppUser
+) -> tuple[str, uuid.UUID]:
+    """(процесс, ответственный) заявки в области пользователя, без загрузки сущности:
+    движок workflow сам берёт строку под FOR UPDATE, сверяет версию и статус."""
+    row = (
+        await session.execute(
+            select(Deal.pipeline, Deal.responsible_user_id).where(Deal.id == request_id)
+        )
+    ).one_or_none()
+    scope = user.access.deal_scope("requests:read", user.id)
+    if row is None or not scope.allows(row.pipeline, row.responsible_user_id):
+        raise not_found("Заявка не найдена")
+    return row.pipeline, row.responsible_user_id
+
+
+def _workflow_label(workflow_type: str) -> str:
+    return WORKFLOW_TYPE_LABELS.get(workflow_type, workflow_type)
+
+
+async def _ensure_assignee_sees(
+    session: AsyncSession, assignee_id: uuid.UUID, pipeline: str
+) -> None:
+    """Ответственный должен видеть заявки процесса — иначе заявка «пропадёт» у него
+    из доски и карточка будет недоступна (роли только B2B/B2C)."""
+    assignee = await session.get(AppUser, assignee_id)
+    if assignee is not None and not assignee.access.has("requests:read", pipeline):
+        raise validation_error(
+            "Ошибка валидации данных",
+            [
+                {
+                    "field": "assignee_id",
+                    "code": "workflow_not_allowed",
+                    "message": (
+                        f"Пользователю недоступен процесс {_workflow_label(pipeline)} — "
+                        "назначьте сотрудника с доступом к нему"
+                    ),
+                }
+            ],
+        )
 
 
 async def _validate_refs(session: AsyncSession, fields: dict[str, Any]) -> None:
@@ -119,7 +171,7 @@ def _stuck_condition(default_days: int = 14):
 @router.get("", summary="Список заявок", dependencies=[_READ])
 async def list_requests(
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     workflow_type: Annotated[Literal["b2b", "b2c"] | None, Query()] = None,
     status_id: Annotated[list[uuid.UUID] | None, Query()] = None,
@@ -139,6 +191,7 @@ async def list_requests(
         .join(Workflow, Workflow.id == Deal.workflow_id)
         .where(Deal.status != "archived")
     )
+    stmt = user.access.deal_scope("requests:read", user.id).apply(stmt)
     if workflow_type:
         stmt = stmt.where(Deal.pipeline == workflow_type)
     if status_id:
@@ -198,11 +251,19 @@ async def list_requests(
 @router.get("/board", summary="Канбан-агрегат", dependencies=[_READ])
 async def board(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
-    workflow_type: Annotated[Literal["b2b", "b2c"], Query()] = "b2b",
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
+    workflow_type: Annotated[
+        Literal["b2b", "b2c"] | None,
+        Query(description="Процесс; по умолчанию — первый доступный роли"),
+    ] = None,
     assignee_id: Annotated[uuid.UUID | None, Query()] = None,
     cards_limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, Any]:
+    scope = user.access.deal_scope("requests:read", user.id)
+    if workflow_type is None:
+        workflow_type = scope.workflow_types[0] if scope.workflow_types else "b2b"
+    if workflow_type not in scope.workflow_types:
+        raise forbidden(f"Процесс {_workflow_label(workflow_type)} недоступен вашей роли")
     workflow = (
         await session.execute(select(Workflow).where(Workflow.code == workflow_type))
     ).scalar_one_or_none()
@@ -234,6 +295,7 @@ async def board(
             deals_stmt = deals_stmt.where(Deal.status == "open")
         if assignee_id:
             deals_stmt = deals_stmt.where(Deal.responsible_user_id == assignee_id)
+        deals_stmt = scope.apply(deals_stmt)
         count = (
             await session.execute(
                 select(func.count()).select_from(deals_stmt.subquery())
@@ -288,9 +350,14 @@ async def board(
 async def create_request(
     body: RequestCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("requests:write"))],
     request: Request,
 ) -> dict[str, Any]:
+    if not user.access.has("requests:write", body.workflow_type):
+        raise forbidden(
+            f"Создание заявок в процессе {_workflow_label(body.workflow_type)} "
+            "недоступно вашей роли"
+        )
     workflow = (
         await session.execute(select(Workflow).where(Workflow.code == body.workflow_type))
     ).scalar_one_or_none()
@@ -311,8 +378,10 @@ async def create_request(
     fields = body.model_dump(exclude={"workflow_type"})
     await _validate_refs(session, fields)
     assignee_id = fields.pop("assignee_id") or user.id
-    if not check_roles(user.roles, ("admin", "head_kam")) and assignee_id != user.id:
-        raise forbidden("KAM может назначить ответственным только себя")
+    if assignee_id != user.id:
+        if not user.access.has("requests:assign_any", workflow.code):
+            raise forbidden("KAM может назначить ответственным только себя")
+        await _ensure_assignee_sees(session, assignee_id, workflow.code)
 
     # workflow-engine.md §4.1 / checklist.md: ≥1 заявки на вуз — норма,
     # при создании 3-й активной — предупреждение, не запрет (как warning_duplicate договоров)
@@ -391,9 +460,9 @@ async def create_request(
 async def get_request(
     request_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
     comments = (
         (
             await session.execute(
@@ -424,11 +493,16 @@ async def update_request(
     request_id: uuid.UUID,
     body: RequestUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("requests:write"))],
     request: Request,
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
-    if not workflow_service.user_can_write_deal(user.roles, user.id, deal.responsible_user_id):
+    deal = await _load_deal(session, request_id, user)
+    if not user.access.can_act_on_deal(
+        "requests:write",
+        pipeline=deal.pipeline,
+        responsible_user_id=deal.responsible_user_id,
+        user_id=user.id,
+    ):
         raise forbidden("Изменять заявку может только её ответственный")
     check_version(deal, body.version)
 
@@ -481,10 +555,15 @@ async def assign_request(
     request_id: uuid.UUID,
     body: AssignBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("requests:assign"))],
     request: Request,
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
+    if not user.access.has("requests:assign", deal.pipeline):
+        raise forbidden(
+            f"Назначение ответственных в процессе {_workflow_label(deal.pipeline)} "
+            "недоступно вашей роли"
+        )
     if body.version is not None:
         check_version(deal, body.version)
     new_assignee = await session.get(AppUser, body.assignee_id)
@@ -494,13 +573,18 @@ async def assign_request(
             [{"field": "assignee_id", "code": "lookup_not_found",
               "message": "Пользователь не найден или деактивирован"}],
         )
-    if not check_roles(user.roles, ("admin", "head_kam")):
-        # kam: только взять «свободную» заявку на себя (см. резолюцию в докстринге модуля)
+    if not user.access.has("requests:assign_any", deal.pipeline):
+        # без assign_any — только взять «свободную» заявку на себя (см. докстринг модуля)
         current = await session.get(AppUser, deal.responsible_user_id)
         if body.assignee_id != user.id:
             raise forbidden("KAM может назначить ответственным только себя")
-        if current is not None and "kam" in (current.roles or []) and current.id != user.id:
+        if (
+            current is not None
+            and current.id != user.id
+            and current.access.has("requests:kam", deal.pipeline)
+        ):
             raise forbidden("Заявка уже назначена другому KAM")
+    await _ensure_assignee_sees(session, new_assignee.id, deal.pipeline)
 
     previous_id = deal.responsible_user_id
     if previous_id != new_assignee.id:
@@ -547,9 +631,9 @@ async def assign_request(
 async def list_available_transitions(
     request_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
     items = await available_transitions(session, deal, user)
     return {"items": items}
 
@@ -559,9 +643,18 @@ async def perform_transition(
     request_id: uuid.UUID,
     body: TransitionBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("requests:transition"))],
     request: Request,
 ) -> dict[str, Any]:
+    # область и право в процессе заявки — до движка (вне области — 404, Р-F2-10)
+    pipeline, responsible_id = await _deal_ref_in_scope(session, request_id, user)
+    if not user.access.can_act_on_deal(
+        "requests:transition",
+        pipeline=pipeline,
+        responsible_user_id=responsible_id,
+        user_id=user.id,
+    ):
+        raise forbidden("Переход доступен только ответственному по заявке")
     deal = await workflow_service.transition_deal(
         session,
         deal_id=request_id,
@@ -581,9 +674,9 @@ async def perform_transition(
 async def request_history(
     request_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
     history_rows = (
         (
             await session.execute(
@@ -649,9 +742,9 @@ async def request_history(
 async def list_comments(
     request_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
     comments = (
         (
             await session.execute(
@@ -682,9 +775,13 @@ async def add_comment(
     request_id: uuid.UUID,
     body: CommentCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("comments:write"))],
 ) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
+    if not user.access.has("comments:write", deal.pipeline):
+        raise forbidden(
+            f"Комментарии в процессе {_workflow_label(deal.pipeline)} недоступны вашей роли"
+        )
     comment = DealComment(deal_id=deal.id, author_user_id=user.id, body=body.text.strip())
     session.add(comment)
     deal.last_activity_at = _now()
@@ -716,19 +813,25 @@ async def add_comment(
 @router.delete(
     "/{request_id}/comments/{comment_id}",
     status_code=204,
-    summary="Удалить комментарий (автор или admin)",
+    summary="Удалить комментарий (автор или право удалять чужие)",
 )
 async def delete_comment(
     request_id: uuid.UUID,
     comment_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("comments:write"))],
 ) -> Response:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
     comment = await session.get(DealComment, comment_id)
     if comment is None or comment.deal_id != deal.id or comment.deleted_at is not None:
         raise not_found("Комментарий не найден")
-    if comment.author_user_id != user.id and "admin" not in user.roles:
+    if not user.access.has("comments:write", deal.pipeline):
+        raise forbidden(
+            f"Комментарии в процессе {_workflow_label(deal.pipeline)} недоступны вашей роли"
+        )
+    if comment.author_user_id != user.id and not user.access.has(
+        "comments:delete_any", deal.pipeline
+    ):
         raise forbidden("Удалить комментарий может только автор или администратор")
     comment.deleted_at = _now()
     await session.commit()
@@ -741,9 +844,14 @@ async def reopen_request(
     request_id: uuid.UUID,
     body: ReopenBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("requests:reopen"))],
     request: Request,
 ) -> dict[str, Any]:
+    pipeline, _responsible_id = await _deal_ref_in_scope(session, request_id, user)
+    if not user.access.has("requests:reopen", pipeline):
+        raise forbidden(
+            f"Переоткрытие заявок процесса {_workflow_label(pipeline)} недоступно вашей роли"
+        )
     deal = await workflow_service.reopen_deal(
         session,
         deal_id=request_id,
@@ -762,10 +870,14 @@ async def reopen_request(
 async def delete_request(
     request_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("requests:delete"))],
     request: Request,
 ) -> Response:
-    deal = await _load_deal(session, request_id)
+    deal = await _load_deal(session, request_id, user)
+    if not user.access.has("requests:delete", deal.pipeline):
+        raise forbidden(
+            f"Удаление заявок процесса {_workflow_label(deal.pipeline)} недоступно вашей роли"
+        )
     before_status = deal.status
     deal.status = "archived"
     await write_audit(

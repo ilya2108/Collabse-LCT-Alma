@@ -13,7 +13,10 @@
   с аудитом; упоминание «расшифровки на лету» в data-model §8.3 признано
   противоречащим контракту и критериям приёмки — маски по умолчанию);
 - значения-«формулы» (=, +, -, @) экранируются в CSV и пишутся строками в XLSX
-  (CWE-1236: инъекционные значения попадают в БД легитимно через импорт).
+  (CWE-1236: инъекционные значения попадают в БД легитимно через импорт);
+- права (F2): выгрузка сущности требует права её чтения (`<сущность>:read`, отчёты —
+  `reports:read`), заявки — в области роли (процессы B2B/B2C, «только свои»);
+  чужие выгрузки видны только с правом `files:others`.
 """
 
 from __future__ import annotations
@@ -32,8 +35,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.cache import get_cache
 from app.core.config import get_settings
-from app.core.errors import not_found, unprocessable, validation_error
+from app.core.errors import forbidden, not_found, unprocessable, validation_error
 from app.core.pii import mask_email, mask_full_name, mask_phone
+from app.core.rbac_catalog import permission_name
 from app.models.crm import Contract, Counterparty, Product, Program, University
 from app.models.deal import Deal
 from app.models.service import FileObject
@@ -48,6 +52,15 @@ MAX_EXPORT_ROWS = 50_000
 
 EXPORT_FORMATS = ("xlsx", "csv", "json")
 EXPORT_ENTITY_TYPES = ("requests", "universities", "contracts", "programs", "students")
+
+# право чтения выгружаемой сущности; отчёты `report:<code>` — reports:read
+_ENTITY_READ_PERMISSIONS = {
+    "requests": "requests:read",
+    "universities": "universities:read",
+    "contracts": "contracts:read",
+    "programs": "programs:read",
+    "students": "students:read",
+}
 
 _CONTENT_TYPES = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -91,6 +104,7 @@ async def _dataset_requests(
         .order_by(Deal.created_at.desc())
         .limit(MAX_EXPORT_ROWS)
     )
+    stmt = viewer.access.deal_scope("requests:read", viewer.id).apply(stmt)
     if filters.get("workflow_type"):
         stmt = stmt.where(Workflow.code == filters["workflow_type"])
     status_ids = filters.get("status_id") or []
@@ -584,6 +598,15 @@ async def create_export_job(
         raise unprocessable("Кодировка CSV — только utf-8 (с BOM) или cp1251")
     delimiter = options.get("csv_delimiter") or ";"
 
+    # право чтения сущности — до развилки по типу (наследуют и отчёты `report:*`)
+    read_permission = (
+        "reports:read"
+        if entity_type.startswith("report:")
+        else _ENTITY_READ_PERMISSIONS.get(entity_type)
+    )
+    if read_permission is not None and not user.access.has(read_permission):
+        raise forbidden(f"Выгрузка недоступна: нет права «{permission_name(read_permission)}»")
+
     if entity_type.startswith("report:"):
         dataset = await _dataset_report(session, entity_type.split(":", 1)[1], filters, user)
     else:
@@ -657,7 +680,7 @@ async def get_export_job(
         or file_object.deleted_at is not None
     ):
         raise not_found("Выгрузка не найдена")
-    if "admin" not in (user.roles or []) and file_object.uploaded_by != user.id:
+    if not user.access.has("files:others") and file_object.uploaded_by != user.id:
         raise not_found("Выгрузка не найдена")
     cached = await get_cache().get_json(f"export:{job_id}")
     if cached is not None:
@@ -680,7 +703,7 @@ async def list_export_jobs(session: AsyncSession, user: AppUser) -> list[dict[st
         .order_by(FileObject.created_at.desc())
         .limit(100)
     )
-    if "admin" not in (user.roles or []):
+    if not user.access.has("files:others"):
         stmt = stmt.where(FileObject.uploaded_by == user.id)
     rows = (await session.execute(stmt)).scalars().all()
     return [

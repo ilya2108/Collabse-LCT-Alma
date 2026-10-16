@@ -1,24 +1,34 @@
 import type { ReactNode } from 'react';
+import type { WorkflowType } from '@/shared/api/types';
 import { useAuth } from './AuthContext';
-import type { AppRole } from './roles';
+import type { PermissionCode } from './permissions';
 
 interface CanProps {
-  /** Показать детей, если у пользователя есть хотя бы одна из ролей. */
-  roles?: AppRole[];
-  /** Показать детей, если есть permission из /auth/me. */
-  permission?: string;
+  /** Показать детей, если есть право (с областью — в процессе `workflowType`). */
+  permission?: PermissionCode;
+  /** Показать детей, если есть хотя бы одно из прав. */
+  anyOf?: PermissionCode[];
+  /** Процесс для прав с областью (B2B/B2C). */
+  workflowType?: WorkflowType | null;
   fallback?: ReactNode;
   children: ReactNode;
 }
 
 /**
- * Точечный RBAC-гейт для элементов UI (кнопка «Опубликовать», drag-handle):
+ * Точечный гейт по правам для элементов UI (кнопка «Опубликовать», drag-handle):
  * пользователь никогда не видит кнопку, которую не может нажать (ux.md §1.1, §3.4).
  * Фронтовый RBAC — только UX-слой, сервер дублирует все проверки.
  */
-export function Can({ roles, permission, fallback = null, children }: CanProps): ReactNode {
-  const { hasRole, hasPermission } = useAuth();
-  const roleOk = !roles || hasRole(...roles);
-  const permissionOk = !permission || hasPermission(permission);
-  return roleOk && permissionOk ? children : fallback;
+export function Can({
+  permission,
+  anyOf,
+  workflowType,
+  fallback = null,
+  children,
+}: CanProps): ReactNode {
+  const { hasPermission } = useAuth();
+  const permissionOk = !permission || hasPermission(permission, workflowType);
+  const anyOk =
+    !anyOf || anyOf.length === 0 || anyOf.some((code) => hasPermission(code, workflowType));
+  return permissionOk && anyOk ? children : fallback;
 }

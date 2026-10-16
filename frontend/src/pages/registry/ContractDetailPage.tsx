@@ -394,7 +394,8 @@ export function ContractDetailPage(): ReactNode {
                     : null
                 }
                 onDelete={
-                  hasPermission('contracts:write')
+                  // удаление файлов договора — отдельное право (admin, head_kam), как на сервере
+                  hasPermission('contracts:files_delete')
                     ? async (fileId) => {
                         await deleteContractFile(contract.id, fileId);
                         await queryClient.invalidateQueries({ queryKey: ['contract-files', id] });

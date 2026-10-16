@@ -7,6 +7,7 @@ import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { searchUniversities } from '@/shared/api/endpoints/universities';
 import { listUsers } from '@/shared/api/endpoints/users';
 import { useAuth } from '@/shared/auth/AuthContext';
+import type { PermissionCode } from '@/shared/auth/permissions';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
 import { Combobox, type ComboboxOption } from '@/shared/ui/data-table';
 
@@ -168,20 +169,20 @@ export function ContractSelect({ universityId, ...props }: ContractSelectProps):
 }
 
 interface UserSelectProps extends BaseProps {
-  /** Фильтр по роли Keycloak (например, 'kam'). */
-  role?: string;
+  /** Только пользователи, у ролей которых есть право (например, 'requests:kam' — КАМы). */
+  permission?: PermissionCode;
 }
 
 /**
- * Селект пользователя (ответственный/КАМ). `GET /admin/users` доступен только
- * admin и head_kam (api-contract.md §10.2) — рендерите под <Can>.
+ * Селект пользователя (ответственный/КАМ). `GET /admin/users` требует право
+ * `admin:users` (api-contract.md §10.2) — рендерите под <Can>.
  */
-export function UserSelect({ role, ...props }: UserSelectProps): ReactNode {
-  const { hasRole } = useAuth();
-  const allowed = hasRole('admin', 'head_kam');
+export function UserSelect({ permission, ...props }: UserSelectProps): ReactNode {
+  const { hasPermission } = useAuth();
+  const allowed = hasPermission('admin:users');
   const query = useQuery({
-    queryKey: ['users-select', role ?? 'all'],
-    queryFn: ({ signal }) => listUsers({ role, signal }),
+    queryKey: ['users-select', permission ?? 'all'],
+    queryFn: ({ signal }) => listUsers({ permission, signal }),
     enabled: allowed,
     staleTime: 60_000,
   });

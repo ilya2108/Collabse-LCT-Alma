@@ -11,6 +11,7 @@ import { searchUniversities } from '@/shared/api/endpoints/universities';
 import { listUsers } from '@/shared/api/endpoints/users';
 import { errorMessage, isApiError } from '@/shared/api/errors';
 import { useAuth } from '@/shared/auth/AuthContext';
+import { WORKFLOW_TYPE_LABELS } from '@/shared/auth/permissions';
 import { dayjs } from '@/shared/lib/dayjs';
 import { staggerContainer, staggerItem } from '@/shared/lib/motion';
 import { toastError, toastSuccess } from '@/shared/lib/toast';
@@ -102,10 +103,18 @@ function ReportErrorState({
 
 export function DashboardScreen(): ReactNode {
   const navigate = useNavigate();
-  const { user, hasRole } = useAuth();
+  const { user, hasPermission, workflowTypesWith } = useAuth();
   const { flags } = useFlags();
   const [searchParams, setSearchParams] = useSearchParams();
-  const filters = useMemo(() => filtersFromParams(searchParams), [searchParams]);
+  // Процессы отчётов — только доступные ролям (F2): один процесс — он и выбран,
+  // чужой wf в ссылке игнорируется.
+  const reportTypes = useMemo(() => workflowTypesWith('reports:read'), [workflowTypesWith]);
+  const rawFilters = useMemo(() => filtersFromParams(searchParams), [searchParams]);
+  const filters = useMemo<DashFilters>(() => {
+    const allowed = rawFilters.wf && reportTypes.includes(rawFilters.wf) ? rawFilters.wf : null;
+    const wf = allowed ?? (reportTypes.length === 1 ? (reportTypes[0] ?? null) : null);
+    return wf === rawFilters.wf ? rawFilters : { ...rawFilters, wf };
+  }, [rawFilters, reportTypes]);
   const [programsMode, setProgramsMode] = useState<ProgramsMode>('requests');
   const [exporting, setExporting] = useState(false);
   // Чек-лист онбординга §7.5: no-op без провайдера.
@@ -158,7 +167,8 @@ export function DashboardScreen(): ReactNode {
   const loading = reportQuery.isLoading;
 
   // Справочники фильтров (§6.3): вузы — серверный поиск, остальные целиком.
-  const canFilterByKam = hasRole('admin', 'head_kam');
+  // фильтр по КАМам — отчёты по всем КАМам и доступ к списку пользователей
+  const canFilterByKam = hasPermission('admin:users') && hasPermission('reports:all');
   const [universitySearch, setUniversitySearch] = useState('');
   const debouncedUniversity = useDebouncedValue(universitySearch, 300);
   const universitiesQuery = useQuery({
@@ -172,15 +182,15 @@ export function DashboardScreen(): ReactNode {
     staleTime: 60_000,
   });
   const kamsQuery = useQuery({
-    queryKey: ['users-select', 'kam'],
-    queryFn: ({ signal }) => listUsers({ role: 'kam', signal }),
+    queryKey: ['users-select', 'requests:kam'],
+    queryFn: ({ signal }) => listUsers({ permission: 'requests:kam', signal }),
     enabled: canFilterByKam,
     staleTime: 60_000,
   });
 
   const boardQuery = (extra: Record<string, string>): string => {
     const query = new URLSearchParams();
-    query.set('wf', filters.wf === 'b2c' ? 'b2c' : 'b2b');
+    query.set('wf', filters.wf ?? reportTypes[0] ?? 'b2b');
     if (filters.kam[0]) query.set('kam', filters.kam[0]);
     if (filters.university[0]) query.set('university', filters.university[0]);
     if (filters.product[0]) query.set('product', filters.product[0]);
@@ -362,9 +372,8 @@ export function DashboardScreen(): ReactNode {
           value={filters.wf ?? 'all'}
           onChange={(value) => patchParams({ wf: value === 'all' ? null : value })}
           options={[
-            { label: 'B2B', value: 'b2b' },
-            { label: 'B2C', value: 'b2c' },
-            { label: 'Все', value: 'all' },
+            ...reportTypes.map((wf) => ({ label: WORKFLOW_TYPE_LABELS[wf], value: wf })),
+            ...(reportTypes.length > 1 ? [{ label: 'Все', value: 'all' }] : []),
           ]}
         />
         {canFilterByKam ? (
@@ -379,7 +388,7 @@ export function DashboardScreen(): ReactNode {
             loading={kamsQuery.isLoading}
             emptyText="КАМы не найдены"
           />
-        ) : hasRole('kam') ? (
+        ) : hasPermission('requests:kam') ? (
           <Segmented
             aria-label="Мои или все заявки"
             value={filters.kam.length > 0 ? 'mine' : 'all'}

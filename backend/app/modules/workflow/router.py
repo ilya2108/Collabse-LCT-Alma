@@ -34,6 +34,9 @@ from app.modules.workflow.schemas import (
     ChangeRequestOut,
     ImpactOut,
     ImpactPreviewBody,
+    MigrationReport,
+    MigrationReportByStatus,
+    MigrationTimings,
     RejectBody,
     UserRef,
 )
@@ -127,11 +130,35 @@ async def get_workflow(
 # --- конструктор изменений (пакеты операций, апрув, миграция) -----------------------------
 
 
+def _migration_report_out(report: dict[str, Any]) -> MigrationReport:
+    """Отчёт переноса (хранится в `impact['migration_report']`, `by_status` — from/to)."""
+    timings = report.get("timings")
+    return MigrationReport(
+        migrated_requests=int(report.get("migrated_requests") or 0),
+        by_status=[
+            MigrationReportByStatus(
+                from_status=row["from"], to_status=row["to"], count=row["count"]
+            )
+            for row in report.get("by_status") or []
+        ],
+        digest_notifications=report.get("digest_notifications"),
+        timings=(
+            MigrationTimings.model_validate(timings)
+            if isinstance(timings, dict) and "apply_ms" in timings
+            else None
+        ),
+    )
+
+
 def _serialize_change(
     wcr: WorkflowChangeRequest,
     author: AppUser | None,
     decided_by: AppUser | None,
 ) -> dict[str, Any]:
+    # отчёт переноса живёт в impact (JSONB, без миграции БД), наружу — отдельным полем;
+    # impact отдаётся прежней формы ImpactOut
+    impact = dict(wcr.impact) if isinstance(wcr.impact, dict) else wcr.impact
+    report = impact.pop("migration_report", None) if isinstance(impact, dict) else None
     return ChangeRequestOut(
         id=wcr.id,
         workflow_id=wcr.workflow_id,
@@ -142,11 +169,12 @@ def _serialize_change(
         ),
         decision_comment=wcr.decision_comment,
         operations=list(wcr.operations or []),
-        impact=wcr.impact,
+        impact=impact,
+        migration_report=_migration_report_out(report) if isinstance(report, dict) else None,
         created_at=wcr.requested_at,
         decided_at=wcr.decided_at,
         applied_at=wcr.applied_at,
-    ).model_dump(mode="json")
+    ).model_dump(mode="json", by_alias=True)
 
 
 async def _load_change_users(
@@ -263,6 +291,13 @@ async def get_change(
 @router.post(
     "/changes/{change_id}/approve",
     summary="Одобрить и атомарно применить изменение (только admin)",
+    description=(
+        "Одна транзакция: схема, перенос заявок удаляемых этапов, история, сводные "
+        "уведомления и аудит. 409 `conflict` — пакет уже обработан; 409 `workflow_busy` "
+        "(заголовок Retry-After) — воронка занята переходами, пакет остаётся на "
+        "согласовании; 400 `workflow_invalid_schema`, 422 `unprocessable` — пакет "
+        "помечен failed, заявки не тронуты."
+    ),
 )
 async def approve_change(
     change_id: uuid.UUID,
@@ -275,13 +310,7 @@ async def approve_change(
         status=wcr.status,
         approved_by=UserRef(id=user.id, full_name=user.full_name),
         applied_at=wcr.applied_at,
-        migration_report={
-            "migrated_requests": report["migrated_requests"],
-            "by_status": [
-                {"from_status": row["from"], "to_status": row["to"], "count": row["count"]}
-                for row in report["by_status"]
-            ],
-        },
+        migration_report=_migration_report_out(report),
     ).model_dump(mode="json", by_alias=True)
 
 

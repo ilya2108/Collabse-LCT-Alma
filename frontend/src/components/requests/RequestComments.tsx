@@ -8,7 +8,7 @@ import {
   listRequestComments,
 } from '@/shared/api/endpoints/requests';
 import { listUsers } from '@/shared/api/endpoints/users';
-import type { RequestComment } from '@/shared/api/types';
+import type { RequestComment, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { formatRelative } from '@/shared/lib/format';
 import { springs } from '@/shared/lib/motion';
@@ -43,12 +43,20 @@ interface PendingComment {
   failed: boolean;
 }
 
-export function RequestComments({ requestId }: { requestId: string }): ReactNode {
+export function RequestComments({
+  requestId,
+  workflowType,
+}: {
+  requestId: string;
+  /** Процесс заявки: права на комментарии действуют в нём (F2). */
+  workflowType: WorkflowType;
+}): ReactNode {
   const queryClient = useQueryClient();
-  const { user, roles, hasRole, hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const [draft, setDraft] = useState('');
   const [pendingComments, setPendingComments] = useState<PendingComment[]>([]);
-  const canWrite = hasPermission('comments:write');
+  const canWrite = hasPermission('comments:write', workflowType);
+  const canDeleteAny = hasPermission('comments:delete_any', workflowType);
 
   const commentsQuery = useQuery({
     queryKey: ['request-comments', requestId],
@@ -63,8 +71,8 @@ export function RequestComments({ requestId }: { requestId: string }): ReactNode
     (event) => eventRequestId(event) === requestId || eventRequestId(event) === null,
   );
 
-  // Пользователи для автоподсказки @упоминаний — только admin/head_kam (§10.2)
-  const canListUsers = hasRole('admin', 'head_kam');
+  // Пользователи для автоподсказки @упоминаний — право admin:users (§10.2)
+  const canListUsers = hasPermission('admin:users');
   const usersQuery = useQuery({
     queryKey: ['users-select', 'all'],
     queryFn: ({ signal }) => listUsers({ signal }),
@@ -157,7 +165,7 @@ export function RequestComments({ requestId }: { requestId: string }): ReactNode
                       <span className="text-xs text-muted-foreground">
                         {formatRelative(comment.created_at)}
                       </span>
-                      {!deleted && (roles.includes('admin') || own) ? (
+                      {!deleted && (canDeleteAny || (own && canWrite)) ? (
                         <AlertDialog>
                           <AlertDialogTrigger asChild>
                             <Button

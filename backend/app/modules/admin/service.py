@@ -6,7 +6,9 @@
   версия документа настроек — ключ `settings_version`;
 - фичефлаги — ключ `app_setting['feature_flags']` (реестр и дефолты — в коде);
 - `last_login_at` в списке пользователей — проекция `app_user.updated_at`
-  (отдельной колонки в DDL нет; зеркало обновляется при каждом логине).
+  (отдельной колонки в DDL нет; зеркало обновляется при каждом логине);
+- роли пользователей — источник истины БД Альмы (F2): синхронизация с Keycloak
+  обновляет только профиль (ФИО, email, активность), роли назначаются в CRM.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import httpx
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import ensure_role_catalog, get_catalog_snapshot
 from app.core.config import get_settings
 from app.core.errors import ApiError, not_found, stale_version, validation_error
 from app.core.pagination import ListParams, apply_sort
@@ -175,12 +178,17 @@ def flags_catalog(flags: dict[str, bool]) -> list[dict[str, Any]]:
 
 
 def serialize_user(user: AppUser) -> dict[str, Any]:
+    """Пользователь для админки: роли — только известные каталогу, с названиями."""
+    catalog = get_catalog_snapshot()
+    roles = sorted(r for r in (user.roles or []) if r in catalog.roles)
     return {
         "id": str(user.id),
         "username": user.username,
         "full_name": user.full_name,
         "email": user.email,
-        "roles": sorted(r for r in user.roles if r in PEOPLE_ROLES),
+        "roles": roles,
+        "role_names": catalog.names(roles),
+        "no_roles": not roles,
         "manager_id": str(user.manager_id) if user.manager_id else None,
         "telegram_linked": user.tg_chat_id is not None,
         "tg_username": user.tg_username,
@@ -196,10 +204,20 @@ async def list_users(
     role: str | None,
     search: str | None,
     params: ListParams,
+    permission: str | None = None,
+    no_roles: bool | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
+    catalog = await ensure_role_catalog(session)
     stmt = select(AppUser)
     if role:
         stmt = stmt.where(AppUser.roles.any(role))
+    if permission:
+        # «КАМ» = роль с правом requests:kam и т. п.; роли без права в выдачу не попадают
+        stmt = stmt.where(AppUser.roles.overlap(list(catalog.role_codes_with(permission))))
+    if no_roles is not None:
+        known = list(catalog.roles)
+        has_roles = AppUser.roles.overlap(known)
+        stmt = stmt.where(~has_roles if no_roles else has_roles)
     if search:
         needle = f"%{search.strip()}%"
         stmt = stmt.where(
@@ -269,6 +287,11 @@ async def sync_users_from_keycloak(session: AsyncSession) -> dict[str, int]:
     (env `KEYCLOAK_ADMIN_CLIENT_ID`/`KEYCLOAK_ADMIN_CLIENT_SECRET`). Штатный путь
     синхронизации — upsert при логине (data-model.md §3); этот эндпоинт — для
     предзаполнения списка до первого входа пользователей.
+
+    Роли не трогает (источник истины — БД Альмы): обновляются ФИО, email и активность.
+    Новые пользователи получают стартовое назначение из системных ролей realm (как при
+    первом входе) или пустой список — администратор назначит роль в Альме. Сервисные
+    аккаунты клиентов (`service-account-*`) не переносятся.
     """
     settings = get_settings()
     if not settings.keycloak_admin_client_id or not settings.keycloak_admin_client_secret:
@@ -302,19 +325,13 @@ async def sync_users_from_keycloak(session: AsyncSession) -> dict[str, int]:
             users_response.raise_for_status()
             kc_users = users_response.json()
 
-            created = updated = 0
+            created = updated = without_roles = 0
             for kc_user in kc_users:
-                roles_response = await client.get(
-                    f"{base}/admin/realms/{realm}/users/{kc_user['id']}"
-                    "/role-mappings/realm",
-                    headers=headers,
-                )
-                roles_response.raise_for_status()
-                roles = sorted(
-                    {r["name"] for r in roles_response.json()} & set(PEOPLE_ROLES)
-                )
-                if not roles:
-                    continue  # сервисные аккаунты и технические записи не зеркалим
+                username = str(kc_user.get("username", ""))
+                if kc_user.get("serviceAccountClientLink") or username.startswith(
+                    "service-account-"
+                ):
+                    continue  # сервисные аккаунты клиентов — не люди CRM
                 sub = uuid.UUID(kc_user["id"])
                 full_name = " ".join(
                     part
@@ -336,26 +353,41 @@ async def sync_users_from_keycloak(session: AsyncSession) -> dict[str, int]:
                         )
                     ).scalar_one_or_none()
                 if user is None:
-                    session.add(
-                        AppUser(
-                            keycloak_sub=sub,
-                            username=kc_user["username"],
-                            email=kc_user.get("email"),
-                            full_name=full_name,
-                            roles=roles,
-                            is_active=bool(kc_user.get("enabled", True)),
-                        )
+                    # стартовое назначение — как при первом входе (sync_app_user)
+                    roles_response = await client.get(
+                        f"{base}/admin/realms/{realm}/users/{kc_user['id']}"
+                        "/role-mappings/realm",
+                        headers=headers,
                     )
+                    roles_response.raise_for_status()
+                    roles = sorted(
+                        {r["name"] for r in roles_response.json()} & set(PEOPLE_ROLES)
+                    )
+                    user = AppUser(
+                        keycloak_sub=sub,
+                        username=kc_user["username"],
+                        email=kc_user.get("email"),
+                        full_name=full_name,
+                        roles=roles,
+                        is_active=bool(kc_user.get("enabled", True)),
+                    )
+                    session.add(user)
                     created += 1
                 else:
                     user.keycloak_sub = sub
                     user.email = kc_user.get("email") or user.email
                     user.full_name = full_name or user.full_name
-                    user.roles = roles
                     user.is_active = bool(kc_user.get("enabled", True))
                     updated += 1
+                if not user.roles:
+                    without_roles += 1
             await session.commit()
-            return {"synced": created + updated, "created": created, "updated": updated}
+            return {
+                "synced": created + updated,
+                "created": created,
+                "updated": updated,
+                "without_roles": without_roles,
+            }
     except httpx.HTTPError as exc:
         raise ApiError(
             502,

@@ -62,11 +62,17 @@ async def _bind(
     )
     if metrics is not None:
         metrics.mark_binding_created()
+    # названия ролей приходят из каталога ролей CRM (свои роли — тоже); коды —
+    # запасной вариант для старого backend
+    role_labels = result.get("role_labels")
     await message.answer(
         texts.greeting_text(
             tg_first_name=tg_user.first_name if tg_user else None,
             full_name=str(result.get("full_name", "")),
             roles=list(result.get("roles", [])),
+            role_labels=[str(label) for label in role_labels]
+            if isinstance(role_labels, list)
+            else None,
         )
     )
 

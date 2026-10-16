@@ -138,7 +138,10 @@ export function CreateRequestDrawer({
   onCreated,
 }: CreateRequestDrawerProps): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
+  // назначить другого ответственного — право в процессе заявки + список пользователей
+  const canAssignOther =
+    hasPermission('requests:assign_any', workflowType) && hasPermission('admin:users');
 
   const schema = useMemo(() => buildSchema(workflowType), [workflowType]);
   const form = useForm<FormValues>({
@@ -454,7 +457,7 @@ export function CreateRequestDrawer({
                 </FormItem>
               )}
             />
-            {hasRole('admin', 'head_kam') ? (
+            {canAssignOther ? (
               <FormField
                 control={form.control}
                 name="assignee_id"

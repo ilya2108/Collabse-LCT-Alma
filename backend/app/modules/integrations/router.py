@@ -21,7 +21,7 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.errors import conflict, not_found, validation_error
 from app.core.pagination import ListParams, list_envelope, list_params
-from app.core.security import require_roles
+from app.core.security import require_permission
 from app.models.service import IntegrationEvent
 from app.models.user import AppUser
 from app.modules.integrations import service
@@ -121,7 +121,7 @@ def _serialize_event(event: IntegrationEvent) -> dict[str, Any]:
 @router.get(
     "/admin/integration/events",
     summary="Журнал интеграционных событий",
-    dependencies=[Depends(require_roles("admin", "observer"))],
+    dependencies=[Depends(require_permission("admin:audit"))],
 )
 async def integration_events(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -170,7 +170,7 @@ async def integration_events(
 async def retry_event(
     event_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("admin:integrations"))],
     request: Request,
 ) -> dict[str, Any]:
     event = await session.get(IntegrationEvent, event_id, with_for_update=True)

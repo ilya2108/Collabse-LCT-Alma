@@ -77,13 +77,16 @@ export function StudentPage(): ReactNode {
   const { id } = useParams<'id'>();
   const studentId = id ?? '';
   const navigate = useNavigate();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const reveal = useReveal();
   const [moveTarget, setMoveTarget] = useState<StudentFunnelStatus | null>(null);
 
-  const canWrite = hasRole('admin', 'head_kam', 'kam');
-  const isObserver = !canWrite;
+  const canWrite = hasPermission('students:write');
+  // файлы студента (резюме, сертификаты) — отдельное право: просмотр и загрузка
+  const canFiles = hasPermission('students:files');
+  const canDeleteFiles = hasPermission('students:files_delete');
+  const piiMasked = !hasPermission('students:reveal');
 
   const studentQuery = useQuery({
     queryKey: ['student', studentId],
@@ -100,7 +103,7 @@ export function StudentPage(): ReactNode {
   const filesQuery = useQuery({
     queryKey: ['student-files', studentId],
     queryFn: ({ signal }) => listStudentFiles(studentId, signal),
-    enabled: Boolean(studentId) && canWrite,
+    enabled: Boolean(studentId) && canFiles,
     retry: 0,
   });
 
@@ -266,7 +269,7 @@ export function StudentPage(): ReactNode {
           files={filesQuery.data?.items ?? []}
           loading={filesQuery.isLoading}
           onUpload={
-            canWrite
+            canFiles
               ? async (file) => {
                   await uploadStudentFile(student.id, file);
                   await queryClient.invalidateQueries({ queryKey: ['student-files', studentId] });
@@ -274,7 +277,7 @@ export function StudentPage(): ReactNode {
               : null
           }
           onDelete={
-            hasRole('admin', 'head_kam')
+            canDeleteFiles
               ? async (fileId) => {
                   await deleteStudentFile(student.id, fileId);
                   await queryClient.invalidateQueries({ queryKey: ['student-files', studentId] });
@@ -390,12 +393,12 @@ export function StudentPage(): ReactNode {
           ) : undefined
         }
       />
-      {isObserver ? (
+      {piiMasked ? (
         <Alert className="mb-4">
           <EyeOff className="size-4" aria-hidden="true" />
           <AlertTitle>ПДн скрыты согласно роли</AlertTitle>
           <AlertDescription>
-            Роль «Наблюдатель» видит только маскированные персональные данные; раскрытие недоступно.
+            Вашей роли видны только маскированные персональные данные; раскрытие недоступно.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -403,12 +406,12 @@ export function StudentPage(): ReactNode {
         <TabsList>
           <TabsTrigger value="profile">Профиль</TabsTrigger>
           <TabsTrigger value="schedule">Расписание</TabsTrigger>
-          {canWrite ? <TabsTrigger value="files">Файлы</TabsTrigger> : null}
+          {canFiles ? <TabsTrigger value="files">Файлы</TabsTrigger> : null}
           <TabsTrigger value="history">История</TabsTrigger>
         </TabsList>
         <TabsContent value="profile">{profileTab}</TabsContent>
         <TabsContent value="schedule">{scheduleTab}</TabsContent>
-        {canWrite ? <TabsContent value="files">{filesTab}</TabsContent> : null}
+        {canFiles ? <TabsContent value="files">{filesTab}</TabsContent> : null}
         <TabsContent value="history">{historyTab}</TabsContent>
       </Tabs>
       <StatusChangeModal

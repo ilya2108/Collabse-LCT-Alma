@@ -15,7 +15,8 @@ VM_HOST      ?= root@$(VM_IP)
 
 .PHONY: help dev dev-env dev-down build-images realm-sync k8s-secrets k8s-up \
         k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo hosts \
-        stuck-check load-test logs clean vm-install vm-deploy vm-smoke
+        stuck-check idempotency-purge demo-idempotency load-test logs clean \
+        vm-install vm-deploy vm-smoke
 
 help: ## список целей
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -118,6 +119,14 @@ hosts: ## строка для /etc/hosts — нужна только для ал
 stuck-check: ## compose-паритет k8s CronJob: триггер проверки зависших заявок
 	curl -fsS -X POST -H "X-Internal-Token: $${INTERNAL_API_TOKEN:-dev-internal-token}" \
 	  http://localhost:8000/api/v1/internal/jobs/check-stuck-requests
+
+idempotency-purge: ## compose-паритет k8s CronJob: очистка просроченных ключей Idempotency-Key
+	curl -fsS -X POST -H "X-Internal-Token: $${INTERNAL_API_TOKEN:-dev-internal-token}" \
+	  http://localhost:8000/api/v1/internal/jobs/purge-idempotency-keys
+
+demo-idempotency: ## демо Idempotency-Key против стенда (нужен DEMO_PASSWORD; см. скрипт)
+	LOADTEST_CLIENT_SECRET=$${LOADTEST_CLIENT_SECRET:-$$(kubectl -n $(NS) get secret crm-keycloak-clients -o jsonpath='{.data.LOADTEST_CLIENT_SECRET}' | base64 -d)} \
+	./deploy/scripts/demo-idempotency.sh
 
 load-test: ## k6: 300→400 VU против стенда (docker-вариант — deploy/load/README.md)
 	@command -v k6 >/dev/null 2>&1 || \

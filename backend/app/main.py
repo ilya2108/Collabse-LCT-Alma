@@ -19,6 +19,7 @@ from app.core.errors import RequestIdMiddleware, register_error_handlers
 from app.core.health import router as health_router
 from app.core.outbox import outbox_relay_loop
 from app.core.sse import sse_listener_loop
+from app.modules.access.router import router as access_router
 from app.modules.admin.router import router as admin_router
 from app.modules.auth.router import router as auth_router
 from app.modules.crm.router import router as crm_router
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     api.include_router(files_router)
     api.include_router(integrations_router)
     api.include_router(admin_router)
+    api.include_router(access_router)
     api.include_router(internal_router)
     app.include_router(api)
 

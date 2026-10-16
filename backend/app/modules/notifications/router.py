@@ -6,7 +6,8 @@
 - CRUD правил `notification_rule` (адресация responsible / manager_of_responsible /
   role / user / tg_username / email — data-model.md §9.4);
 - `/internal/bot/*` — только сервисная роль `svc_notification` (клиент crm-notification);
-  backend резолвит chat_id → app_user и применяет RBAC привязанного пользователя (§9.3).
+  backend резолвит chat_id → app_user и применяет права привязанного пользователя (§9.3):
+  роли из каталога CRM, область B2B/B2C; пользователь без ролей получает 403.
 """
 
 from __future__ import annotations
@@ -18,16 +19,12 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import ensure_role_catalog
 from app.core.audit import client_ip, write_audit
 from app.core.db import get_session
-from app.core.errors import not_found
+from app.core.errors import forbidden, not_found
 from app.core.events import SSE_TELEGRAM_LINKED
-from app.core.security import (
-    PEOPLE_ROLES,
-    get_current_user,
-    require_roles,
-    require_service_role,
-)
+from app.core.security import require_permission, require_service_role
 from app.core.sse import publish_event
 from app.models.service import NotificationRule
 from app.models.user import AppUser
@@ -45,12 +42,24 @@ from app.modules.notifications.schemas import (
 router = APIRouter(tags=["notifications"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-CurrentUser = Annotated[AppUser, Depends(get_current_user)]
+CurrentUser = Annotated[AppUser, Depends(require_permission("notifications:self"))]
+RulesReader = Depends(require_permission("notification_rules:read"))
+RulesWriter = Annotated[AppUser, Depends(require_permission("notification_rules:write"))]
 BotClaims = Depends(require_service_role("svc_notification"))
 
 
 def _people_roles(user: AppUser) -> list[str]:
-    return sorted(r for r in user.roles if r in PEOPLE_ROLES)
+    """Коды ролей CRM пользователя (известные каталогу)."""
+    return list(user.access.role_codes)
+
+
+async def _bot_user(session: AsyncSession, chat_id: int) -> AppUser:
+    """Привязанный к чату пользователь с актуальными правами; без ролей CRM — 403."""
+    user = await service.user_by_chat_id(session, chat_id)
+    await ensure_role_catalog(session)
+    if not user.access.role_codes:
+        raise forbidden("Учётной записи не назначены роли CRM — обратитесь к администратору")
+    return user
 
 
 # --------------------------------------------------------------------------------------
@@ -153,7 +162,7 @@ async def telegram_unlink(
 @router.get(
     "/notifications/rules",
     summary="Правила нотификаций",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
+    dependencies=[RulesReader],
 )
 async def list_rules(
     session: SessionDep,
@@ -176,7 +185,7 @@ async def create_rule(
     body: RuleIn,
     request: Request,
     session: SessionDep,
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: RulesWriter,
 ) -> dict[str, Any]:
     payload = await service.validate_rule_payload(session, body.model_dump())
     rule = NotificationRule(id=uuid.uuid4(), created_by=user.id, **payload)
@@ -201,7 +210,7 @@ async def update_rule(
     body: RulePatch,
     request: Request,
     session: SessionDep,
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: RulesWriter,
 ) -> dict[str, Any]:
     rule = await service.get_rule(session, rule_id)
     if body.version is not None:
@@ -233,7 +242,7 @@ async def delete_rule(
     rule_id: uuid.UUID,
     request: Request,
     session: SessionDep,
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: RulesWriter,
 ) -> None:
     rule = await service.get_rule(session, rule_id)
     await write_audit(
@@ -279,10 +288,12 @@ async def bot_bind(body: BotBindIn, session: SessionDep) -> dict[str, Any]:
         SSE_TELEGRAM_LINKED,
         {"user_id": str(user.id), "tg_username": user.tg_username},
     )
+    catalog = await ensure_role_catalog(session)
     return {
         "user_id": str(user.id),
         "full_name": user.full_name,
         "roles": _people_roles(user),
+        "role_labels": catalog.names(_people_roles(user)),
     }
 
 
@@ -292,12 +303,14 @@ async def bot_bind(body: BotBindIn, session: SessionDep) -> dict[str, Any]:
     dependencies=[BotClaims],
 )
 async def bot_binding(chat_id: int, session: SessionDep) -> dict[str, Any]:
-    user = await service.user_by_chat_id(session, chat_id)
+    user = await _bot_user(session, chat_id)
+    catalog = await ensure_role_catalog(session)
     return {
         "user_id": str(user.id),
         "username": user.username,
         "full_name": user.full_name,
         "roles": _people_roles(user),
+        "role_labels": catalog.names(_people_roles(user)),
         "linked_at": user.tg_linked_at,
     }
 
@@ -327,7 +340,7 @@ async def bot_unbind(chat_id: int, session: SessionDep) -> dict[str, Any]:
     dependencies=[BotClaims],
 )
 async def bot_summary(chat_id: int, session: SessionDep) -> dict[str, Any]:
-    user = await service.user_by_chat_id(session, chat_id)
+    user = await _bot_user(session, chat_id)
     return await service.bot_summary(session, user)
 
 
@@ -342,7 +355,7 @@ async def bot_requests(
     stuck: Annotated[bool, Query(description="Только зависшие")] = False,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> dict[str, Any]:
-    user = await service.user_by_chat_id(session, chat_id)
+    user = await _bot_user(session, chat_id)
     items = await service.bot_requests(session, user, stuck_only=stuck, limit=limit)
     return {"items": items, "total": len(items)}
 
@@ -358,5 +371,5 @@ async def bot_notifications(
     unread: Annotated[bool, Query()] = True,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> dict[str, Any]:
-    user = await service.user_by_chat_id(session, chat_id)
+    user = await _bot_user(session, chat_id)
     return await service.list_feed(session, user, unread=unread, limit=limit, offset=0)

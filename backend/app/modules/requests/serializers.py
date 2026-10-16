@@ -1,8 +1,8 @@
 """Сериализация заявок в формат API (api-contract.md §4.2–4.4).
 
 Мост терминологии: deal → Request, stage → status, stage_entered_at → status_updated_at.
-ПДн клиента-физлица (B2C) для роли observer маскируются (§4.2); данные шифруются
-на уровне хранения (EncryptedStr), здесь — только представление.
+ПДн клиента-физлица (B2C) без права `clients:pii` (наблюдатель) маскируются (§4.2);
+данные шифруются на уровне хранения (EncryptedStr), здесь — только представление.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ async def serialize_deal(
     counterparty = (
         await session.get(Counterparty, deal.counterparty_id) if deal.counterparty_id else None
     )
-    is_observer = "observer" in (viewer.roles or [])
+    mask_pii = not viewer.access.has("clients:pii")
     is_stuck, stuck_days = stuck_info(deal, stage, workflow)
     out = RequestOut(
         id=deal.id,
@@ -114,7 +114,7 @@ async def serialize_deal(
         client_kind=client_kind_of(counterparty),
         counterparty_id=deal.counterparty_id,
         interaction_type_id=deal.interaction_type_id,
-        client=serialize_client(counterparty, is_observer),
+        client=serialize_client(counterparty, mask_pii),
         contract_id=deal.contract_id,
         product_id=deal.product_id,
         program_id=deal.program_id,

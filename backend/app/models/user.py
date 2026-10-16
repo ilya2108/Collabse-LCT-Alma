@@ -1,9 +1,14 @@
-"""`app_user` — зеркало пользователей Keycloak (data-model.md §3)."""
+"""`app_user` — зеркало пользователей Keycloak (data-model.md §3).
+
+Роли (`roles` — коды `app_role`) назначаются в Альме: источник истины — БД, Keycloak
+отвечает только за вход. Эффективные права — свойство `access` (app.core.access).
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -11,6 +16,9 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, VersionedMixin, uuid_pk
+
+if TYPE_CHECKING:
+    from app.core.access import EffectiveAccess
 
 
 class AppUser(TimestampMixin, VersionedMixin, Base):
@@ -33,3 +41,11 @@ class AppUser(TimestampMixin, VersionedMixin, Base):
     is_active: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, server_default=sa.true(), default=True
     )
+
+    @property
+    def access(self) -> EffectiveAccess:
+        """Эффективные права по снимку каталога ролей (core/access.py); без загруженного
+        каталога — системные роли из кода."""
+        from app.core.access import access_for_roles
+
+        return access_for_roles(self.roles or [])

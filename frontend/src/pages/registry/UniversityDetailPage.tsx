@@ -111,7 +111,7 @@ type ContactFormValues = z.infer<typeof contactSchema>;
 
 function ContactsCard({ universityId }: { universityId: string }): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const [editing, setEditing] = useState<UniversityContact | 'new' | null>(null);
 
   const form = useForm<ContactFormValues>({
@@ -219,7 +219,7 @@ function ContactsCard({ universityId }: { universityId: string }): ReactNode {
                         <Pencil aria-hidden="true" />
                       </Button>
                     </Can>
-                    {hasRole('admin', 'head_kam') ? (
+                    {hasPermission('contacts:delete') ? (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -376,7 +376,7 @@ function EditUniversitySheet({
   onClose: () => void;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const form = useForm<UniversityEditValues>({
     resolver: zodResolver(universityEditSchema),
     mode: 'onTouched',
@@ -460,7 +460,7 @@ function EditUniversitySheet({
               {textField('city', 'Город')}
             </div>
             {textField('website', 'Сайт', 'https://…')}
-            {hasRole('admin', 'head_kam') ? (
+            {hasPermission('crm:write_any') ? (
               <FormField
                 control={form.control}
                 name="kam_user_id"
@@ -469,7 +469,7 @@ function EditUniversitySheet({
                     <FormLabel>Ответственный КАМ</FormLabel>
                     <FormControl>
                       <UserCombobox
-                        role="kam"
+                        permission="requests:kam"
                         placeholder="КАМ вуза"
                         className="w-full"
                         value={field.value}
@@ -514,7 +514,7 @@ function EditUniversitySheet({
 
 export function UniversityDetailPage(): ReactNode {
   const { id = '' } = useParams<'id'>();
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const [editOpen, setEditOpen] = useState(false);
 
   const universityQuery = useQuery({
@@ -579,7 +579,9 @@ export function UniversityDetailPage(): ReactNode {
           </>
         }
         extra={
-          hasPermission('universities:write') ? (
+          // правка вуза: свой вуз (КАМ вуза) или право на чужие — как ensure_can_write_owned
+          hasPermission('universities:write') &&
+          (hasPermission('crm:write_any') || university.kam_user_id === user?.id) ? (
             <Button variant="outline" onClick={() => setEditOpen(true)}>
               <Pencil aria-hidden="true" />
               Редактировать

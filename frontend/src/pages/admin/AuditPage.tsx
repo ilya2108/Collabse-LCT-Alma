@@ -38,6 +38,12 @@ const ACTION_LABELS: Record<string, string> = {
   'import.applied': 'Импорт данных',
   'user.tg_linked': 'Привязка Telegram',
   'program.priority_changed': 'Изменение приоритета программы',
+  // роли и права (F2)
+  'role.created': 'Создание роли',
+  'role.updated': 'Изменение прав роли',
+  'role.reset': 'Сброс роли к стандартным правам',
+  'role.deleted': 'Удаление роли',
+  'user.roles_changed': 'Назначение ролей пользователю',
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -48,6 +54,7 @@ const ENTITY_LABELS: Record<string, string> = {
   contract: 'договор',
   program: 'программа',
   app_user: 'пользователь',
+  app_role: 'роль',
   feature_flag: 'фичефлаг',
   import_session: 'импорт',
 };
@@ -60,6 +67,13 @@ function entityLink(record: AuditLogRecord): ReactNode {
   if (record.entity_type === 'deal') {
     return (
       <Link to={`/requests/${record.entity_id}`} className="text-primary hover:underline">
+        {label}
+      </Link>
+    );
+  }
+  if (record.entity_type === 'app_role' && record.action !== 'role.deleted') {
+    return (
+      <Link to={`/admin/roles/${record.entity_id}`} className="text-primary hover:underline">
         {label}
       </Link>
     );

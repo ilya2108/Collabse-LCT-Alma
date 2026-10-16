@@ -3,8 +3,11 @@
 Единый формат: `{"report", "generated_at", "params", "series"|"rows"+"columns"}`.
 Кэш — KeyDB `crm:v1:dash:{code}:{hash(params + visibility_scope)}`, TTL 60 с
 (data-model.md §10); PNG-экспорт графиков — обязанность фронта (`getDataURL`).
-Зона видимости: kam видит агрегаты только по своим заявкам; admin/head_kam/observer —
-по всем (§7.2, §12.2).
+Зона видимости — `report_scope(viewer)` (`DealScope`, app.core.access): процессы ролей
+с правом `reports:read`; в процессе без `reports:all` (или с ролью «только свои») —
+только заявки, где пользователь ответственный. Для базовых ролей: kam — свои,
+admin/head_kam/observer — все (§7.2, §12.2). Любой запрос по `deal` проходит через
+`scope.apply(stmt)`; ключ кэша включает `scope.cache_key()`.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import sqlalchemy as sa
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import DealScope, get_catalog_snapshot
 from app.core.cache import get_cache
 from app.models.crm import Contract, Program, University, UniversityContact
 from app.models.deal import Deal, DealStageHistory
@@ -85,12 +89,20 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def report_scope(viewer: AppUser) -> DealScope:
+    """Область отчётов зрителя: `reports:read` в процессах ролей, «все КАМы» — при
+    `reports:all` и записях `all` в процессе, иначе только свои заявки (§7.2)."""
+    return viewer.access.deal_scope("reports:read", viewer.id, wide_permission="reports:all")
+
+
+def _scope_or_all(scope: DealScope | None) -> DealScope:
+    # None — прежний контракт «без ограничения» (служебные вызовы и старые тесты)
+    return scope if scope is not None else DealScope.unrestricted()
+
+
 def scope_kam_id(viewer: AppUser) -> uuid.UUID | None:
-    """kam без «широких» ролей видит агрегаты только по своей зоне (§7.2)."""
-    wide = {"admin", "head_kam", "observer"}
-    if wide & set(viewer.roles or []):
-        return None
-    return viewer.id
+    """Совместимость (удаляется в волне 3): id зрителя, если он видит только свои заявки."""
+    return report_scope(viewer).own_user_id
 
 
 def _envelope(code: str, params: ReportParams, body: dict[str, Any]) -> dict[str, Any]:
@@ -102,7 +114,7 @@ def _envelope(code: str, params: ReportParams, body: dict[str, Any]) -> dict[str
     }
 
 
-def _deal_filters(stmt: sa.Select, params: ReportParams, scope: uuid.UUID | None) -> sa.Select:
+def _deal_filters(stmt: sa.Select, params: ReportParams, scope: DealScope) -> sa.Select:
     if params.date_from:
         stmt = stmt.where(Deal.created_at >= params.date_from)
     if params.date_to:
@@ -113,8 +125,7 @@ def _deal_filters(stmt: sa.Select, params: ReportParams, scope: uuid.UUID | None
         stmt = stmt.where(Deal.product_id == params.product_id)
     if params.university_id:
         stmt = stmt.where(Deal.university_id == params.university_id)
-    if scope is not None:
-        stmt = stmt.where(Deal.responsible_user_id == scope)
+    stmt = scope.apply(stmt)
     return stmt.where(Deal.status != "archived")
 
 
@@ -149,9 +160,11 @@ async def _workflow_with_stages(
 
 
 async def report_funnel(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
-    workflow_type = params.workflow_type or "b2b"
+    scope = _scope_or_all(scope)
+    # процесс по умолчанию — первый из области зрителя (роль только B2C видит B2C)
+    workflow_type = params.workflow_type or next(iter(scope.workflow_types), "b2b")
     workflow, stages = await _workflow_with_stages(session, workflow_type)
     if workflow is None:
         return {"series": []}
@@ -163,8 +176,7 @@ async def report_funnel(
         scope,
     ).group_by(Deal.stage_id)
     counts = {
-        stage_id: (count, amount)
-        for stage_id, count, amount in (await session.execute(stmt)).all()
+        stage_id: (count, amount) for stage_id, count, amount in (await session.execute(stmt)).all()
     }
     series = []
     for stage in stages:
@@ -182,11 +194,16 @@ async def report_funnel(
 
 
 async def report_kam_workload(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
-    users_stmt = select(AppUser).where(AppUser.roles.any("kam"), AppUser.is_active.is_(True))
-    if scope is not None:
-        users_stmt = users_stmt.where(AppUser.id == scope)
+    scope = _scope_or_all(scope)
+    # «КАМ» — роль с правом requests:kam (в выбранном процессе, если он задан)
+    kam_roles = get_catalog_snapshot().role_codes_with("requests:kam", params.workflow_type)
+    users_stmt = select(AppUser).where(
+        AppUser.roles.overlap(list(kam_roles)), AppUser.is_active.is_(True)
+    )
+    if scope.own_user_id is not None:
+        users_stmt = users_stmt.where(AppUser.id == scope.own_user_id)
     kams = list((await session.execute(users_stmt)).scalars().all())
 
     base = (
@@ -211,6 +228,7 @@ async def report_kam_workload(
     )
     if params.workflow_type:
         base = base.where(Workflow.code == params.workflow_type)
+    base = scope.apply(base)
     by_stage: dict[uuid.UUID, list[dict[str, Any]]] = {}
     totals: dict[uuid.UUID, int] = {}
     for user_id, stage_id, code, name, color, count in (await session.execute(base)).all():
@@ -235,7 +253,9 @@ async def report_kam_workload(
             WorkflowStage.is_terminal.is_(False),
             func.now() - Deal.stage_entered_at
             > func.make_interval(
-                0, 0, 0,
+                0,
+                0,
+                0,
                 func.coalesce(
                     WorkflowStage.stuck_threshold_days,
                     Workflow.stuck_threshold_days,
@@ -247,6 +267,7 @@ async def report_kam_workload(
     )
     if params.workflow_type:
         stuck_stmt = stuck_stmt.where(Workflow.code == params.workflow_type)
+    stuck_stmt = scope.apply(stuck_stmt)
     stuck = dict((await session.execute(stuck_stmt)).all())
 
     uni_stmt = (
@@ -254,6 +275,7 @@ async def report_kam_workload(
         .where(Deal.status == "open", Deal.university_id.is_not(None))
         .group_by(Deal.responsible_user_id)
     )
+    uni_stmt = scope.apply(uni_stmt)
     universities = dict((await session.execute(uni_stmt)).all())
 
     rows = [
@@ -264,9 +286,7 @@ async def report_kam_workload(
             "active_requests": totals.get(kam.id, 0),
             "universities": int(universities.get(kam.id, 0)),
             "stuck": int(stuck.get(kam.id, 0)),
-            "by_status": sorted(
-                by_stage.get(kam.id, []), key=lambda item: item["label"]
-            ),
+            "by_status": sorted(by_stage.get(kam.id, []), key=lambda item: item["label"]),
         }
         for kam in kams
     ]
@@ -283,8 +303,9 @@ async def report_kam_workload(
 
 
 async def report_stuck(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
+    scope = _scope_or_all(scope)
     default_days = await _global_stuck_default(session)
     threshold_expr = (
         sa.literal(params.threshold_days)
@@ -310,8 +331,7 @@ async def report_stuck(
     )
     if params.workflow_type:
         stmt = stmt.where(Workflow.code == params.workflow_type)
-    if scope is not None:
-        stmt = stmt.where(Deal.responsible_user_id == scope)
+    stmt = scope.apply(stmt)
     if params.kam_id:
         stmt = stmt.where(Deal.responsible_user_id == params.kam_id)
     now = _now()
@@ -346,8 +366,9 @@ async def report_stuck(
 
 
 async def report_universities_coverage(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
+    scope = _scope_or_all(scope)
     active_contract = (
         select(Contract.id)
         .where(Contract.university_id == University.id, Contract.status == "active")
@@ -355,7 +376,11 @@ async def report_universities_coverage(
     )
     open_deal = (
         select(Deal.id)
-        .where(Deal.university_id == University.id, Deal.status == "open")
+        .where(
+            Deal.university_id == University.id,
+            Deal.status == "open",
+            scope.workflow_clause(),
+        )
         .exists()
     )
     has_contact = (
@@ -406,16 +431,23 @@ async def report_universities_coverage(
 
 
 async def report_programs_demand(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
+    scope = _scope_or_all(scope)
+    # спрос по программам — агрегат по процессам области (без ограничения «только свои»,
+    # как и раньше: КАМ видит общий спрос на программы)
     requests_count = (
         select(func.count())
-        .where(Deal.program_id == Program.id, Deal.status != "archived")
+        .where(
+            Deal.program_id == Program.id,
+            Deal.status != "archived",
+            scope.workflow_clause(),
+        )
         .scalar_subquery()
     )
     open_count = (
         select(func.count())
-        .where(Deal.program_id == Program.id, Deal.status == "open")
+        .where(Deal.program_id == Program.id, Deal.status == "open", scope.workflow_clause())
         .scalar_subquery()
     )
     stmt = (
@@ -448,7 +480,7 @@ async def report_programs_demand(
 
 
 async def report_talent_pool_funnel(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
     stmt = select(Student.funnel_status, func.count()).group_by(Student.funnel_status)
     if params.university_id:
@@ -469,8 +501,9 @@ async def report_talent_pool_funnel(
 
 
 async def report_dynamics(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
+    scope = _scope_or_all(scope)
     date_to = params.date_to or _now().date()
     date_from = params.date_from or (date_to - timedelta(weeks=12))
 
@@ -486,9 +519,9 @@ async def report_dynamics(
         scope,
     ).group_by(sa.text("week"))
     if params.workflow_type:
-        created_stmt = created_stmt.join(
-            Workflow, Workflow.id == Deal.workflow_id
-        ).where(Workflow.code == params.workflow_type)
+        created_stmt = created_stmt.join(Workflow, Workflow.id == Deal.workflow_id).where(
+            Workflow.code == params.workflow_type
+        )
     created_rows = (await session.execute(created_stmt)).all()
     created = {week.date(): int(count) for week, count in created_rows}
 
@@ -504,11 +537,10 @@ async def report_dynamics(
         .group_by(sa.text("week"))
     )
     if params.workflow_type:
-        closed_stmt = closed_stmt.join(
-            Workflow, Workflow.id == Deal.workflow_id
-        ).where(Workflow.code == params.workflow_type)
-    if scope is not None:
-        closed_stmt = closed_stmt.where(Deal.responsible_user_id == scope)
+        closed_stmt = closed_stmt.join(Workflow, Workflow.id == Deal.workflow_id).where(
+            Workflow.code == params.workflow_type
+        )
+    closed_stmt = scope.apply(closed_stmt)
     if params.kam_id:
         closed_stmt = closed_stmt.where(Deal.responsible_user_id == params.kam_id)
     closed = {week.date(): int(count) for week, count in (await session.execute(closed_stmt)).all()}
@@ -523,32 +555,26 @@ async def report_dynamics(
         {
             "key": "created",
             "label": "Создано",
-            "points": [
-                {"date": week.isoformat(), "value": created.get(week, 0)} for week in weeks
-            ],
+            "points": [{"date": week.isoformat(), "value": created.get(week, 0)} for week in weeks],
         },
         {
             "key": "closed",
             "label": "Завершено",
-            "points": [
-                {"date": week.isoformat(), "value": closed.get(week, 0)} for week in weeks
-            ],
+            "points": [{"date": week.isoformat(), "value": closed.get(week, 0)} for week in weeks],
         },
     ]
     return {"series": series}
 
 
-async def _kpi(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
-) -> dict[str, Any]:
+async def _kpi(session: AsyncSession, params: ReportParams, scope: DealScope) -> dict[str, Any]:
     """KPI-строка дашборда: активные, завершено за период, конверсия, зависшие."""
+    scope = _scope_or_all(scope)
     active_stmt = select(func.count()).select_from(Deal).where(Deal.status == "open")
     if params.workflow_type:
         active_stmt = active_stmt.join(Workflow, Workflow.id == Deal.workflow_id).where(
             Workflow.code == params.workflow_type
         )
-    if scope is not None:
-        active_stmt = active_stmt.where(Deal.responsible_user_id == scope)
+    active_stmt = scope.apply(active_stmt)
     if params.kam_id:
         active_stmt = active_stmt.where(Deal.responsible_user_id == params.kam_id)
     active = (await session.execute(active_stmt)).scalar_one()
@@ -559,8 +585,7 @@ async def _kpi(
             stmt = stmt.join(Workflow, Workflow.id == Deal.workflow_id).where(
                 Workflow.code == params.workflow_type
             )
-        if scope is not None:
-            stmt = stmt.where(Deal.responsible_user_id == scope)
+        stmt = scope.apply(stmt)
         if params.kam_id:
             stmt = stmt.where(Deal.responsible_user_id == params.kam_id)
         if start:
@@ -582,9 +607,7 @@ async def _kpi(
     closed_total = won + lost
     conversion = round(won * 100 / closed_total, 1) if closed_total else None
     prev_closed_total = prev_won + prev_lost
-    prev_conversion = (
-        round(prev_won * 100 / prev_closed_total, 1) if prev_closed_total else None
-    )
+    prev_conversion = round(prev_won * 100 / prev_closed_total, 1) if prev_closed_total else None
 
     stuck_body = await report_kam_workload(session, params, scope)
     stuck_total = sum(row["stuck"] for row in stuck_body["rows"])
@@ -606,21 +629,18 @@ async def _kpi(
 
 
 async def report_dashboard(
-    session: AsyncSession, params: ReportParams, scope: uuid.UUID | None
+    session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
     """Агрегат всех виджетов одним запросом (ux.md §6.3)."""
+    scope = _scope_or_all(scope)
     # секции — в форме frontend DashboardReport: funnel/dynamics/talent_pool_funnel
     # оборачиваются в {series}, kam_workload/programs_demand — в {rows}
     return {
         "kpi": await _kpi(session, params, scope),
         "funnel": {"series": (await report_funnel(session, params, scope))["series"]},
         "dynamics": {"series": (await report_dynamics(session, params, scope))["series"]},
-        "kam_workload": {
-            "rows": (await report_kam_workload(session, params, scope))["rows"]
-        },
-        "programs_demand": {
-            "rows": (await report_programs_demand(session, params, scope))["rows"]
-        },
+        "kam_workload": {"rows": (await report_kam_workload(session, params, scope))["rows"]},
+        "programs_demand": {"rows": (await report_programs_demand(session, params, scope))["rows"]},
         "talent_pool_funnel": {
             "series": (await report_talent_pool_funnel(session, params, scope))["series"]
         },
@@ -639,9 +659,12 @@ _BUILDERS = {
 }
 
 
-def _cache_suffix(code: str, params: ReportParams, scope: uuid.UUID | None) -> str:
+def _cache_suffix(code: str, params: ReportParams, scope: DealScope) -> str:
     digest = hashlib.sha1(
-        orjson.dumps({"params": params.as_json(), "scope": str(scope)}, option=orjson.OPT_SORT_KEYS)
+        orjson.dumps(
+            {"params": params.as_json(), "scope": scope.cache_key()},
+            option=orjson.OPT_SORT_KEYS,
+        )
     ).hexdigest()
     return f"dash:{code}:{digest}"
 
@@ -651,7 +674,7 @@ async def build_report(
 ) -> dict[str, Any]:
     """Отчёт с кэшем cache-aside (TTL 60 с); недоступный KeyDB — чтение из PG."""
     builder = _BUILDERS[code]
-    scope = scope_kam_id(viewer)
+    scope = report_scope(viewer)
     cache = get_cache()
     suffix = _cache_suffix(code, params, scope)
     cached = await cache.get_json(suffix)

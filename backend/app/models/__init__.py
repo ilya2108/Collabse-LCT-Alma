@@ -1,5 +1,6 @@
-"""Все модели SQLAlchemy (32 таблицы по data-model.md §13)."""
+"""Все модели SQLAlchemy (35 таблиц по data-model.md §13)."""
 
+from app.models.access import AppPermission, AppRole, AppRolePermission
 from app.models.base import Base
 from app.models.crm import (
     Contract,
@@ -43,6 +44,9 @@ from app.models.workflow import (
 __all__ = [
     "Base",
     "AppUser",
+    "AppPermission",
+    "AppRole",
+    "AppRolePermission",
     "University",
     "UniversityContact",
     "Counterparty",

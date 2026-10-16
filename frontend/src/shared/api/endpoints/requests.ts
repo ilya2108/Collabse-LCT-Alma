@@ -72,10 +72,7 @@ export interface CreateRequestPayload {
 }
 
 export function createRequest(payload: CreateRequestPayload): Promise<RequestItem> {
-  return api.post<RequestItem>('/requests', {
-    body: payload,
-    idempotencyKey: crypto.randomUUID(),
-  });
+  return api.post<RequestItem>('/requests', { body: payload });
 }
 
 export interface UpdateRequestPayload {
@@ -114,10 +111,7 @@ export interface TransitionPayload {
 
 /** Переход по статусу (§4.3): 409 workflow_invalid_transition / stale_version. */
 export function performTransition(id: string, payload: TransitionPayload): Promise<RequestItem> {
-  return api.post<RequestItem>(`/requests/${id}/transitions`, {
-    body: payload,
-    idempotencyKey: crypto.randomUUID(),
-  });
+  return api.post<RequestItem>(`/requests/${id}/transitions`, { body: payload });
 }
 
 export function listRequestHistory(

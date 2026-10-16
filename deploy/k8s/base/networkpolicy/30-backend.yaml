@@ -9,7 +9,7 @@ spec:
     matchLabels: {app.kubernetes.io/name: backend}
   policyTypes: [Ingress, Egress]
   ingress:
-    - from: # Jobs/CronJob (stuck-check, purge-deleted, seed)
+    - from: # Jobs/CronJob (stuck-check, purge-deleted, idempotency-purge, seed)
         - podSelector: {matchLabels: {role: job}}
       ports: [{port: 8000}]
     - from: # ответные вызовы бота по ролям (/internal/bot/*)

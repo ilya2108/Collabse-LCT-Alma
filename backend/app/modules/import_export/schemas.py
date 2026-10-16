@@ -48,7 +48,8 @@ class ExportOptions(_ApiModel):
 
 class ExportJobBody(_ApiModel):
     entity_type: str = Field(min_length=1)
-    format: Literal["xlsx", "csv", "json"] = "xlsx"
+    # pdf — только для отчётов (report:<code>); report:kam-activity — PDF для заказчика
+    format: Literal["xlsx", "csv", "json", "pdf"] = "xlsx"
     filters: dict[str, Any] = Field(default_factory=dict)
     columns: list[str] | None = None
     options: ExportOptions = Field(default_factory=ExportOptions)

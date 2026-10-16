@@ -10,7 +10,7 @@ import {
   ShieldCheck,
   Workflow,
 } from 'lucide-react';
-import type { AppRole } from '@/shared/auth/roles';
+import type { AccessProfile } from '@/shared/auth/permissions';
 import type { RoleOnboarding, TourConfig } from './types';
 
 /**
@@ -199,7 +199,7 @@ const OBSERVER_MAIN: TourConfig = {
   ],
 };
 
-export const ROLE_ONBOARDING: Record<AppRole, RoleOnboarding> = {
+export const ROLE_ONBOARDING: Record<AccessProfile, RoleOnboarding> = {
   kam: {
     role: 'kam',
     welcome: {
@@ -286,6 +286,6 @@ export const ROLE_ONBOARDING: Record<AppRole, RoleOnboarding> = {
 };
 
 /** Все туры роли; в меню перезапуска текущий раздел показывается первым. */
-export function toursForRole(role: AppRole): TourConfig[] {
+export function toursForRole(role: AccessProfile): TourConfig[] {
   return ROLE_ONBOARDING[role].tours;
 }

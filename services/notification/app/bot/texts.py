@@ -11,6 +11,8 @@ from typing import Any
 
 from app.templates import ru_days
 
+# запасные подписи системных ролей: названия ролей (в том числе своих, созданных
+# в «Альме») backend отдаёт полем role_labels
 ROLE_LABELS: dict[str, str] = {
     "admin": "Администратор",
     "head_kam": "Руководитель КАМов",
@@ -62,16 +64,30 @@ NO_STUCK_REQUESTS_TEXT = "Зависших заявок нет. Отличная
 NO_UNREAD_TEXT = "Непрочитанных уведомлений нет. 📭"
 
 
-def role_labels(roles: list[str]) -> str:
-    labels = [ROLE_LABELS.get(role, role) for role in roles if role in ROLE_LABELS] or roles
-    return ", ".join(labels) if labels else "без роли"
+def role_labels(roles: list[str], labels: list[str] | None = None) -> str:
+    """Подпись ролей: названия из CRM (`labels`), иначе — по кодам системных ролей."""
+    if labels:
+        return ", ".join(labels)
+    known = [ROLE_LABELS.get(role, role) for role in roles if role in ROLE_LABELS] or roles
+    return ", ".join(known) if known else "без роли"
 
 
-def greeting_text(tg_first_name: str | None, full_name: str, roles: list[str]) -> str:
+def _role_line(roles: list[str], labels: list[str] | None) -> str:
+    # параметр greeting_text затеняет функцию role_labels
+    return role_labels(roles, labels)
+
+
+def greeting_text(
+    tg_first_name: str | None,
+    full_name: str,
+    roles: list[str],
+    role_labels: list[str] | None = None,
+) -> str:
     hello = f"Готово, {html.escape(tg_first_name)}!" if tg_first_name else "Готово!"
+    roles_line = _role_line(roles, role_labels)
     return (
         f"{hello} Telegram привязан к аккаунту «Альмы».\n"
-        f"Вы — <b>{html.escape(full_name)}</b> ({html.escape(role_labels(roles))}).\n"
+        f"Вы — <b>{html.escape(full_name)}</b> ({html.escape(roles_line)}).\n"
         f"Уведомления «Альмы» будут приходить сюда.\n\n"
         f"Команды: /my, /stuck, /summary, /help"
     )

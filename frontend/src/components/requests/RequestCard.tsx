@@ -83,7 +83,7 @@ const SOURCE_LABELS: Record<string, string> = {
 export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: RequestCardProps): ReactNode {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user, hasRole, hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { lg } = useBreakpoint();
   // Чек-лист онбординга §7.5: открытие карточки заявки (no-op без провайдера).
   const { completeChecklistItem } = useOnboarding();
@@ -120,13 +120,23 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
   });
 
   const request = requestQuery.data;
-  const canEdit = useMemo(() => {
-    if (!request) return false;
-    if (hasRole('admin', 'head_kam')) return true;
-    return hasRole('kam') && request.assignee?.id === user?.id;
-  }, [request, hasRole, user]);
-  const canTransition = canEdit && hasPermission('requests:transition');
-  const canReassign = hasRole('admin', 'head_kam');
+  // Права заявки — в её процессе (F2): своя заявка или право на чужие (write_any).
+  const wf = request?.workflow_type ?? null;
+  const own = Boolean(request && user && request.assignee?.id === user.id);
+  const canEdit = useMemo(
+    () =>
+      Boolean(wf) &&
+      hasPermission('requests:write', wf) &&
+      (own || hasPermission('requests:write_any', wf)),
+    [wf, own, hasPermission],
+  );
+  const canTransition =
+    Boolean(wf) &&
+    hasPermission('requests:transition', wf) &&
+    (own || hasPermission('requests:write_any', wf));
+  // назначить любого — селекту нужен ещё список пользователей (admin:users)
+  const canReassign = hasPermission('requests:assign_any', wf) && hasPermission('admin:users');
+  const canTakeFree = hasPermission('requests:assign', wf);
 
   if (requestQuery.isLoading) return <LoadingPanel rows={10} />;
   if (requestQuery.isError || !request) {
@@ -218,8 +228,8 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
             ) : (
               <span className="truncate">{request.assignee?.full_name ?? 'Не назначен'}</span>
             )}
-            {/* kam может взять свободную заявку на себя (api-contract.md §12.1) */}
-            {!request.assignee && !canReassign && hasRole('kam') && user ? (
+            {/* право requests:assign — взять свободную заявку на себя (api-contract.md §12.1) */}
+            {!request.assignee && !canReassign && canTakeFree && user ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -274,10 +284,10 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
         <RequestTimeline requestId={request.id} />
       </TabsContent>
       <TabsContent value="comments">
-        <RequestComments requestId={request.id} />
+        <RequestComments requestId={request.id} workflowType={request.workflow_type} />
       </TabsContent>
       <TabsContent value="files">
-        <RequestFiles requestId={request.id} canEdit={canEdit} />
+        <RequestFiles requestId={request.id} workflowType={request.workflow_type} />
       </TabsContent>
       {!twoColumns ? <TabsContent value="details">{sidebar}</TabsContent> : null}
     </Tabs>

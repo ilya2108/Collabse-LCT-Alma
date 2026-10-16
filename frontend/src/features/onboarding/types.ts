@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import type { AppRole } from '@/shared/auth/roles';
+import type { AccessProfile } from '@/shared/auth/permissions';
 
 /**
  * Типы фичи онбординга (redesign.md §7). Состояние хранится per-user в
@@ -67,7 +67,8 @@ export interface WelcomeConfig {
 }
 
 export interface RoleOnboarding {
-  role: AppRole;
+  /** Профиль интерфейса (выводится из прав, F2): admin / head_kam / kam / observer. */
+  role: AccessProfile;
   welcome: WelcomeConfig;
   tours: TourConfig[];
   checklist: ChecklistItemConfig[];

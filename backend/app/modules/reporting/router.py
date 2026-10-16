@@ -3,6 +3,8 @@
 PNG-экспорт графиков — обязанность фронта (`getDataURL`); файловый экспорт данных
 отчётов — `POST /export/jobs {entity_type: "report:<code>"}`. Ответы кэшируются
 в KeyDB 60 с (`crm:v1:dash:*`), недоступный KeyDB деградирует в чтение из PG.
+Доступ — право `reports:read`; область (процессы роли, «по всем КАМам» только с
+`reports:all`) — `service.report_scope`.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
-from app.core.security import get_current_user
+from app.core.security import require_permission
 from app.models.user import AppUser
 from app.modules.reporting.service import ReportParams, build_report
 
@@ -63,7 +65,7 @@ _REPORTS: tuple[tuple[str, str], ...] = (
 def _make_handler(code: str):
     async def handler(
         session: Annotated[AsyncSession, Depends(get_session)],
-        user: Annotated[AppUser, Depends(get_current_user)],
+        user: Annotated[AppUser, Depends(require_permission("reports:read"))],
         params: Annotated[ReportParams, Depends(report_params)],
     ) -> dict[str, Any]:
         return await build_report(session, code, user, params)

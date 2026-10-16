@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import time
@@ -17,6 +18,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.audit import write_audit
 from app.core.cache import cache_key, get_cache
@@ -46,6 +48,7 @@ from app.models.workflow import (
     WorkflowTransition,
 )
 from app.modules.integrations.envelope import build_deal_envelope
+from app.modules.workflow import migration
 from app.modules.workflow.graph import (
     ApplyPlan,
     ConfirmNameMismatch,
@@ -63,6 +66,7 @@ from app.modules.workflow.graph import (
 from app.modules.workflow.locks import (
     acquire_exclusive_workflow_lock,
     acquire_shared_workflow_lock,
+    lock_timeout_as_busy,
 )
 from app.modules.workflow.schemas import Operation, is_dangerous
 
@@ -268,10 +272,12 @@ async def transition_deal(
     ).scalar_one_or_none()
     if workflow_id is None:
         raise not_found("Заявка не найдена")
-    # shared-лок workflow: переходы параллельны, но не пересекают применение схемы
-    await acquire_shared_workflow_lock(session, workflow_id)
-
-    deal = await session.get(Deal, deal_id, with_for_update=True)
+    # shared-лок workflow: переходы параллельны, но не пересекают применение схемы.
+    # Ожидание ограничено lock_timeout (locks.TRANSITION_LOCK_TIMEOUT_MS, до конца
+    # транзакции — включая FOR UPDATE строки): дольше — 409 workflow_busy + Retry-After
+    async with lock_timeout_as_busy():
+        await acquire_shared_workflow_lock(session, workflow_id)
+        deal = await session.get(Deal, deal_id, with_for_update=True)
     if deal is None or deal.status == "archived":
         raise not_found("Заявка не найдена")
     if deal.workflow_id != workflow_id:  # заявка воронку не меняет; страховка от гонки
@@ -445,9 +451,9 @@ async def reopen_deal(
     ).scalar_one_or_none()
     if workflow_id is None:
         raise not_found("Заявка не найдена")
-    await acquire_shared_workflow_lock(session, workflow_id)
-
-    deal = await session.get(Deal, deal_id, with_for_update=True)
+    async with lock_timeout_as_busy():  # ожидание ограничено — как у transition_deal
+        await acquire_shared_workflow_lock(session, workflow_id)
+        deal = await session.get(Deal, deal_id, with_for_update=True)
     if deal is None or deal.status == "archived":
         raise not_found("Заявка не найдена")
     if deal.workflow_id != workflow_id:  # заявка воронку не меняет; страховка от гонки
@@ -527,13 +533,19 @@ async def reopen_deal(
 
 
 async def _open_deal_counts(
-    session: AsyncSession, stage_ids: list[uuid.UUID]
+    session: AsyncSession, workflow_id: uuid.UUID, stage_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, int]:
+    # предикат workflow_id — запрос целиком покрывается ix_deal_board
+    # (workflow_id, stage_id) WHERE status = 'open'
     if not stage_ids:
         return {}
     rows = await session.execute(
         select(Deal.stage_id, func.count())
-        .where(Deal.stage_id.in_(stage_ids), Deal.status == "open")
+        .where(
+            Deal.workflow_id == workflow_id,
+            Deal.stage_id.in_(stage_ids),
+            Deal.status == "open",
+        )
         .group_by(Deal.stage_id)
     )
     return dict(rows.all())
@@ -575,7 +587,9 @@ async def compute_impact(
         target, plan = apply_operations(live, operations)
     except (OperationConflict, OperationUnprocessable) as exc:
         raise _wrap_graph_errors(exc) from exc
-    counts = await _open_deal_counts(session, [i.stage_id for i in plan.deleted_stages])
+    counts = await _open_deal_counts(
+        session, live.workflow_id, [i.stage_id for i in plan.deleted_stages]
+    )
     graph_errors = validate_graph(target)
     if graph_errors:
         raise _invalid_schema_error(graph_errors)
@@ -606,6 +620,17 @@ async def compute_impact(
     return {"affected_requests_total": total, "by_status": by_status}, plan
 
 
+APPLY_BUSY_MESSAGE = (
+    "По воронке сейчас проходят переходы заявок — пакет не применён и остаётся "
+    "на согласовании, повторите через несколько секунд"
+)
+INTERNAL_APPLY_ERROR = "внутренняя ошибка сервера — изменения отменены, заявки не перенесены"
+
+
+def _ms(seconds: float) -> int:
+    return int(round(seconds * 1000))
+
+
 async def _execute_plan(
     session: AsyncSession,
     wcr: WorkflowChangeRequest,
@@ -613,14 +638,25 @@ async def _execute_plan(
     live: WorkflowGraph,
     operations: list[Operation],
 ) -> dict[str, Any]:
-    """Мутация схемы + миграция заявок по плану. Вызывается ВНУТРИ транзакции
-    с уже взятым эксклюзивным advisory-локом workflow. Возвращает migration_report."""
+    """Мутация схемы + перенос заявок по плану. Вызывается ВНУТРИ транзакции
+    с уже взятым эксклюзивным advisory-локом workflow. Возвращает migration_report
+    (он же сохраняется в `wcr.impact['migration_report']`).
+
+    Заявки удаляемых этапов переносятся пакетно (`migration.migrate_deleted_stages` —
+    один оператор на этап), получатели узнают о переносе сводкой
+    (`migration.emit_migration_digests`). Вызов — через атрибуты модуля `migration`:
+    инструмент замера подменяет перенос поштучной legacy-версией (tools/bench_migration).
+    """
     try:
         verify_confirm_names(live, operations)
         target, plan = apply_operations(live, operations)
     except (OperationConflict, OperationUnprocessable, ConfirmNameMismatch) as exc:
         raise _wrap_graph_errors(exc) from exc
-    counts = await _open_deal_counts(session, [i.stage_id for i in plan.deleted_stages])
+    counts = await _open_deal_counts(
+        session, wcr.workflow_id, [i.stage_id for i in plan.deleted_stages]
+    )
+    # Точка расширения: проверки пакета против свежих данных под эксклюзивным локом
+    # (например, известность ролей переходов) — здесь, до validate_graph.
     graph_errors = validate_graph(target)
     if graph_errors:
         raise _invalid_schema_error(graph_errors)
@@ -682,22 +718,23 @@ async def _execute_plan(
             setattr(row, attribute, value)
     for stage_id, _old_name, new_name in plan.renames:
         stage_rows[stage_id].name = new_name
-    # 3. рёбра: новые, правки, удаления
+    # 3. рёбра: новые, правки, удаления (новое ребро к этапу, удаляемому этим же
+    #    пакетом, тоже попадает в transition_rows — его пометит шаг 4)
     for transition in plan.new_transitions:
-        session.add(
-            WorkflowTransition(
-                id=transition.id,
-                workflow_id=wcr.workflow_id,
-                from_stage_id=transition.from_stage_id,
-                to_stage_id=transition.to_stage_id,
-                name=transition.name,
-                is_return=transition.is_return,
-                requires_comment=transition.requires_comment,
-                allowed_roles=transition.allowed_roles,
-                condition=transition.condition,
-                sort_order=transition.sort_order,
-            )
+        transition_row = WorkflowTransition(
+            id=transition.id,
+            workflow_id=wcr.workflow_id,
+            from_stage_id=transition.from_stage_id,
+            to_stage_id=transition.to_stage_id,
+            name=transition.name,
+            is_return=transition.is_return,
+            requires_comment=transition.requires_comment,
+            allowed_roles=transition.allowed_roles,
+            condition=transition.condition,
+            sort_order=transition.sort_order,
         )
+        session.add(transition_row)
+        transition_rows[transition_row.id] = transition_row
     for transition_id, patch in plan.transition_patches:
         row = transition_rows[transition_id]
         for attribute, value in patch.items():
@@ -706,71 +743,27 @@ async def _execute_plan(
         transition_rows[transition_id].deleted_at = _now()
     await session.flush()
 
-    # 4. миграция заявок удаляемых этапов, затем мягкое удаление этапов и их рёбер
-    migrated_total = 0
-    report_by_status: list[dict[str, Any]] = []
+    # 4. перенос заявок удаляемых этапов — один оператор на этап (CTE UPDATE … RETURNING
+    #    → строки истории), затем мягкое удаление этапов и их рёбер: сначала перенос,
+    #    потом deleted_at (I-2 — открытых заявок на удалённом этапе не бывает)
+    started = time.perf_counter()
+    outcome = await migration.migrate_deleted_stages(
+        session, workflow_id=wcr.workflow_id, plan=plan, stage_rows=stage_rows
+    )
+    migrate_ms = _ms(time.perf_counter() - started)
+    deleted_at = _now()
     for item in plan.deleted_stages:
-        target_row = stage_rows.get(item.migrate_to_status_id) \
-            if item.migrate_to_status_id else None
-        deals = (
-            (
-                await session.execute(
-                    select(Deal)
-                    .where(Deal.stage_id == item.stage_id, Deal.status == "open")
-                    .with_for_update()
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for deal in deals:
-            assert target_row is not None  # гарантировано V-8 (E_MAPPING_REQUIRED)
-            deal.stage_id = target_row.id
-            # stage_entered_at НЕ трогаем: перестройка схемы не «омолаживает» заявку
-            deal.last_activity_at = _now()
-            session.add(
-                _history_row(
-                    deal,
-                    from_stage=stage_rows[item.stage_id],
-                    to_stage=target_row,
-                    kind="system_migration",
-                    reason="stage_deleted",
-                    actor_id=None,
-                    comment=(
-                        f"Статус «{item.stage_name}» удалён администратором, "
-                        f"заявка перенесена в «{target_row.name}»"
-                    ),
-                )
-            )
-            await emit_event_notifications(
-                session,
-                event_type=EVENT_REQUEST_TRANSITIONED,
-                entity_type="deal",
-                entity_id=deal.id,
-                subject="Заявка перенесена",
-                body=(
-                    f"Статус «{item.stage_name}» удалён администратором, заявка "
-                    f"«{deal.title}» перенесена в «{target_row.name}»"
-                ),
-                payload=_transition_payload(
-                    deal, target_row, migrated=True, from_status=item.stage_name
-                ),
-                deal=deal,
-            )
-            migrated_total += 1
-        if deals:
-            report_by_status.append(
-                {
-                    "from": item.stage_name,
-                    "to": target_row.name if target_row else "",
-                    "count": len(deals),
-                }
-            )
         for transition_id in item.deleted_transition_ids:
-            transition_rows[transition_id].deleted_at = _now()
-        stage_rows[item.stage_id].deleted_at = _now()
+            transition_rows[transition_id].deleted_at = deleted_at
+        stage_rows[item.stage_id].deleted_at = deleted_at
 
+    # 5. сводные уведомления — одно на получателя вместо одного на заявку (§6.3 п.4);
+    #    в этой же транзакции: нет переноса — нет уведомления
+    digests = 0
     if workflow is not None:
+        digests = await migration.emit_migration_digests(
+            session, outcome=outcome, workflow=workflow, change_id=wcr.id
+        )
         workflow.updated_by = actor.id
         workflow.updated_at = _now()
 
@@ -779,6 +772,16 @@ async def _execute_plan(
     wcr.decided_at = _now()
     wcr.applied_at = _now()
 
+    report: dict[str, Any] = {
+        "migrated_requests": outcome.migrated_total,
+        "by_status": outcome.by_status,
+        "digest_notifications": digests,
+        "timings": {"migrate_ms": migrate_ms},
+    }
+    # переприсваивание, а не мутация на месте: JSONB не отслеживает изменения вложенных dict
+    wcr.impact = {**(wcr.impact or {}), "migration_report": copy.deepcopy(report)}
+
+    # одна запись аудита на пакет; поштучный след — строки deal_stage_history
     await write_audit(
         session,
         actor_user_id=actor.id,
@@ -789,17 +792,38 @@ async def _execute_plan(
         after={
             "change_request_id": str(wcr.id),
             "operations": wcr.operations,
-            "migrated_requests": migrated_total,
+            "migrated_requests": outcome.migrated_total,
+            "by_status": outcome.by_status,
+            "digest_notifications": digests,
         },
     )
     await session.flush()
-    return {"migrated_requests": migrated_total, "by_status": report_by_status}
+    return report
 
 
-async def _after_apply_effects(workflow_id: uuid.UUID, change_id: uuid.UUID) -> None:
+def _store_timings(
+    wcr: WorkflowChangeRequest, report: dict[str, Any], *, started: float, locked: float
+) -> None:
+    """Дописывает замеры в отчёт и в сохранённый `impact['migration_report']` (до COMMIT):
+    `lock_wait_ms` — ожидание эксклюзивного лока, `apply_ms` — от захвата до COMMIT."""
+    timings = report.setdefault("timings", {})
+    timings["lock_wait_ms"] = _ms(locked - started)
+    timings["apply_ms"] = _ms(time.perf_counter() - locked)
+    wcr.impact = {**(wcr.impact or {}), "migration_report": copy.deepcopy(report)}
+    flag_modified(wcr, "impact")
+
+
+async def _after_apply_effects(
+    workflow_id: uuid.UUID, change_id: uuid.UUID, *, migrated_requests: int = 0
+) -> None:
     await invalidate_workflow_cache(workflow_id)
     await publish_event(
-        SSE_WORKFLOW_CHANGED, {"workflow_id": str(workflow_id), "change_id": str(change_id)}
+        SSE_WORKFLOW_CHANGED,
+        {
+            "workflow_id": str(workflow_id),
+            "change_id": str(change_id),
+            "migrated_requests": migrated_requests,
+        },
     )
 
 
@@ -844,12 +868,20 @@ async def create_change(
     apply_now = not dangerous and "admin" in author.roles
 
     if apply_now:
-        await acquire_exclusive_workflow_lock(session, workflow_id)
-        # схему никто не менял с момента чтения выше только под локом — перечитываем
-        live = await load_graph(session, workflow_id)
-        await _execute_plan(session, wcr, author, live, operations)
-        await session.commit()
-        await _after_apply_effects(workflow_id, wcr.id)
+        started = time.perf_counter()
+        # ожидание лока ограничено APPLY_LOCK_TIMEOUT_MS; при 409 workflow_busy пакет
+        # не создаётся вовсе (транзакция откатывается) — повтор запроса безопасен
+        async with lock_timeout_as_busy():
+            await acquire_exclusive_workflow_lock(session, workflow_id)
+            locked = time.perf_counter()
+            # схему никто не менял с момента чтения выше только под локом — перечитываем
+            live = await load_graph(session, workflow_id)
+            report = await _execute_plan(session, wcr, author, live, operations)
+            _store_timings(wcr, report, started=started, locked=locked)
+            await session.commit()
+        await _after_apply_effects(
+            workflow_id, wcr.id, migrated_requests=report["migrated_requests"]
+        )
         return wcr
 
     await write_audit(
@@ -884,40 +916,82 @@ async def create_change(
 async def apply_change(
     session: AsyncSession, *, change_id: uuid.UUID, approver: AppUser
 ) -> tuple[WorkflowChangeRequest, dict[str, Any]]:
-    """Approve = атомарное применение одной транзакцией (workflow-engine.md §6.4).
+    """Approve = атомарное применение одной транзакцией (workflow-engine.md §6.4):
+    схема, перенос заявок, история, сводки в outbox и аудит — либо всё, либо ничего.
 
-    Ошибка применения откатывает всё (заявки не тронуты), пакет помечается `failed`
-    отдельной транзакцией — автор пересоздаёт (state-машина data-model.md §5.2).
+    - Лок воронки не получен за `APPLY_LOCK_TIMEOUT_MS` (хвост переходов) — 409
+      `workflow_busy`, пакет остаётся `pending`: он не виноват, применить можно повторно.
+    - Любая другая ошибка применения откатывает всё (заявки не тронуты, уведомлений нет),
+      пакет помечается `failed` отдельной транзакцией — автор пересоздаёт
+      (state-машина data-model.md §5.2).
+
+    Замеры (`timings`: lock_wait_ms, apply_ms, migrate_ms; в ответе ещё lock_held_ms)
+    попадают в отчёт, в `impact['migration_report']` и в лог `app.workflow`.
     """
+    # id актора — до любых rollback: откат истекает все объекты сессии, а ленивая
+    # подгрузка атрибута в async-коде невозможна (MissingGreenlet)
+    approver_id = approver.id
     wcr = await session.get(WorkflowChangeRequest, change_id, with_for_update=True)
     if wcr is None:
         raise not_found("Пакет изменений не найден")
     if wcr.status != "pending":
         raise conflict("Пакет уже обработан")
 
-    # эксклюзивный лок: дожидаемся хвоста переходов, замораживаем новые (§6.5)
-    await acquire_exclusive_workflow_lock(session, wcr.workflow_id)
-    live = await load_graph(session, wcr.workflow_id)
+    started = time.perf_counter()
     try:
-        operations = parse_operations(wcr.operations)
-        report = await _execute_plan(session, wcr, approver, live, operations)
+        # эксклюзивный лок: дожидаемся хвоста переходов, замораживаем новые (§6.5)
+        async with lock_timeout_as_busy(APPLY_BUSY_MESSAGE):
+            await acquire_exclusive_workflow_lock(session, wcr.workflow_id)
+    except ApiError:
+        await session.rollback()
+        raise
+    locked = time.perf_counter()
+    try:
+        async with lock_timeout_as_busy(APPLY_BUSY_MESSAGE):
+            live = await load_graph(session, wcr.workflow_id)
+            operations = parse_operations(wcr.operations)
+            report = await _execute_plan(session, wcr, approver, live, operations)
+            _store_timings(wcr, report, started=started, locked=locked)
+            await session.commit()
     except ApiError as exc:
         await session.rollback()
-        await _mark_change_failed(session, change_id, approver, exc.message)
+        if exc.code != "workflow_busy":
+            await _mark_change_failed(session, change_id, approver_id, exc.message)
         raise
-    await session.commit()
-    await _after_apply_effects(wcr.workflow_id, wcr.id)
+    except Exception:
+        # сбой посреди применения (ошибка БД, нарушенный инвариант): транзакция откатана
+        # целиком — схема, перенос, история и сводки; пакет помечается failed
+        logger.exception("workflow.apply change=%s: ошибка применения, откат", change_id)
+        await session.rollback()
+        try:
+            await _mark_change_failed(session, change_id, approver_id, INTERNAL_APPLY_ERROR)
+        except Exception:  # noqa: BLE001 — исходная ошибка важнее, её и пробрасываем
+            logger.exception("workflow.apply change=%s: не удалось пометить failed", change_id)
+            await session.rollback()
+        raise
+    report["timings"]["lock_held_ms"] = _ms(time.perf_counter() - locked)
+    logger.info(
+        "workflow.apply change=%s migrated=%d digests=%d lock_wait_ms=%d lock_held_ms=%d",
+        change_id,
+        report["migrated_requests"],
+        report["digest_notifications"],
+        report["timings"]["lock_wait_ms"],
+        report["timings"]["lock_held_ms"],
+    )
+    await _after_apply_effects(
+        wcr.workflow_id, wcr.id, migrated_requests=report["migrated_requests"]
+    )
     return wcr, report
 
 
 async def _mark_change_failed(
-    session: AsyncSession, change_id: uuid.UUID, approver: AppUser, error: str
+    session: AsyncSession, change_id: uuid.UUID, approver_id: uuid.UUID, error: str
 ) -> None:
     wcr = await session.get(WorkflowChangeRequest, change_id, with_for_update=True)
     if wcr is None or wcr.status != "pending":
         return
     wcr.status = "failed"
-    wcr.decided_by = approver.id
+    wcr.decided_by = approver_id
     wcr.decided_at = _now()
     wcr.decision_comment = f"Ошибка применения: {error}"[:2000]
     await session.commit()

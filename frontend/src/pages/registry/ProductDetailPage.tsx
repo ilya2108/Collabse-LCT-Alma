@@ -26,7 +26,7 @@ import { PRODUCT_TYPE_LABELS } from './ProductsPage';
 /** Карточка продукта (ux.md §9.3, redesign.md §6.5): DL-описание, программы, заявки. */
 export function ProductDetailPage(): ReactNode {
   const { id = '' } = useParams<'id'>();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
 
   const productQuery = useQuery({
     queryKey: ['product', id],
@@ -141,7 +141,7 @@ export function ProductDetailPage(): ReactNode {
                       icon={FileText}
                       title={request.title}
                       description={
-                        hasRole('admin', 'head_kam', 'kam')
+                        hasPermission('requests:write')
                           ? (request.assignee?.full_name ?? 'Не назначен')
                           : undefined
                       }

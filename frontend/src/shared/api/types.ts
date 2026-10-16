@@ -25,22 +25,141 @@ export interface ApiErrorBody {
   };
 }
 
+/** Область записей роли в процессе: все заявки или только свои (Р-F2-4). */
+export type RecordScope = 'all' | 'own';
+
+/** Ссылка на роль в профиле (`role_details` в `/auth/me`). */
+export interface RoleRef {
+  code: string;
+  name: string;
+  is_system: boolean;
+}
+
+/**
+ * Эффективный доступ пользователя (`/auth/me` → `access`, F2 §4.7): права ролей
+ * объединяются по процессу — в процессе P действуют права ролей, у которых P
+ * входит в область.
+ */
+export interface AccessInfo {
+  /** Процессы, доступные пользователю. */
+  workflow_types: WorkflowType[];
+  /** Область записей по процессу. */
+  records: Partial<Record<WorkflowType, RecordScope>>;
+  /** Процесс → права с областью, действующие в нём. */
+  by_workflow: Partial<Record<WorkflowType, string[]>>;
+  /** Процесс → коды ролей пользователя, способные выполнять переходы в нём. */
+  transition_roles: Partial<Record<WorkflowType, string[]>>;
+  /** Коды прав с областью (действуют только в процессах роли). */
+  scoped_permissions: string[];
+  /** Версия каталога ролей на сервере в момент ответа. */
+  catalog_version?: number;
+}
+
 /** Профиль текущего пользователя — `GET /auth/me` (§2.1). */
 export interface CurrentUser {
   id: string;
   username: string;
   full_name: string;
   email: string;
-  /** Сырые роли из токена (могут включать технические — UI фильтрует через isAppRole). */
+  /** Коды ролей CRM — назначаются в Альме (Р-F2-1), Keycloak отвечает только за вход. */
   roles: string[];
+  /** Роли с названиями из каталога (своё название у пользовательских ролей). */
+  role_details: RoleRef[];
   manager_id: string | null;
-  /** Вычисляются на backend по матрице §12; фронт ничего не хардкодит. */
+  /** Объединение прав всех ролей; фронт ничего не хардкодит. */
   permissions: string[];
+  access: AccessInfo;
   telegram: {
     linked: boolean;
     tg_username?: string | null;
     linked_at?: string | null;
   } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Роли и права (F2: `/roles`, `/admin/roles`, `/admin/permissions`)
+// ---------------------------------------------------------------------------
+
+/** Элемент каталога ролей `GET /roles` — доступен всем аутентифицированным. */
+export interface RoleCatalogItem {
+  code: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  workflow_types: WorkflowType[];
+  record_scope: RecordScope;
+  /** Процессы, где роль может выполнять переходы (право requests:transition). */
+  transition_workflow_types: WorkflowType[];
+}
+
+/** Право каталога `GET /admin/permissions`. */
+export interface PermissionDef {
+  code: string;
+  name: string;
+  description: string | null;
+  /** Действует только в процессах роли (B2B/B2C). */
+  scoped: boolean;
+  /** Права, без которых это право не имеет смысла (ставятся автоматически). */
+  requires: string[];
+}
+
+/** Группа прав в порядке UI. */
+export interface PermissionGroup {
+  code: string;
+  name: string;
+  permissions: PermissionDef[];
+}
+
+/** Роль в админке `GET /admin/roles`. */
+export interface AdminRole {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  /** admin: права и область не редактируются (Р-F2-9). */
+  is_locked: boolean;
+  workflow_types: WorkflowType[];
+  record_scope: RecordScope;
+  permissions: string[];
+  users_count: number;
+  permissions_count: number;
+  updated_at: string;
+  version: number;
+}
+
+/** Покрытие переходов процесса ролью: из `restricted` переходов с ограничением по ролям роль указана в `allowed`. */
+export interface RoleTransitionCoverage {
+  restricted: number;
+  allowed: number;
+}
+
+/** Карточка роли `GET /admin/roles/{id}`. */
+export interface AdminRoleDetail extends AdminRole {
+  users: Array<{ id: string; full_name: string; username: string; is_active?: boolean }>;
+  coverage: Partial<Record<WorkflowType, RoleTransitionCoverage>>;
+  /** Только для системных ролей: права отличаются от набора по умолчанию. */
+  differs_from_default?: boolean;
+}
+
+/** Тело `POST /admin/roles`. */
+export interface RoleCreateBody {
+  code: string;
+  name: string;
+  description?: string | null;
+  permissions: string[];
+  workflow_types: WorkflowType[];
+  record_scope: RecordScope;
+}
+
+/** Тело `PATCH /admin/roles/{id}`: поля опциональны, `version` обязателен. */
+export interface RolePatchBody {
+  name?: string;
+  description?: string | null;
+  permissions?: string[];
+  workflow_types?: WorkflowType[];
+  record_scope?: RecordScope;
+  version: number;
 }
 
 /** Пресет таблицы/фильтров — `/ui/presets` (§2.2). */
@@ -327,10 +446,18 @@ export interface AdminUser {
   username: string;
   full_name: string;
   email: string;
+  /** Коды ролей CRM (только известные каталогу). */
   roles: string[];
+  /** Названия ролей в том же порядке, что `roles`. */
+  role_names?: string[];
+  /** Ролей нет — вход в CRM закрыт, пока администратор не назначит роль. */
+  no_roles?: boolean;
   manager_id: string | null;
   telegram_linked?: boolean;
+  is_active?: boolean;
   last_login_at?: string | null;
+  /** Версия записи — для `PUT /admin/users/{id}/roles`. */
+  version?: number;
 }
 
 /** Запись журнала интеграций `GET /admin/integration/events` (§10.4, data-model §9.3). */

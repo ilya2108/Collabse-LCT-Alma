@@ -4,7 +4,8 @@
 workflow.changed / request.transitioned / request.comment_added / telegram.linked /
 flags.updated / notification.created; fan-out между репликами — KeyDB pub/sub
 `crm:v1:events` (app.core.sse). Поиск — до 5 записей в группе, студенты ищутся
-по псевдонимизированному `display_name` (ПДн не раскрываются).
+по псевдонимизированному `display_name` (ПДн не раскрываются); группа выдачи есть,
+только если у пользователя есть право её чтения, заявки — в области роли.
 """
 
 from __future__ import annotations
@@ -136,12 +137,14 @@ async def delete_preset(
 # --------------------------------------------------------------------------------------
 
 
-@router.get("/search", summary="Глобальный поиск (Cmd+K)", dependencies=[CurrentUser])
+@router.get("/search", summary="Глобальный поиск (Cmd+K)")
 async def global_search(
     session: SessionDep,
+    user: Annotated[AppUser, CurrentUser],
     q: Annotated[str, Query(min_length=1, max_length=200)],
 ) -> dict[str, Any]:
     needle = f"%{q.strip()}%"
+    access = user.access
 
     universities = (
         (
@@ -162,17 +165,25 @@ async def global_search(
         )
         .scalars()
         .all()
+        if access.has("universities:read")
+        else []
     )
 
     deals = (
-        await session.execute(
-            select(Deal, WorkflowStage)
-            .join(WorkflowStage, WorkflowStage.id == Deal.stage_id)
-            .where(Deal.status != "archived", Deal.title.ilike(needle))
-            .order_by(Deal.updated_at.desc())
-            .limit(SEARCH_GROUP_LIMIT)
-        )
-    ).all()
+        (
+            await session.execute(
+                access.deal_scope("requests:read", user.id).apply(
+                    select(Deal, WorkflowStage)
+                    .join(WorkflowStage, WorkflowStage.id == Deal.stage_id)
+                    .where(Deal.status != "archived", Deal.title.ilike(needle))
+                    .order_by(Deal.updated_at.desc())
+                    .limit(SEARCH_GROUP_LIMIT)
+                )
+            )
+        ).all()
+        if access.has("requests:read")
+        else []
+    )
 
     students = (
         (
@@ -185,6 +196,8 @@ async def global_search(
         )
         .scalars()
         .all()
+        if access.has("students:read")
+        else []
     )
 
     contracts = (
@@ -198,6 +211,8 @@ async def global_search(
         )
         .scalars()
         .all()
+        if access.has("contracts:read")
+        else []
     )
 
     return {

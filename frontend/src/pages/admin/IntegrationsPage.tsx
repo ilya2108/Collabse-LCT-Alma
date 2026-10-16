@@ -113,7 +113,7 @@ function ConnectorCard({ system, title, events }: ConnectorCardProps): ReactNode
 }
 
 export function AdminIntegrationsPage(): ReactNode {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   // Чек-лист онбординга §7.5: no-op без провайдера.
   const { completeChecklistItem } = useOnboarding();
@@ -279,7 +279,7 @@ export function AdminIntegrationsPage(): ReactNode {
             >
               <Braces aria-hidden="true" />
             </Button>
-            {hasRole('admin') && (e.status === 'dead' || e.status === 'retrying') ? (
+            {hasPermission('admin:integrations') && (e.status === 'dead' || e.status === 'retrying') ? (
               <Button
                 variant="outline"
                 size="icon"
@@ -295,7 +295,7 @@ export function AdminIntegrationsPage(): ReactNode {
         ),
       },
     ],
-    [hasRole, retryMutation],
+    [hasPermission, retryMutation],
   );
 
   const overview = overviewQuery.data?.items ?? [];

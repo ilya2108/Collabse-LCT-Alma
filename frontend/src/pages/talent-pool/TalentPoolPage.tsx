@@ -35,7 +35,7 @@ type ViewMode = 'registry' | 'board' | 'schedule';
 
 export function TalentPoolPage(): ReactNode {
   const navigate = useNavigate();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const reveal = useReveal();
@@ -58,7 +58,7 @@ export function TalentPoolPage(): ReactNode {
   const view: ViewMode =
     viewParam === 'board' || viewParam === 'schedule' ? viewParam : 'registry';
 
-  const canWrite = hasRole('admin', 'head_kam', 'kam');
+  const canWrite = hasPermission('students:write');
 
   const setParam = (key: string, value: string | null): void => {
     setSearchParams(

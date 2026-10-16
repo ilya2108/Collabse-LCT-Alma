@@ -15,7 +15,7 @@ from app.core.config import get_settings as get_app_settings
 from app.core.db import get_session
 from app.core.errors import conflict, not_found, validation_error
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_permission
 from app.models.crm import Contract, ContractProduct, Counterparty, Product, University
 from app.models.service import FileObject
 from app.models.user import AppUser
@@ -106,7 +106,7 @@ def _sync_products(
 @router.get("", summary="Реестр договоров")
 async def list_contracts(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("contracts:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     university_id: Annotated[uuid.UUID | None, Query()] = None,
     counterparty_id: Annotated[uuid.UUID | None, Query()] = None,
@@ -137,7 +137,7 @@ async def list_contracts(
 async def create_contract(
     body: ContractCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:write"))],
     request: Request,
 ) -> ContractOut:
     await _ensure_unique_number(session, body.number)
@@ -183,7 +183,7 @@ async def create_contract(
 async def get_contract(
     contract_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("contracts:read"))],
 ) -> ContractOut:
     contract = await _load_contract(session, contract_id)
     files = (
@@ -211,7 +211,7 @@ async def update_contract(
     contract_id: uuid.UUID,
     body: ContractUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:write"))],
 ) -> ContractOut:
     contract = await _load_contract(session, contract_id)
     ensure_can_write_owned(user, contract.responsible_user_id)
@@ -232,7 +232,7 @@ async def update_contract(
 async def delete_contract(
     contract_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:delete"))],
     request: Request,
 ) -> dict[str, bool]:
     # DDL contract не содержит deleted_at (data-model.md §4.6 — высший приоритет),
@@ -261,7 +261,7 @@ async def delete_contract(
 async def list_contract_files(
     contract_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("contracts:read"))],
 ) -> list[FileOut]:
     await _load_contract(session, contract_id)
     files = (
@@ -291,7 +291,7 @@ async def upload_contract_file(
     contract_id: uuid.UUID,
     file: Annotated[UploadFile, File(description="Скан договора (до 50 МБ)")],
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:write"))],
     request: Request,
 ) -> FileOut:
     contract = await _load_contract(session, contract_id)
@@ -320,7 +320,7 @@ async def upload_contract_file(
 @router.delete(
     "/{contract_id}/files/{file_id}",
     summary="Удалить файл договора",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
+    dependencies=[Depends(require_permission("contracts:files_delete"))],
 )
 async def delete_contract_file(
     contract_id: uuid.UUID,

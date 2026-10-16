@@ -155,11 +155,11 @@ interface FunnelBoardProps {
 }
 
 export function FunnelBoard({ students, loading, countsByStatus, onMove }: FunnelBoardProps): ReactNode {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const navigate = useNavigate();
   const [active, setActive] = useState<Student | null>(null);
 
-  const canDrag = hasRole('admin', 'head_kam', 'kam');
+  const canDrag = hasPermission('students:write');
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),

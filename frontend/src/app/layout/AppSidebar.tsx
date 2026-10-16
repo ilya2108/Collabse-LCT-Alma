@@ -11,6 +11,7 @@ import {
   FileUp,
   Flag,
   GraduationCap,
+  KeyRound,
   LayoutDashboard,
   Library,
   Package,
@@ -42,8 +43,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
  * Навигация сайдбара (redesign.md §6.2): свой nav на menuConfig (замена
  * Menu AntD), иконки lucide 18px, активный пункт — скользящая подложка
  * `layoutId` (springs.snappy), группы — Collapsible, свёрнутый режим —
- * иконки с Tooltip side="right". menuConfig не меняется (Р7) — маппинг
- * пунктов на lucide-иконки живёт здесь.
+ * иконки с Tooltip side="right". Пункты фильтруются по правам пользователя
+ * (menuConfig, F2) — маппинг пунктов на lucide-иконки живёт здесь.
  */
 
 const NAV_ICONS: Record<string, LucideIcon> = {
@@ -60,6 +61,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   notifications: Bell,
   admin: Shield,
   'admin-users': Users,
+  'admin-roles': KeyRound,
   'admin-dictionaries': BookText,
   'admin-feature-flags': Flag,
   'admin-approvals': ClipboardCheck,
@@ -142,10 +144,14 @@ export function AppSidebar({
   layoutIdSuffix,
   onNavigate,
 }: AppSidebarProps): ReactNode {
-  const { roles } = useAuth();
+  const { hasPermission } = useAuth();
   const location = useLocation();
 
-  const entries = useMemo<NavEntry[]>(() => buildMenuEntries(roles), [roles]);
+  // Меню по правам (F2): перестраивается сразу после access.changed — профиль перечитан.
+  const entries = useMemo<NavEntry[]>(
+    () => buildMenuEntries((code) => hasPermission(code)),
+    [hasPermission],
+  );
   const { selected, open } = useMemo(() => activeMenuKeys(location.pathname), [location.pathname]);
   const selectedKey = selected[0] ?? null;
   const layoutId = `nav-active-${layoutIdSuffix}`;

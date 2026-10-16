@@ -199,11 +199,11 @@ async def create_import_session(
 async def get_owned_session(
     session: AsyncSession, session_id: uuid.UUID, user: AppUser
 ) -> ImportSession:
-    """Сессии импорта приватны: видит автор, admin — все (§6.1)."""
+    """Сессии импорта приватны: видит автор, с правом `files:others` — все (§6.1)."""
     import_session = await session.get(ImportSession, session_id)
     if import_session is None:
         raise not_found("Сессия импорта не найдена")
-    if "admin" not in (user.roles or []) and import_session.created_by != user.id:
+    if not user.access.has("files:others") and import_session.created_by != user.id:
         raise not_found("Сессия импорта не найдена")  # не раскрываем существование
     return import_session
 
@@ -510,7 +510,8 @@ async def run_apply(
     mode: str,
 ) -> dict[str, Any]:
     if import_session.status == "completed":
-        # идемпотентный повтор (Idempotency-Key/ретрай UI): вернуть сохранённый результат
+        # второй эшелон идемпотентности: повтор с новым ключом или после истечения аренды —
+        # вернуть сохранённый результат (первый — IdempotencyMiddleware, api-contract.md §1.6)
         return {
             "state": "completed",
             "result": import_session.stats or {},
@@ -600,7 +601,7 @@ async def list_sessions(
     session: AsyncSession, user: AppUser, *, state: str | None
 ) -> list[dict[str, Any]]:
     stmt = select(ImportSession).order_by(ImportSession.created_at.desc()).limit(100)
-    if "admin" not in (user.roles or []):
+    if not user.access.has("files:others"):
         stmt = stmt.where(ImportSession.created_by == user.id)
     if state:
         db_status = "preview" if state == "validated" else state

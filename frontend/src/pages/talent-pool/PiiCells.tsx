@@ -22,9 +22,9 @@ interface RevealEyeProps {
 
 /** Кнопка раскрытия + таймер-точка: одна на строку/карточку. */
 export function RevealEye({ studentId, controller }: RevealEyeProps): ReactNode {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const reduced = useReducedMotion() ?? false;
-  if (!hasRole('admin', 'head_kam', 'kam')) return null;
+  if (!hasPermission('students:reveal')) return null;
 
   const seconds = controller.secondsLeft(studentId);
   if (seconds > 0) {

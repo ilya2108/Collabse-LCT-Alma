@@ -208,6 +208,28 @@ class ImpactOut(BaseModel):
     by_status: list[ImpactByStatus]
 
 
+class MigrationReportByStatus(BaseModel):
+    from_status: str = Field(serialization_alias="from")
+    to_status: str = Field(serialization_alias="to")
+    count: int
+
+
+class MigrationTimings(BaseModel):
+    """Замеры применения пакета (workflow-engine.md §6.8), мс."""
+
+    lock_wait_ms: int  # ожидание эксклюзивного лока воронки (хвост переходов)
+    apply_ms: int  # от захвата лока до COMMIT: схема, перенос, история, сводки, аудит
+    migrate_ms: int  # из них — пакетный перенос заявок (операторы CTE)
+    lock_held_ms: int | None = None  # лок удерживался (до конца COMMIT); только в ответе approve
+
+
+class MigrationReport(BaseModel):
+    migrated_requests: int
+    by_status: list[MigrationReportByStatus]
+    digest_notifications: int | None = None  # сводных уведомлений (одно на получателя)
+    timings: MigrationTimings | None = None
+
+
 class ChangeRequestOut(BaseModel):
     id: UUID
     workflow_id: UUID
@@ -217,21 +239,11 @@ class ChangeRequestOut(BaseModel):
     decided_by: UserRef | None = None
     decision_comment: str | None = None
     operations: list[dict[str, Any]]
-    impact: dict[str, Any] | None = None
+    impact: dict[str, Any] | None = None  # форма ImpactOut, без ключа migration_report
+    migration_report: MigrationReport | None = None  # у применённого пакета (из impact)
     created_at: datetime
     decided_at: datetime | None = None
     applied_at: datetime | None = None
-
-
-class MigrationReportByStatus(BaseModel):
-    from_status: str = Field(serialization_alias="from")
-    to_status: str = Field(serialization_alias="to")
-    count: int
-
-
-class MigrationReport(BaseModel):
-    migrated_requests: int
-    by_status: list[MigrationReportByStatus]
 
 
 class ApplyResultOut(BaseModel):

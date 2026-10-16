@@ -1,37 +1,38 @@
+import type { SemanticStatus } from '@/shared/config/tokens';
+
 /**
- * Ролевая модель (OVERVIEW.md Р-1, api-contract.md §12): четыре человеческие роли.
+ * Роли CRM (F2, Р-F2-1): назначаются в Альме, каталог ролей и их названия —
+ * в БД (`GET /roles`, хук useRoleCatalog). Интерфейс проверяет не роли, а права
+ * (`hasPermission`), поэтому здесь остались только запасные подписи системных
+ * ролей (пока каталог не загружен) и тон бейджа роли.
  * Сервисные роли (svc_notification, svc_integration) в UI не встречаются.
  */
-export const APP_ROLES = ['admin', 'head_kam', 'kam', 'observer'] as const;
 
-export type AppRole = (typeof APP_ROLES)[number];
+export const SYSTEM_ROLE_CODES = ['admin', 'head_kam', 'kam', 'observer'] as const;
 
-export const ALL_ROLES: AppRole[] = [...APP_ROLES];
-
-/** Роли с правом импорта (`/import` скрыт у observer — ux.md §3.2). */
-export const IMPORT_ROLES: AppRole[] = ['admin', 'head_kam', 'kam'];
-
-export const ADMIN_ONLY: AppRole[] = ['admin'];
-
-export const ROLE_LABELS: Record<AppRole, string> = {
+export const SYSTEM_ROLE_LABELS: Record<string, string> = {
   admin: 'Администратор',
   head_kam: 'Руководитель КАМов',
   kam: 'КАМ',
   observer: 'Наблюдатель',
 };
 
-/** Порядок «старшинства» для выбора основной роли в шапке. */
-const ROLE_PRIORITY: AppRole[] = ['admin', 'head_kam', 'kam', 'observer'];
-
-export function isAppRole(value: string): value is AppRole {
-  return (APP_ROLES as readonly string[]).includes(value);
+/** Название роли по коду без каталога: системная — по-русски, своя — код. */
+export function fallbackRoleName(code: string): string {
+  return SYSTEM_ROLE_LABELS[code] ?? code;
 }
 
-/** Пересечение ролей пользователя со списком разрешённых. */
-export function hasAnyRole(userRoles: readonly AppRole[], allowed: readonly AppRole[]): boolean {
-  return allowed.some((role) => userRoles.includes(role));
-}
-
-export function primaryRole(userRoles: readonly AppRole[]): AppRole | null {
-  return ROLE_PRIORITY.find((role) => userRoles.includes(role)) ?? null;
+/** Тон бейджа роли: системные — по старшинству, свои роли — отдельным цветом. */
+export function roleBadgeTone(code: string): SemanticStatus {
+  switch (code) {
+    case 'admin':
+      return 'danger';
+    case 'head_kam':
+      return 'progress';
+    case 'kam':
+    case 'observer':
+      return 'draft';
+    default:
+      return 'talent';
+  }
 }
