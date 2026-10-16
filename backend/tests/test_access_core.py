@@ -112,7 +112,7 @@ DEMO = _catalog(
 class TestCatalogIntegrity:
     def test_codes_unique_and_counted(self) -> None:
         codes = [p.code for p in PERMISSIONS]
-        assert len(codes) == len(set(codes)) == 60
+        assert len(codes) == len(set(codes)) == 61
 
     def test_groups_known(self) -> None:
         assert {p.group for p in PERMISSIONS} <= PERMISSION_GROUP_CODES
@@ -133,7 +133,7 @@ class TestCatalogIntegrity:
 
     def test_role_sizes(self) -> None:
         sizes = {code: len(role.permissions) for code, role in SYSTEM_ROLES.items()}
-        assert sizes == {"admin": 59, "head_kam": 40, "kam": 28, "observer": 14}
+        assert sizes == {"admin": 60, "head_kam": 41, "kam": 28, "observer": 14}
 
     def test_admin_has_everything_but_kam_flag(self) -> None:
         assert SYSTEM_ROLES["admin"].permissions == PERMISSION_CODES - {"requests:kam"}

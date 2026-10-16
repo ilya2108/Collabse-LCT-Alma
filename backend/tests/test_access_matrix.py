@@ -197,9 +197,13 @@ NEW_ENDPOINT_ROLES: dict[tuple[str, str], frozenset[str]] = {
     # F1: активность КАМов и файлы заявки
     ("GET", "/reports/kam-activity"): ALL,
     ("GET", "/reports/kam-activity/summary"): ALL,
+    ("GET", "/reports/interactions"): ALL,  # «Взаимодействия за период» (ТЗ ФТ4)
     ("GET", "/requests/{request_id}/files"): ALL,
     ("POST", "/requests/{request_id}/files"): AHK,
     ("DELETE", "/requests/{request_id}/files/{file_id}"): AHK,
+    # волна 4: передача портфеля КАМа (заявки — requests:assign_any, вузы —
+    # universities:assign внутри обработчика)
+    ("POST", "/requests/transfer-portfolio"): AH,
 }
 
 _API_PREFIX = "/api/v1"
@@ -381,6 +385,20 @@ def test_write_foreign_university_or_contract(role: str, own: bool | None) -> No
     except ApiError:
         allowed = False
     assert allowed is legacy_allowed
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_assign_university_kam(role: str) -> None:
+    # смена КАМа вуза (PATCH/POST /universities, передача портфеля) — право Руководителя:
+    # прежде КАМ мог сменить ответственного у своего или ничьего вуза — это и закрыто
+    assert _access(role).has("universities:assign") is (role in (A, H))
+
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("pipeline", WORKFLOW_TYPES)
+def test_transfer_portfolio_requests(role: str, pipeline: str) -> None:
+    # передача портфеля переназначает заявки процесса — как POST /assign чужому
+    assert _access(role).has("requests:assign_any", pipeline) is (role in (A, H))
 
 
 _FILE_TYPES = ("contract", "student", "deal", "deal_comment", "import_session", "report", "other")

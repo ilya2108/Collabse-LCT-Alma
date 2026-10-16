@@ -818,47 +818,8 @@ export interface DashboardKpiValue {
   delta?: number | null;
 }
 
-export interface DashboardKpi {
-  active: DashboardKpiValue;
-  completed: DashboardKpiValue;
-  /** Конверсия в successful-терминал за период, проценты 0–100. */
-  conversion: DashboardKpiValue;
-  stuck: DashboardKpiValue;
-}
-
-/** Строка нагрузки КАМа (§7.2 kam-workload): stacked-bar по этапам. */
-export interface KamWorkloadRow {
-  kam_id: string;
-  kam_name: string;
-  by_status: ReportSeriesItem[];
-  stuck?: number;
-}
-
-/** Строка спроса программ (§7.2 programs-demand). */
-export interface ProgramDemandRow {
-  program_id: string;
-  name: string;
-  priority_rank: number;
-  requests_count: number;
-  /** «Расчётный спрос» — только при включённом фичефлаге auto_ranking. */
-  computed_demand?: number | null;
-}
-
-/**
- * Агрегат всех виджетов дашборда — `GET /reports/dashboard` (§7.2):
- * секции в едином формате отчётов + блок KPI. Кэшируется на backend 60 с.
- */
-export interface DashboardReport {
-  report: string;
-  generated_at: string;
-  params?: Record<string, unknown>;
-  kpi: DashboardKpi;
-  funnel: { series: ReportSeriesItem[] };
-  dynamics: { series: ReportDynamicsSeries[] };
-  kam_workload: { rows: KamWorkloadRow[] };
-  programs_demand: { rows: ProgramDemandRow[] };
-  talent_pool_funnel: { series: ReportSeriesItem[] };
-}
+/* Типы ответа `GET /reports/dashboard` (KPI, нагрузка КАМов, востребованность программ) —
+ * в `endpoints/reports.ts` рядом с запросом. */
 
 /** Отчёт `GET /reports/talent-pool-funnel` (§7.2) — счётчики воронки студентов. */
 export interface TalentPoolFunnelReport {

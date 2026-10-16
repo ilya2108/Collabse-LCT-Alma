@@ -8,7 +8,8 @@ import { listUsers } from './users';
  * Отчёт «Активность КАМов» — `/reports/kam-activity` (api-contract.md §7.2.1):
  * какой КАМ за период с какими вузами взаимодействовал и на каких этапах
  * остановились заявки. Детализация (А) — руководителю КАМов, сводка (Б) —
- * бизнес-заказчику. Типы — зеркало backend/app/modules/reporting/schemas.py;
+ * бизнес-заказчику; «Взаимодействия за период» (`/reports/interactions`) — таблица
+ * по колонкам ТЗ с выгрузкой XLSX/PDF. Типы — зеркало backend/app/modules/reporting/schemas.py;
  * живут здесь, а не в types.ts, чтобы не пересекаться с другими доработками.
  */
 
@@ -192,6 +193,10 @@ export interface KamActivityKpi {
   interactions: KpiValue;
   stuck: KpiValue;
   talent_pool_added: KpiValue;
+  /** Вид Б: вузы с действующим договором на конец периода. */
+  universities_with_contract: KpiValue;
+  /** Вид Б: студенты вузов отчёта в статусе «Обучается» на конец периода. */
+  students_studying: KpiValue;
 }
 
 export interface StageConversionRow {
@@ -274,6 +279,7 @@ export interface KamActivityTalent {
     entered: number;
   }>;
   talent_pool_added: KpiValue<number>;
+  students_studying: KpiValue<number>;
   programs: Array<{
     program_id: string;
     name: string | null;
@@ -284,6 +290,40 @@ export interface KamActivityTalent {
     talent_pool: number;
     total: number;
   }>;
+}
+
+export interface UniversitiesStageRow {
+  id: string;
+  code: string;
+  name: string;
+  color: string | null;
+  is_terminal: boolean;
+  outcome: 'won' | 'lost' | null;
+  /** Вузов на этапе на конец периода. */
+  value: number;
+  /** То же на конец прошлого периода той же длины. */
+  prev: number;
+  /** Вузы этапа (до 8, по алфавиту). */
+  universities: string[];
+}
+
+/** Главная диаграмма вида Б: каждый вуз — один раз, по самому продвинутому этапу. */
+export interface UniversitiesByStage {
+  workflow_type: 'b2b';
+  /** Правило отнесения вуза к этапу — тот же текст в UI и PDF. */
+  rule: string;
+  total: number;
+  total_prev: number;
+  rows: UniversitiesStageRow[];
+  without_requests: { label: string; value: number; prev: number; universities: string[] };
+}
+
+export interface SummaryRisk {
+  key: 'stuck' | 'untouched' | 'lost';
+  label: string;
+  value: number;
+  note: string | null;
+  items: string[];
 }
 
 export interface KamActivitySummary {
@@ -302,6 +342,10 @@ export interface KamActivitySummary {
   top_stuck: StuckRequestRow[];
   untouched_assigned: string[];
   talent: KamActivityTalent;
+  /** null — процесс B2B вне отчёта (фильтр B2C или роль только B2C). */
+  universities_by_stage: UniversitiesByStage | null;
+  /** Риски для заказчика: только ненулевые. */
+  risks: SummaryRisk[];
 }
 
 function toQuery(params: KamActivityParams): Record<string, QueryValue | QueryValue[]> {
@@ -353,5 +397,146 @@ export function exportKamActivity(
       filters: toQuery(params) as Record<string, unknown>,
     },
     'kam-activity',
+  );
+}
+
+// --- «Взаимодействия за период» (ТЗ ФТ4) ---------------------------------------------------
+
+export interface InteractionsParams extends KamActivityParams {
+  product_id?: string[];
+  program_id?: string[];
+  /** Статус работы с вузом — этап заявки на конец периода. */
+  stage_id?: string[];
+}
+
+export type InteractionsColumnKey =
+  | 'university'
+  | 'it_direction'
+  | 'product'
+  | 'status'
+  | 'responsible'
+  | 'program'
+  | 'title'
+  | 'workflow_type'
+  | 'created_at'
+  | 'stage_since'
+  | 'last_contact_at'
+  | 'days_on_stage'
+  | 'closed_in_period'
+  | 'interactions'
+  | 'amount';
+
+export interface InteractionsColumn {
+  key: InteractionsColumnKey;
+  label: string;
+  default: boolean;
+  /** «ТЗ», «Даты» или «Дополнительно». */
+  group: string;
+}
+
+export interface InteractionsStageOption {
+  id: string;
+  code: string;
+  name: string;
+  color: string | null;
+  workflow_type: WorkflowType;
+  is_terminal: boolean;
+}
+
+export interface InteractionsRow {
+  request_id: string;
+  title: string;
+  workflow_type: WorkflowType;
+  university_id: string | null;
+  university: string | null;
+  university_short: string | null;
+  /** Псевдоним B2C-клиента. */
+  client: string | null;
+  /** Появится вместе со справочником ИТ-направлений; до тех пор — null («—»). */
+  it_direction: string | null;
+  product_id: string | null;
+  product: string | null;
+  program_id: string | null;
+  program: string | null;
+  stage: Omit<KamActivityRequestStage, 'sort_order' | 'workflow_type'>;
+  responsible_id: string;
+  responsible: string;
+  created_at: string;
+  stage_since: string;
+  days_on_stage: number;
+  threshold_days: number;
+  is_stuck: boolean;
+  closed_in_period: 'won' | 'lost' | null;
+  interactions: Omit<KamActivityInteractions, 'activities'>;
+  last_contact_at: string | null;
+  amount: string | null;
+}
+
+export interface InteractionsReport {
+  report: 'interactions';
+  generated_at: string;
+  params: KamActivityEnvelopeParams & {
+    product_id: string[];
+    program_id: string[];
+    stage_id: string[];
+  };
+  period: KamActivityPeriod;
+  scope: KamActivityScope;
+  columns: InteractionsColumn[];
+  default_columns: InteractionsColumnKey[];
+  /** Этапы процессов отчёта — варианты фильтра «Статус». */
+  stages: InteractionsStageOption[];
+  totals: {
+    requests: number;
+    universities: number;
+    responsibles: number;
+    with_interactions: number;
+    interactions: number;
+    stuck: number;
+    won: number;
+    lost: number;
+    amount: string;
+  };
+  /** Строк больше 5000 — полный список только в выгрузке. */
+  truncated: boolean;
+  rows: InteractionsRow[];
+}
+
+function toInteractionsQuery(params: InteractionsParams): Record<string, QueryValue | QueryValue[]> {
+  return {
+    ...toQuery(params),
+    product_id: params.product_id,
+    program_id: params.program_id,
+    stage_id: params.stage_id,
+  };
+}
+
+/** «Взаимодействия за период» — та же семантика периода, что у отчёта КАМов. */
+export function getInteractions(
+  params: InteractionsParams,
+  signal?: AbortSignal,
+): Promise<InteractionsReport> {
+  return api.get<InteractionsReport>('/reports/interactions', {
+    query: toInteractionsQuery(params),
+    signal,
+  });
+}
+
+export type InteractionsExportFormat = Extract<ExportFormat, 'pdf' | 'xlsx' | 'csv'>;
+
+/** Выгрузка по выбранным колонкам (ТЗ ФТ4): XLSX, PDF, CSV — через журнал выгрузок. */
+export function exportInteractions(
+  format: InteractionsExportFormat,
+  params: InteractionsParams,
+  columns: InteractionsColumnKey[],
+): Promise<string> {
+  return runExportAndDownload(
+    {
+      entity_type: 'report:interactions',
+      format,
+      filters: toInteractionsQuery(params) as Record<string, unknown>,
+      columns,
+    },
+    'interactions',
   );
 }

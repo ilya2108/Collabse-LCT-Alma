@@ -1,8 +1,9 @@
 """Смоук приложения: маппинг моделей, реестр роутов, health, 401-конверт.
 
 Реестр включает маршруты доработок: отчёт «Активность КАМов» и файлы заявки (F1), роли и
-права (F2), очистку ключей идемпотентности (F4). Перенос заявок (F3) новых маршрутов не
-добавляет — он идёт через прежние `/workflows/*/changes`.
+права (F2), очистку ключей идемпотентности (F4), волну 4 — «Взаимодействия за период» и
+передачу портфеля КАМа. Перенос заявок (F3) новых маршрутов не добавляет — он идёт через
+прежние `/workflows/*/changes`.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ EXPECTED_ROUTES = [
     ("GET", "/api/v1/requests"),
     ("POST", "/api/v1/requests/{request_id}/transitions"),
     ("POST", "/api/v1/requests/{request_id}/reopen"),
+    # волна 4: передача портфеля КАМа (заявки и вузы)
+    ("POST", "/api/v1/requests/transfer-portfolio"),
     # F1: файлы заявки
     ("GET", "/api/v1/requests/{request_id}/files"),
     ("POST", "/api/v1/requests/{request_id}/files"),
@@ -42,6 +45,8 @@ EXPECTED_ROUTES = [
     # F1: активность КАМов
     ("GET", "/api/v1/reports/kam-activity"),
     ("GET", "/api/v1/reports/kam-activity/summary"),
+    # волна 4: «Взаимодействия за период» (ТЗ ФТ4)
+    ("GET", "/api/v1/reports/interactions"),
     ("GET", "/api/v1/students"),
     ("POST", "/api/v1/students/{student_id}/reveal"),
     ("GET", "/api/v1/activities"),
@@ -112,6 +117,8 @@ def test_healthz_ok_without_dependencies() -> None:
         ("GET", "/api/v1/roles"),
         ("GET", "/api/v1/admin/roles"),
         ("GET", "/api/v1/reports/kam-activity"),
+        ("GET", "/api/v1/reports/interactions"),
+        ("POST", "/api/v1/requests/transfer-portfolio"),
         ("GET", "/api/v1/requests/00000000-0000-0000-0000-000000000000/files"),
     ],
 )

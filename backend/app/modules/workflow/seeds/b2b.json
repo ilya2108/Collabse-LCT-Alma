@@ -4,14 +4,14 @@
   "description": "Путь КАМа с вузом: лид → контакт → переговоры → договор → обучение → завершение",
   "stuck_threshold_days": 14,
   "stages": [
-    {"code": "new", "name": "Новая", "color": "#8c8c8c", "sort_order": 0, "is_initial": true, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 7, "triggers_lms_handover": false, "ui_position": {"x": 40, "y": 160}},
-    {"code": "first_contact", "name": "Первичный контакт", "color": "#13c2c2", "sort_order": 1, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 320, "y": 160}},
-    {"code": "negotiation", "name": "Переговоры", "color": "#1677ff", "sort_order": 2, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 600, "y": 160}},
-    {"code": "contract_prep", "name": "Подготовка договора", "color": "#722ed1", "sort_order": 3, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 880, "y": 160}},
-    {"code": "contract_signed", "name": "Договор подписан", "color": "#52c41a", "sort_order": 4, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 1160, "y": 160}},
-    {"code": "in_learning", "name": "Передано в обучение", "color": "#a0d911", "sort_order": 5, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": null, "triggers_lms_handover": true, "ui_position": {"x": 1440, "y": 160}},
-    {"code": "completed", "name": "Завершена", "color": "#237804", "sort_order": 6, "is_initial": false, "is_terminal": true, "terminal_outcome": "won", "stuck_threshold_days": null, "triggers_lms_handover": false, "ui_position": {"x": 1680, "y": 440}},
-    {"code": "rejected", "name": "Отказ", "color": "#f5222d", "sort_order": 7, "is_initial": false, "is_terminal": true, "terminal_outcome": "lost", "stuck_threshold_days": null, "triggers_lms_handover": false, "ui_position": {"x": 600, "y": 440}}
+    {"code": "new", "name": "Новая", "color": "#585D69", "sort_order": 0, "is_initial": true, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 7, "triggers_lms_handover": false, "ui_position": {"x": 40, "y": 160}},
+    {"code": "first_contact", "name": "Первичный контакт", "color": "#1F69FF", "sort_order": 1, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 320, "y": 160}},
+    {"code": "negotiation", "name": "Переговоры", "color": "#148190", "sort_order": 2, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 600, "y": 160}},
+    {"code": "contract_prep", "name": "Подготовка договора", "color": "#9233FF", "sort_order": 3, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 880, "y": 160}},
+    {"code": "contract_signed", "name": "Договор подписан", "color": "#B1740B", "sort_order": 4, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 14, "triggers_lms_handover": false, "ui_position": {"x": 1160, "y": 160}},
+    {"code": "in_learning", "name": "Передано в обучение", "color": "#B81B5E", "sort_order": 5, "is_initial": false, "is_terminal": false, "terminal_outcome": null, "stuck_threshold_days": 120, "triggers_lms_handover": true, "ui_position": {"x": 1440, "y": 160}},
+    {"code": "completed", "name": "Завершена", "color": "#09AD4D", "sort_order": 6, "is_initial": false, "is_terminal": true, "terminal_outcome": "won", "stuck_threshold_days": null, "triggers_lms_handover": false, "ui_position": {"x": 1680, "y": 440}},
+    {"code": "rejected", "name": "Отказ", "color": "#D9430F", "sort_order": 7, "is_initial": false, "is_terminal": true, "terminal_outcome": "lost", "stuck_threshold_days": null, "triggers_lms_handover": false, "ui_position": {"x": 600, "y": 440}}
   ],
   "transitions": [
     {"from": "new", "to": "first_contact", "name": "Взять в работу", "is_return": false, "requires_comment": false, "allowed_roles": ["kam", "head_kam", "admin"], "condition": null, "sort_order": 0},

@@ -379,7 +379,7 @@ async def test_permissions_catalog(api, admin_user) -> None:  # noqa: ANN001
     groups = response.json()["groups"]
     assert [g["code"] for g in groups][0] == "requests"
     flat = {p["code"]: p for g in groups for p in g["permissions"]}
-    assert len(flat) == 60
+    assert len(flat) == 61
     assert flat["workflow:approve"]["requires"] == ["workflow:change"]
     assert flat["requests:read"]["scoped"] is True
 
@@ -651,6 +651,43 @@ async def test_base_roles_see_everything(api, scoped_world) -> None:  # noqa: AN
     assert listed.json()["total"] == 6
     board = await api.as_user(users["other"]).get("/api/v1/requests/board")
     assert board.status_code == 200 and board.json()["workflow_type"] == "b2b"
+
+
+async def test_list_filters_accept_repeated_ids(api, scoped_world) -> None:  # noqa: ANN001
+    """Переход с дашборда на доску: несколько КАМов / вузов одним запросом (IN), один id —
+    как раньше; область записей роли при этом не расширяется."""
+    users, deals = scoped_world
+    own, other = str(users["own"].id), str(users["other"].id)
+    head = api.as_user(users["head"])
+
+    def titles(response) -> set[str]:  # noqa: ANN001
+        assert response.status_code == 200, response.text
+        return {item["title"] for item in response.json()["items"]}
+
+    both = await head.get("/api/v1/requests", params=[("assignee_id", own), ("assignee_id", other)])
+    assert titles(both) == {
+        "Скоуп b2b своя",
+        "Скоуп b2c своя",
+        "Скоуп b2b чужая",
+        "Скоуп b2c чужая",
+    }
+    single = await head.get("/api/v1/requests", params={"assignee_id": own})
+    assert titles(single) == {"Скоуп b2b своя", "Скоуп b2c своя"}
+
+    universities = [str(deals["b2b_own"].university_id), str(deals["b2b_other"].university_id)]
+    by_university = await head.get(
+        "/api/v1/requests", params=[("university_id", u) for u in universities]
+    )
+    assert titles(by_university) == {"Скоуп b2b своя", "Скоуп b2b чужая"}
+
+    # роль «только свои»: чужой id в списке не открывает чужие заявки
+    scoped = await api.as_user(users["own"]).get(
+        "/api/v1/requests", params=[("assignee_id", own), ("assignee_id", other)]
+    )
+    assert titles(scoped) == {"Скоуп b2b своя", "Скоуп b2c своя"}
+
+    bad = await head.get("/api/v1/requests", params={"assignee_id": "не-uuid"})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "validation_error"
 
 
 # --------------------------------------------------------------------------------------

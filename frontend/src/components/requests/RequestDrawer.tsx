@@ -17,7 +17,7 @@ export function RequestDrawer({
     <Sheet open={requestId !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
       <SheetContent
         side="right"
-        className="w-full gap-0 overflow-y-auto p-6 sm:max-w-[720px]"
+        className="w-full gap-0 overflow-y-auto p-4 sm:max-w-[720px] sm:p-6"
         aria-describedby={undefined}
       >
         <SheetTitle className="sr-only">Карточка заявки</SheetTitle>

@@ -20,8 +20,11 @@ RUN groupadd -g 10001 app && useradd -u 10001 -g app -m app \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder --chown=app:app /app /app
-ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
+# WEB_CONCURRENCY — число воркеров uvicorn (читает его сам, если нет --workers): 2 на под,
+# масштабирование — подами (HPA). У каждого воркера свой пул PostgreSQL (DB_POOL_SIZE +
+# DB_MAX_OVERFLOW) — бюджет соединений: base/config/app-configmap.yaml. Переопределять
+# в env Deployment backend, не в общем crm-config (его читает и notification).
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 WEB_CONCURRENCY=2
 USER app
 EXPOSE 8000
-# 2 воркера на под: масштабирование — подами (HPA), метрика CPU на под предсказуема
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

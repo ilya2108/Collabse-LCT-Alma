@@ -753,6 +753,19 @@ mc admin policy attach local readwrite --user "$S3_ACCESS_KEY" || true
 
 Запускается initContainer-ами `wait-postgres` + `wait-migrations` (как у backend) и после готовности backend не обязателен — пишет напрямую в БД через тот же код приложения.
 
+**Сброс стенда к показу — `cronjob/demo-reset`.** Обычный сид идемпотентен, но «стареет»:
+даты демо-данных отсчитаны от момента засева, через неделю зависших становится больше, а
+«Завершено за месяц» пустеет. Шаблон `cronjobs/demo-reset-cronjob.yaml` — приостановленный
+CronJob (`suspend: true`), сам по расписанию не запускается. `make demo-reset ANCHOR=ГГГГ-ММ-ДД`
+(скрипт `deploy/scripts/demo-reset.sh`) ставит `stuck-check` на паузу (возвращает его и при
+ошибке), создаёт Job `--from=cronjob/demo-reset` с `DEMO_ANCHOR_DATE` и ждёт его. Job выполняет
+`python -m app.tools.seed --reset --anchor …`: одной транзакцией очищает доменные таблицы
+(TRUNCATE без CASCADE; пользователи, каталог ролей и прав, настройки, процессы и журнал
+аудита сохраняются), возвращает роли к исходным и пересевает данные от якорной даты (09:00 МСК);
+затем чистит файлы удалённых строк в MinIO и ключи кэша `dash:*`, `wf:*`, `export:*`,
+`stuck:guard:*`, пишет аудит `stand.demo_reset`. Для VPS — `make vm-demo-reset ANCHOR=…` после
+`make vm-deploy`, для docker-compose — `make demo-reset-local`.
+
 ### 3.9 CronJob: «зависшие» заявки (красивая k8s-стори)
 
 Требование PLAN.md §3: настраиваемый порог 1–2 недели без смены статуса → эскалация ответственному и руководителю КАМа. Архитектура: **CronJob — это только триггер**; вся логика (каскад порогов из БД, выбор адресатов, двухступенчатая эскалация, идемпотентность повторных запусков) — в backend (workflow-engine.md §8), отправка — через notification-service.

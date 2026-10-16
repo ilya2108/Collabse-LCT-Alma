@@ -36,8 +36,12 @@ class Settings(BaseSettings):
     # --- PostgreSQL (Secret crm-db) -------------------------------------------
     database_url: str = "postgresql+asyncpg://crm:crm@localhost:5432/crm"
     db_echo: bool = False
-    db_pool_size: int = 10
-    db_max_overflow: int = 10
+    # пул — на каждый процесс uvicorn (WEB_CONCURRENCY воркеров на под), поэтому бюджет
+    # соединений PostgreSQL: maxReplicas × воркеры × (pool + overflow) + Keycloak + Jobs
+    # < max_connections. 6 подов × 2 воркера × (4 + 2) = 72 (расчёт и проверка —
+    # docs/evidence/load-report.md §5, tests/test_connection_budget.py)
+    db_pool_size: int = 4
+    db_max_overflow: int = 2
 
     # --- KeyDB ----------------------------------------------------------------
     keydb_url: str = "redis://localhost:6379/0"

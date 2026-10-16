@@ -1,14 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, FileText, Image as ImageIcon, Sheet as SheetIcon, Trash2 } from 'lucide-react';
+import {
+  Archive,
+  Download,
+  FileText,
+  Image as ImageIcon,
+  Sheet as SheetIcon,
+  Trash2,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
 import { downloadFile, formatFileSize } from '@/shared/api/endpoints/files';
 import {
+  REQUEST_FILE_ACCEPT,
+  REQUEST_FILE_FORMATS_LABEL,
+  REQUEST_FILE_MAX_MB,
   deleteRequestFile,
   listRequestFiles,
   uploadRequestFile,
+  type RequestFile,
 } from '@/shared/api/endpoints/requests';
-import type { FileObject, WorkflowType } from '@/shared/api/types';
+import type { WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { formatDateTime } from '@/shared/lib/format';
 import { toastError, toastSuccess } from '@/shared/lib/toast';
@@ -30,17 +41,17 @@ import { ErrorPanel, LoadingPanel } from './StatePanels';
 /**
  * Таб «Файлы» карточки заявки (ux.md §8.1, redesign.md §6.4): FileDropzone
  * (§3.9) + список строк — иконка типа, имя truncate, размер · автор · дата
- * мета-строкой. Скачивание через backend (RBAC); загрузка и удаление своих —
+ * мета-строкой и этап, в котором файл приложен (ФТ3 «файлы в статусах»: загрузка
+ * отсюда — в текущий этап, из диалога перехода — к самому переходу). Форматы — 10
+ * из ТЗ, как на сервере. Скачивание через backend (RBAC); загрузка и удаление своих —
  * право `requests:files`, удаление чужих — ещё и `requests:write_any`.
  */
 
-const ACCEPT = ['.pdf', '.docx', '.xlsx', '.png', '.jpg', '.jpeg'];
-const MAX_SIZE_MB = 50;
-
-function fileIcon(file: FileObject): LucideIcon {
-  const ext = file.file_name.split('.').pop()?.toLowerCase() ?? '';
+export function requestFileIcon(fileName: string): LucideIcon {
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
   if (['png', 'jpg', 'jpeg'].includes(ext)) return ImageIcon;
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return SheetIcon;
+  if (['xlsx', 'xls'].includes(ext)) return SheetIcon;
+  if (['zip', 'gz', 'gzip', 'tgz', 'rar'].includes(ext)) return Archive;
   return FileText;
 }
 
@@ -57,7 +68,7 @@ export function RequestFiles({
   // Загрузка — право requests:files в процессе заявки; удаление — своих файлов
   // или любых при праве на чужие заявки (requests:write_any).
   const canEdit = hasPermission('requests:files', workflowType);
-  const canDelete = (file: FileObject): boolean =>
+  const canDelete = (file: RequestFile): boolean =>
     canEdit &&
     (hasPermission('requests:write_any', workflowType) ||
       (Boolean(user) && file.uploaded_by === user?.id));
@@ -87,11 +98,16 @@ export function RequestFiles({
         );
       }, 250);
       try {
-        await uploadRequestFile(requestId, file);
+        const uploaded = await uploadRequestFile(requestId, file);
         stopRamp();
         setUploading({ name: file.name, percent: 100 });
-        toastSuccess(`Файл «${file.name}» загружен`);
+        toastSuccess(
+          uploaded.stage_name
+            ? `Файл «${file.name}» приложен к этапу «${uploaded.stage_name}»`
+            : `Файл «${file.name}» загружен`,
+        );
         await invalidate();
+        void queryClient.invalidateQueries({ queryKey: ['request-history', requestId] });
       } catch (error) {
         toastError(error, { title: `Не удалось загрузить «${file.name}»` });
       } finally {
@@ -103,10 +119,13 @@ export function RequestFiles({
 
   const deleteMutation = useMutation({
     mutationFn: (fileId: string) => deleteRequestFile(requestId, fileId),
-    onSuccess: () => void invalidate(),
+    onSuccess: () => {
+      void invalidate();
+      void queryClient.invalidateQueries({ queryKey: ['request-history', requestId] });
+    },
   });
 
-  const download = async (file: FileObject): Promise<void> => {
+  const download = async (file: RequestFile): Promise<void> => {
     try {
       await downloadFile(file.id, file.file_name);
     } catch (error) {
@@ -131,11 +150,11 @@ export function RequestFiles({
     <div className="space-y-4">
       {canEdit ? (
         <FileDropzone
-          accept={ACCEPT}
-          maxSizeMb={MAX_SIZE_MB}
+          accept={REQUEST_FILE_ACCEPT}
+          maxSizeMb={REQUEST_FILE_MAX_MB}
           multiple
           onFiles={(picked) => void uploadFiles(picked)}
-          hint={`PDF, DOCX, XLSX, PNG или JPG · до ${MAX_SIZE_MB} МБ`}
+          hint={`${REQUEST_FILE_FORMATS_LABEL} · до ${REQUEST_FILE_MAX_MB} МБ · файл попадёт в текущий этап`}
           uploading={uploading}
         />
       ) : null}
@@ -147,7 +166,7 @@ export function RequestFiles({
       ) : (
         <ul className="m-0 list-none divide-y divide-border p-0">
           {files.map((file) => {
-            const Icon = fileIcon(file);
+            const Icon = requestFileIcon(file.file_name);
             return (
               <li key={file.id} className="flex items-center gap-3 py-2.5">
                 <span
@@ -164,6 +183,11 @@ export function RequestFiles({
                     {' · '}
                     {formatDateTime(file.created_at)}
                   </div>
+                  {file.stage_name ? (
+                    <div className="truncate text-xs text-muted-foreground">
+                      этап «{file.stage_name}»
+                    </div>
+                  ) : null}
                 </div>
                 <Button
                   variant="ghost"

@@ -5,8 +5,10 @@
 - XLSX (openpyxl): «Сводка / КАМы / Вузы / Заявки / Динамика», жирная шапка с заливкой,
   закреплённая первая строка, автофильтр, настоящие даты, проценты `0.0`, нативная
   диаграмма «Взаимодействия по КАМам»; защита CWE-1236 — строки «=…» пишутся текстом.
-- PDF (fpdf2): стр. 1 — KPI с дельтами, выводы, конверсия по этапам; стр. 2 — разрез по
-  КАМам, «где застревают», студенты на программах; дальше — детализация по КАМам.
+- PDF (fpdf2): стр. 1 — вид Б для заказчика: 4 KPI (охват, вузы с договором, обучаются,
+  выиграно), выводы, «Вузы B2B по этапам на конец периода» с правилом отнесения, риски;
+  стр. 2 — показатели активности КАМов, конверсия по этапам, разрез по КАМам, «где
+  застревают», студенты на программах; дальше — детализация по КАМам.
 - CSV/JSON — плоский лист «Заявки» общими писателями выгрузки.
 
 Определения метрик — те же, что в UI («Как считается») и в `kam_activity.py`.
@@ -50,10 +52,14 @@ METRIC_DEFINITIONS: tuple[str, ...] = (
     "по этапам, комментарий, файл заявки, мероприятие с вузом. Системные записи (перевод "
     "схемы, LMS, импорт) и действия других пользователей не считаются.",
     "Этап остановки — этап заявки на конец периода, восстановленный по истории переходов; "
-    "дней на этапе — от входа в этот этап до конца периода (или до сейчас).",
+    "дней на этапе — от входа в этот этап до конца периода (или до сейчас). Перевод схемы "
+    "процесса и события LMS срок на этапе не обнуляют — как на доске.",
     "Зависла — этап не финальный и заявка на нём дольше порога (этап → воронка → общий).",
     "Выиграно / отказ — заявка вошла в финальный этап в периоде; конверсия — "
     "выиграно / (выиграно + отказ). Охват — закреплённые вузы с контактом / все закреплённые.",
+    "Вузы B2B по этапам — каждый вуз один раз, по самому продвинутому этапу его B2B-заявок "
+    "на конец периода; «Отказ» — только если других заявок нет. Вузы с договором — договор "
+    "действует на конец периода (статус «Действует» или завершён, но срок не истёк).",
     "Сравнение — с периодом той же длины непосредственно перед текущим. Границы периода — "
     "по московскому времени.",
 )
@@ -255,6 +261,30 @@ def kam_activity_flat_rows(
     return columns, rows
 
 
+def universities_stage_rows(by_stage: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Строки главной диаграммы вида Б: этапы + «Без заявок в работе» (если такие вузы были)."""
+    rows = [dict(row) for row in by_stage.get("rows", [])]
+    without = by_stage.get("without_requests") or {}
+    if without.get("value") or without.get("prev"):
+        rows.append(
+            {
+                "id": None,
+                "code": "without_requests",
+                "name": without.get("label") or "Без заявок в работе",
+                "color": MUTED,
+                "value": without.get("value", 0),
+                "prev": without.get("prev", 0),
+                "universities": list(without.get("universities", [])),
+            }
+        )
+    return rows
+
+
+def risk_note(risk: Mapping[str, Any]) -> str:
+    parts = [part for part in (risk.get("note"), "; ".join(risk.get("items") or [])) if part]
+    return " — ".join(parts)
+
+
 def _json_ready(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {key: value.isoformat() if isinstance(value, date) else value for key, value in row.items()}
@@ -339,6 +369,8 @@ class _Sheet:
 
 _KPI_LABELS: tuple[tuple[str, str, str | None], ...] = (
     ("coverage_pct", "Охват закреплённых вузов, %", _PCT_FORMAT),
+    ("universities_with_contract", "Вузы с действующим договором", None),
+    ("students_studying", "Обучаются (студенты вузов отчёта)", None),
     ("assigned_touched", "Закреплённых вузов с контактом", None),
     ("universities_assigned", "Закреплённых вузов всего", None),
     ("universities_touched", "Вузов с взаимодействиями", None),
@@ -394,6 +426,25 @@ def _write_summary_sheet(
     sheet.subtitle("Ключевые выводы", bold=True)
     for text in summary.get("highlights", []):
         sheet.line([f"• {text}"])
+    sheet.skip()
+
+    by_stage = summary.get("universities_by_stage")
+    if by_stage:
+        sheet.subtitle("Вузы B2B по этапам на конец периода", bold=True)
+        sheet.header(["Этап", "Вузов", "Прошлый период", "Вузы"])
+        for row in universities_stage_rows(by_stage):
+            sheet.line([row["name"], row["value"], row["prev"], ", ".join(row["universities"])])
+        sheet.line([f"Правило: {by_stage['rule']}"])
+        sheet.skip()
+
+    sheet.subtitle("Риски", bold=True)
+    risks = summary.get("risks") or []
+    if risks:
+        sheet.header(["Риск", "Значение", "Комментарий"])
+        for risk in risks:
+            sheet.line([risk["label"], risk["value"], risk_note(risk)])
+    else:
+        sheet.line(["Рисков за период не выявлено"])
     sheet.skip()
 
     for workflow_type, stages in summary.get("stages", {}).items():
@@ -728,7 +779,7 @@ def render_kam_activity_pdf(
     assigned = (kpi.get("universities_assigned") or {}).get("value") or 0
     touched = (kpi.get("assigned_touched") or {}).get("value") or 0
 
-    # --- стр. 1: KPI, выводы, конверсия по этапам ---
+    # --- стр. 1 (вид Б): 4 KPI, выводы, вузы по этапам, риски ---
     pdf.title_block(
         REPORT_TITLE,
         [
@@ -739,23 +790,63 @@ def render_kam_activity_pdf(
             "зелёный — к лучшему, красный — к худшему.",
         ],
     )
+    conversion = (kpi.get("conversion") or {}).get("value")
     pdf.kpi_grid(
         [
             _kpi_item(
                 kpi, "coverage_pct", "Охват вузов", unit="%", hint=f"{touched} из {assigned}"
             ),
-            _kpi_item(kpi, "interactions", "Взаимодействий"),
-            _kpi_item(kpi, "new_requests", "Новые заявки"),
-            _kpi_item(kpi, "conversion", "Конверсия", unit="%"),
-            _kpi_item(kpi, "won", "Выиграно"),
-            _kpi_item(kpi, "lost", "Отказы", inverted=True),
-            _kpi_item(kpi, "stuck", "Зависших", inverted=True),
-            _kpi_item(kpi, "talent_pool_added", "В пул талантов"),
+            _kpi_item(kpi, "universities_with_contract", "Вузы с договором"),
+            _kpi_item(kpi, "students_studying", "Обучаются"),
+            _kpi_item(
+                kpi,
+                "won",
+                "Выиграно заявок",
+                hint=f"конверсия {_pct(conversion)}" if conversion is not None else None,
+            ),
         ]
     )
     pdf.section("Ключевые выводы")
     highlights = summary.get("highlights") or ["Данных за период нет."]
     pdf.bullets(highlights)
+
+    by_stage = summary.get("universities_by_stage")
+    if by_stage:
+        pdf.section(
+            "Вузы B2B по этапам на конец периода",
+            f"{by_stage['rule']} В скобках — на конец прошлого периода той же длины. "
+            "Ось — от нуля.",
+            keep=40,
+        )
+        stage_rows = universities_stage_rows(by_stage)
+        top = max((max(row["value"], row["prev"]) for row in stage_rows), default=0)
+        for row in stage_rows:
+            names = ", ".join(row["universities"][:3])
+            note = f"{row['value']} ({row['prev']})" + (f" · {names}" if names else "")
+            pdf.hbar(row["name"], row["value"], top, row.get("color"), note)
+        pdf.ln(2)
+
+    pdf.section("Риски")
+    risks = summary.get("risks") or []
+    if risks:
+        pdf.bullets([f"{risk['label']}: {risk['value']}. {risk_note(risk)}" for risk in risks])
+    else:
+        pdf.paragraph("Рисков за период не выявлено.")
+
+    # --- стр. 2: показатели активности и конверсия по этапам ---
+    pdf.add_page()
+    pdf.section("Показатели активности КАМов", "Сравнение — с прошлым периодом той же длины.")
+    pdf.kpi_grid(
+        [
+            _kpi_item(kpi, "interactions", "Взаимодействий"),
+            _kpi_item(kpi, "new_requests", "Новые заявки"),
+            _kpi_item(kpi, "conversion", "Конверсия", unit="%"),
+            _kpi_item(kpi, "lost", "Отказы", inverted=True),
+            _kpi_item(kpi, "stuck", "Зависших", inverted=True),
+            _kpi_item(kpi, "talent_pool_added", "В пул талантов"),
+        ],
+        columns=3,
+    )
 
     for workflow_type, stages in summary.get("stages", {}).items():
         if not stages:
@@ -779,8 +870,7 @@ def render_kam_activity_pdf(
             pdf.hbar(stage["name"], stage["reached"], top, stage["color"], " · ".join(note_parts))
         pdf.ln(2)
 
-    # --- стр. 2: разрез по КАМам, «где застревают», студенты ---
-    pdf.add_page()
+    # --- разрез по КАМам, «где застревают», студенты ---
     pdf.section(
         "Разрез по КАМам",
         "Взаимодействия — собственные действия КАМа; в скобках — прошлый период той же длины.",

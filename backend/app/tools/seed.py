@@ -11,23 +11,43 @@
   зависшие — фактура для демо CronJob), студентов Talent Pool (ПДн шифруются тем же
   кодом, что в проде), федпроекты и активности с расписанием;
 - историю активности ~20 КАМов для отчёта «Активность КАМов» (`app.tools.seed_activity`:
-  комментарии, файлы заявок, прошедшие мероприятия, исторические заявки).
+  комментарии, файлы заявок, прошедшие мероприятия, исторические заявки);
+- скрытый онбординг демо-учёток (приветствие пройдено, чек-лист свёрнут).
 
 Идемпотентность — upsert по натуральным ключам: повторный запуск ничего не дублирует.
+
+Все даты считаются от «сейчас» демо-данных: момент запуска либо `DEMO_ANCHOR_DATE`
+(ГГГГ-ММ-ДД — 09:00 МСК этого дня, или ISO дата-время). Идемпотентный повтор даты уже
+созданных строк не двигает, поэтому к показу стенд пересевают с нуля:
+
+    python -m app.tools.seed --reset [--anchor 2026-10-23]   # make demo-reset
+
+Сброс (`--reset`) в одной транзакции очищает доменные таблицы (заявки, история, вузы,
+каталог, договоры, студенты, мероприятия, файлы, уведомления, импорт, этапы и переходы
+процессов) и засевает их заново от якоря. Не очищаются `app_user` (keycloak_sub, привязки
+Telegram), каталог ролей и прав, настройки (кроме ключей APP_SETTINGS), строки процессов
+и журнал аудита; роли приводятся к исходным: системные — к набору из кода, демо-роли
+«КАМ B2B»/«КАМ B2C» — к правам КАМа, прочие пользовательские роли удаляются, демо-учёткам
+возвращаются роли сида. Файлы удалённых строк стираются из MinIO, кэши отчётов и схем
+в KeyDB сбрасываются. Названия вузов — реальные; заявки, договоры, этапы и комментарии —
+демонстрационные и не описывают действительных отношений «ИТ Школы» с этими вузами.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import os
+import re
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import reset_role_catalog
@@ -65,7 +85,47 @@ from app.models import (
 
 SEEDS_DIR = Path(__file__).resolve().parents[1] / "modules" / "workflow" / "seeds"
 
-_NOW = datetime.now(timezone.utc)
+MSK = timezone(timedelta(hours=3), "MSK")
+DEMO_ANCHOR_ENV = "DEMO_ANCHOR_DATE"
+DEMO_ANCHOR_HOUR_MSK = 9  # якорь-дата без времени — начало дня показа
+
+
+def resolve_demo_anchor(value: str | None, *, now: datetime | None = None) -> datetime:
+    """«Сейчас» демо-данных (UTC): пусто — текущий момент; `ГГГГ-ММ-ДД` — 09:00 МСК
+    этого дня (для сегодняшней даты — не позже текущего момента); ISO дата-время —
+    как есть (без зоны — МСК)."""
+    current = now or datetime.now(timezone.utc)
+    raw = (value or "").strip()
+    if not raw:
+        return current
+    try:
+        if len(raw) == 10:
+            day = date.fromisoformat(raw)
+            moment = datetime(day.year, day.month, day.day, DEMO_ANCHOR_HOUR_MSK, tzinfo=MSK)
+            if day == current.astimezone(MSK).date():
+                moment = min(moment, current)
+        else:
+            moment = datetime.fromisoformat(raw)
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=MSK)
+    except ValueError as exc:
+        raise ValueError(
+            f"{DEMO_ANCHOR_ENV}=«{raw}»: ожидается ГГГГ-ММ-ДД или ISO дата-время"
+        ) from exc
+    return moment.astimezone(timezone.utc)
+
+
+_NOW = resolve_demo_anchor(os.environ.get(DEMO_ANCHOR_ENV))
+
+
+def demo_now() -> datetime:
+    """Текущий якорь сида (читать через функцию: `--anchor` переопределяет его)."""
+    return _NOW
+
+
+def set_demo_now(moment: datetime) -> None:
+    global _NOW
+    _NOW = moment
 
 
 def _demo_sub(username: str) -> uuid.UUID:
@@ -395,7 +455,8 @@ LEGAL_ENTITIES: list[dict[str, str]] = [
     {"org_name": "АО «ПромАвтоматика»", "inn": "6658078880", "org_email": "edu@promauto.ru"},
 ]
 
-# stage_days — сколько дней заявка стоит на текущем этапе (для демо зависших >14 и >21)
+# stage_days — сколько дней заявка стоит на текущем этапе (для демо зависших >14 и >21);
+# у закрытых — сколько дней назад закрыта (3–20: KPI периода «месяц» не пустые к показу)
 DEALS_B2B: list[dict[str, Any]] = [
     {
         "title": "МФТИ — ДПО Data Science, поток весна-2027",
@@ -505,7 +566,7 @@ DEALS_B2B: list[dict[str, Any]] = [
         "product": "corp-edu",
         "contract": "Д-2026/041",
         "age": 120,
-        "stage_days": 30,
+        "stage_days": 12,  # закрыта 12 дней назад — «Завершено за месяц» не пустое
     },
     {
         "title": "СПбПУ — второй поток MLOps",
@@ -727,9 +788,49 @@ async def seed_users(session: AsyncSession) -> dict[str, AppUser]:
     return users
 
 
+STAGE_THRESHOLD_FALLBACK_MAX = 60  # CHECK из 0001, пока предел не поднят миграцией
+
+
+async def stage_threshold_limit(session: AsyncSession) -> int:
+    """Верхний предел порога этапа по CHECK `workflow_stage` в БД.
+
+    Сид пишет пороги из JSON (у этапа обучения — 120 дней); до миграции, поднимающей
+    предел до 365, БД держит 1–60 — тогда порог прижимается к пределу, а не роняет сид.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'workflow_stage'::regclass AND contype = 'c'"
+            )
+        )
+    ).scalars()
+    for definition in rows:
+        if "stuck_threshold_days" not in definition:
+            continue
+        match = re.search(r"stuck_threshold_days\s*<=\s*(\d+)", definition) or re.search(
+            r"BETWEEN\s+\d+\s+AND\s+(\d+)", definition
+        )
+        if match:
+            return int(match.group(1))
+    return STAGE_THRESHOLD_FALLBACK_MAX
+
+
+def _clamped_threshold(stage_spec: dict[str, Any], limit: int) -> int | None:
+    value = stage_spec["stuck_threshold_days"]
+    if value is None or value <= limit:
+        return value
+    print(  # noqa: T201
+        f"seed: порог этапа «{stage_spec['name']}» {value} дн. выше предела БД ({limit}) — "
+        f"записан {limit}; после миграции предела повторите сид"
+    )
+    return limit
+
+
 async def _seed_one_workflow(
     session: AsyncSession, spec: dict[str, Any], admin: AppUser
 ) -> tuple[Workflow, dict[str, WorkflowStage]]:
+    threshold_limit = await stage_threshold_limit(session)
     workflow = (
         await session.execute(select(Workflow).where(Workflow.code == spec["code"]))
     ).scalar_one_or_none()
@@ -769,7 +870,7 @@ async def _seed_one_workflow(
         stage.is_initial = stage_spec["is_initial"]
         stage.is_terminal = stage_spec["is_terminal"]
         stage.terminal_outcome = stage_spec["terminal_outcome"]
-        stage.stuck_threshold_days = stage_spec["stuck_threshold_days"]
+        stage.stuck_threshold_days = _clamped_threshold(stage_spec, threshold_limit)
         stage.triggers_lms_handover = stage_spec["triggers_lms_handover"]
         stage.ui_position = stage_spec["ui_position"]
     await session.flush()
@@ -834,15 +935,46 @@ DEMO_ROLES: list[dict[str, Any]] = [
 ]
 
 
+async def _set_role_permissions(
+    session: AsyncSession, role: AppRole, permissions: frozenset[str] | set[str]
+) -> None:
+    """Набор прав роли ровно `permissions`: лишние удаляются, недостающие добавляются."""
+    current = set(
+        (
+            await session.execute(
+                select(AppRolePermission.permission_code).where(
+                    AppRolePermission.role_id == role.id
+                )
+            )
+        ).scalars()
+    )
+    extra = current - set(permissions)
+    if extra:
+        await session.execute(
+            delete(AppRolePermission).where(
+                AppRolePermission.role_id == role.id,
+                AppRolePermission.permission_code.in_(sorted(extra)),
+            )
+        )
+    session.add_all(
+        AppRolePermission(role_id=role.id, permission_code=code)
+        for code in sorted(set(permissions) - current)
+    )
+
+
 async def seed_demo_roles(
     session: AsyncSession,
     workflows: dict[str, tuple[Workflow, dict[str, WorkflowStage]]],
+    *,
+    commit: bool = True,
 ) -> dict[str, AppRole]:
     """Каталог прав (сверка с кодом), демо-роли «КАМ B2B»/«КАМ B2C» и их коды в переходах.
 
-    Идемпотентно: роль создаётся или приводится к правам системной роли kam и своему
-    процессу; код роли добавляется в `allowed_roles` переходов своего процесса, где есть
-    `kam`. Commit — здесь же, затем сброс кэша схем `wf:{id}` и каталога ролей.
+    Идемпотентно: роль создаётся или приводится к правам системной роли kam (ровно к ним:
+    права, добавленные на репетиции, снимаются) и своему процессу; код роли добавляется
+    в `allowed_roles` переходов своего процесса, где есть `kam`. Commit — здесь же, затем
+    сброс кэша схем `wf:{id}` и каталога ролей; сброс стенда (`commit=False`) фиксирует
+    всё одной транзакцией в конце.
     """
     from app.core.rbac_catalog import SYSTEM_ROLES
     from app.modules.access.bootstrap import seed_rbac_catalog
@@ -863,19 +995,7 @@ async def seed_demo_roles(
         role.workflow_types = [spec["workflow_type"]]
         role.record_scope = "all"
         await session.flush()
-        current = set(
-            (
-                await session.execute(
-                    select(AppRolePermission.permission_code).where(
-                        AppRolePermission.role_id == role.id
-                    )
-                )
-            ).scalars()
-        )
-        session.add_all(
-            AppRolePermission(role_id=role.id, permission_code=code)
-            for code in sorted(kam_permissions - current)
-        )
+        await _set_role_permissions(session, role, kam_permissions)
         roles[spec["code"]] = role
 
         workflow, _stages = workflows[spec["workflow_type"]]
@@ -896,6 +1016,8 @@ async def seed_demo_roles(
             if "kam" in allowed and spec["code"] not in allowed:
                 transition.allowed_roles = [*allowed, spec["code"]]
     await session.flush()
+    if not commit:
+        return roles
     await session.commit()
     for workflow, _stages in workflows.values():
         await invalidate_workflow_cache(workflow.id)
@@ -929,11 +1051,78 @@ async def seed_interaction_types(session: AsyncSession, admin: AppUser) -> dict[
     return result
 
 
-async def seed_app_settings(session: AsyncSession) -> None:
+async def seed_app_settings(session: AsyncSession, *, force: bool = False) -> None:
+    """Настройки по умолчанию; `force` (сброс стенда) возвращает значения сида и
+    тем, что изменили на репетиции (фичефлаги, пороги)."""
     for key, value, description in APP_SETTINGS:
-        if await session.get(AppSetting, key) is None:
+        row = await session.get(AppSetting, key)
+        if row is None:
             session.add(AppSetting(key=key, value=value, description=description))
+        elif force:
+            row.value = value
+            row.description = description
     await session.flush()
+
+
+# Состояние онбординга (frontend/src/features/onboarding/types.ts, ONBOARDING_VERSION):
+# пресет пользователя screen="onboarding", name="state" в app_setting['ui:presets:{id}']
+ONBOARDING_SCREEN = "onboarding"
+ONBOARDING_PRESET = "state"
+ONBOARDING_VERSION = 1
+# учётки, под которыми показывают стенд: приветствие пройдено, чек-лист свёрнут
+ONBOARDING_HIDDEN_FOR = tuple(spec["username"] for spec in DEMO_USERS)
+
+
+def _hidden_onboarding_state(previous: dict[str, Any] | None) -> dict[str, Any]:
+    state = dict(previous or {})
+    state.setdefault("tours", {})
+    state.setdefault("checklist", {})
+    state.update(welcome_seen=True, checklist_hidden=True, version=ONBOARDING_VERSION)
+    return state
+
+
+async def hide_demo_onboarding(session: AsyncSession, users: dict[str, AppUser]) -> int:
+    """Приветствие и чек-лист «Начало работы» не всплывают на демо-учётках (идемпотентно;
+    пройденные туры и отмеченные пункты сохраняются)."""
+    from app.modules.ui.presets import add_preset, presets_key
+
+    hidden = 0
+    for username in ONBOARDING_HIDDEN_FOR:
+        user = users.get(username)
+        if user is None:
+            continue
+        key = presets_key(user.id)
+        row = await session.get(AppSetting, key)
+        stored = row.value.get("items") if row and isinstance(row.value, dict) else None
+        items = [dict(item) for item in stored or [] if isinstance(item, dict)]
+        preset = next(
+            (
+                item
+                for item in items
+                if item.get("screen") == ONBOARDING_SCREEN and item.get("name") == ONBOARDING_PRESET
+            ),
+            None,
+        )
+        if preset is None:
+            add_preset(
+                items,
+                {
+                    "screen": ONBOARDING_SCREEN,
+                    "name": ONBOARDING_PRESET,
+                    "state": _hidden_onboarding_state(None),
+                },
+            )
+        else:
+            preset["state"] = _hidden_onboarding_state(preset.get("state"))
+        if row is None:
+            session.add(
+                AppSetting(key=key, value={"items": items}, description="Пресеты UI пользователя")
+            )
+        else:
+            row.value = {"items": items}
+        hidden += 1
+    await session.flush()
+    return hidden
 
 
 async def seed_notification_rules(session: AsyncSession, admin: AppUser) -> None:
@@ -1418,20 +1607,231 @@ async def seed_talent_pool(
 
 
 # --------------------------------------------------------------------------------------
+# Сброс демо-стенда (make demo-reset)
+# --------------------------------------------------------------------------------------
+
+# Таблицы, которые сброс не очищает. app_user — keycloak_sub, привязки Telegram,
+# руководители; каталог ролей и прав приводится к исходному отдельно; app_setting —
+# пресеты пользователей (ключи APP_SETTINGS перезаписываются); workflow — id процессов
+# стабильны (этапы и переходы пересоздаются из JSON); audit_log — журнал не стирается.
+RESET_KEEP_TABLES = frozenset(
+    {
+        "alembic_version",
+        "app_user",
+        "app_permission",
+        "app_role",
+        "app_role_permission",
+        "app_setting",
+        "workflow",
+        "audit_log",
+    }
+)
+# кэши KeyDB, которые после сброса указывают на удалённые строки: отчёты, схемы
+# процессов, статусы выгрузок, «уже уведомляли о зависании»; коды привязки Telegram
+# (`tg:link:*`) и дедуп входящих событий интеграций не трогаем
+RESET_CACHE_PATTERNS = ("dash:*", "wf:*", "export:*", "stuck:guard:*")
+RESET_LOCK_TIMEOUT = "30s"
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def demo_reset_tables(session: AsyncSession) -> list[str]:
+    """Доменные таблицы схемы public, которые очищает сброс (всё, кроме RESET_KEEP_TABLES)."""
+    names = (
+        await session.execute(
+            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename")
+        )
+    ).scalars()
+    return [name for name in names if name not in RESET_KEEP_TABLES]
+
+
+async def truncate_demo_data(session: AsyncSession) -> tuple[list[str], list[tuple[str, str]]]:
+    """Очищает доменные таблицы в текущей транзакции; возвращает их и файлы MinIO.
+
+    TRUNCATE без CASCADE: если таблица из RESET_KEEP_TABLES ссылается на очищаемую,
+    PostgreSQL откажет целиком — app_user и журнал аудита каскадом не очистятся никогда.
+    Файлы стираются из MinIO только после commit (`remove_stale_files`).
+    """
+    from app.models import FileObject
+
+    await session.execute(text(f"SET LOCAL lock_timeout = '{RESET_LOCK_TIMEOUT}'"))
+    files = [
+        (bucket, key)
+        for bucket, key in (
+            await session.execute(select(FileObject.s3_bucket, FileObject.s3_key))
+        ).all()
+    ]
+    tables = await demo_reset_tables(session)
+    if tables:
+        await session.execute(text(f"TRUNCATE TABLE {', '.join(map(_quote_ident, tables))}"))
+    return tables, files
+
+
+async def reset_workflow_rows(session: AsyncSession) -> None:
+    """Название, описание и порог процессов — к JSON сида (строки и их id сохраняются)."""
+    for code in ("b2b", "b2c"):
+        spec = json.loads((SEEDS_DIR / f"{code}.json").read_text(encoding="utf-8"))
+        workflow = (
+            await session.execute(select(Workflow).where(Workflow.code == code))
+        ).scalar_one_or_none()
+        if workflow is None:
+            continue
+        workflow.name = spec["name"]
+        workflow.description = spec.get("description")
+        workflow.stuck_threshold_days = spec["stuck_threshold_days"]
+    await session.flush()
+
+
+async def reset_demo_users(session: AsyncSession) -> int:
+    """Демо-учёткам — роли, руководитель и активность сида (kam2 снова «КАМ», а не
+    «КАМ B2C» после репетиции). keycloak_sub, ФИО из Keycloak и Telegram не трогаются."""
+    from app.tools.seed_activity import HEAD, KAMS
+
+    expected: dict[str, tuple[list[str], str | None, bool]] = {
+        spec["username"].lower(): (list(spec["roles"]), spec.get("manager"), True)
+        for spec in DEMO_USERS
+    }
+    for username, _full_name, _persona, active in KAMS:
+        expected.setdefault(username.lower(), (["kam"], HEAD, active))
+    rows = (
+        (
+            await session.execute(
+                select(AppUser).where(func.lower(AppUser.username).in_(sorted(expected)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_name = {user.username.lower(): user for user in rows}
+    for name, (roles, manager, active) in expected.items():
+        user = by_name.get(name)
+        if user is None:
+            continue
+        user.roles = roles
+        user.is_active = active
+        boss = by_name.get(manager.lower()) if manager else None
+        user.manager_id = boss.id if boss else None
+    await session.flush()
+    return len(by_name)
+
+
+async def reset_access_catalog(session: AsyncSession) -> list[str]:
+    """Роли и права F2 — к исходным: системные роли к набору из кода (название, процессы,
+    область, права), пользовательские роли, кроме демо-ролей, удаляются и снимаются с
+    пользователей. Демо-роли приводит к правам КАМа `seed_demo_roles`."""
+    from app.core.rbac_catalog import SYSTEM_ROLES, WORKFLOW_TYPES
+    from app.modules.access.bootstrap import seed_rbac_catalog
+
+    await seed_rbac_catalog(session)
+    roles = {role.code: role for role in (await session.execute(select(AppRole))).scalars()}
+    for code, definition in SYSTEM_ROLES.items():
+        role = roles[code]
+        role.name = definition.name
+        role.description = definition.description
+        role.workflow_types = list(WORKFLOW_TYPES)
+        role.record_scope = "all"
+        await _set_role_permissions(session, role, definition.permissions)
+    demo_codes = {spec["code"] for spec in DEMO_ROLES}
+    removed = sorted(
+        code for code, role in roles.items() if not role.is_system and code not in demo_codes
+    )
+    if removed:
+        removed_ids = [roles[code].id for code in removed]
+        await session.execute(
+            delete(AppRolePermission).where(AppRolePermission.role_id.in_(removed_ids))
+        )
+        await session.execute(delete(AppRole).where(AppRole.id.in_(removed_ids)))
+        holders = (
+            (await session.execute(select(AppUser).where(AppUser.roles.overlap(removed))))
+            .scalars()
+            .all()
+        )
+        for user in holders:
+            user.roles = [code for code in user.roles if code not in removed]
+    await session.flush()
+    return removed
+
+
+async def flush_demo_caches() -> int:
+    """Сбрасывает в KeyDB кэши, указывающие на удалённые строки (без KeyDB — пропуск)."""
+    from redis.exceptions import RedisError
+
+    from app.core.cache import cache_key, get_cache
+
+    client = get_cache().client
+    removed = 0
+    try:
+        for pattern in RESET_CACHE_PATTERNS:
+            keys = [key async for key in client.scan_iter(match=cache_key(pattern), count=500)]
+            if keys:
+                removed += int(await client.delete(*keys))
+    except (RedisError, OSError) as exc:
+        print(f"seed: кэш KeyDB не сброшен ({type(exc).__name__}) — истечёт по TTL")  # noqa: T201
+    return removed
+
+
+async def remove_stale_files(files: list[tuple[str, str]]) -> int:
+    """Стирает из MinIO объекты очищенных file_object (best effort, после commit)."""
+    from app.modules.files.storage import get_storage
+
+    storage = get_storage()
+    removed = 0
+    for bucket, key in files:
+        try:
+            ok = await storage.remove(bucket, key)
+        except Exception as exc:  # noqa: BLE001 — MinIO недоступен: сброс уже зафиксирован
+            print(f"seed: старые файлы не удалены из MinIO ({type(exc).__name__})")  # noqa: T201
+            break
+        removed += int(ok)
+    return removed
+
+
+async def _after_reset(files: list[tuple[str, str]]) -> dict[str, int]:
+    from app.modules.access.service import after_rbac_change
+
+    reset_role_catalog()
+    caches = await flush_demo_caches()
+    try:
+        # реплики и открытые интерфейсы перечитывают каталог ролей сразу, а не по TTL
+        await after_rbac_change(role_codes=[spec["code"] for spec in DEMO_ROLES])
+    except Exception as exc:  # noqa: BLE001 — без KeyDB каталог обновится по TTL
+        print(f"seed: событие access.changed не отправлено ({type(exc).__name__})")  # noqa: T201
+    return {"caches": caches, "files_removed": await remove_stale_files(files)}
+
+
+# --------------------------------------------------------------------------------------
 # Точка входа
 # --------------------------------------------------------------------------------------
 
 
-async def run_seed() -> None:
+async def run_seed(*, reset: bool = False) -> dict[str, Any]:
+    """Сид демо-стенда; `reset=True` — очистка доменных данных и пересев от якоря
+    одной транзакцией (при ошибке стенд остаётся в прежнем состоянии)."""
+    from app.core.audit import write_audit
+    from app.core.config import get_settings
+
+    if reset and get_settings().app_env == "prod":
+        raise RuntimeError("Сброс демо-данных запрещён при APP_ENV=prod")
     get_pii_crypto()  # ранний fail с понятной ошибкой, если PII-ключи не заданы
     factory = get_session_factory()
+    tables: list[str] = []
+    files: list[tuple[str, str]] = []
+    removed_roles: list[str] = []
     async with factory() as session:
+        if reset:
+            tables, files = await truncate_demo_data(session)
+            await reset_workflow_rows(session)
         users = await seed_users(session)
         admin = users["admin@demo"]
         workflows = await seed_workflows(session, admin)
-        await seed_demo_roles(session, workflows)
+        if reset:
+            await reset_demo_users(session)
+            removed_roles = await reset_access_catalog(session)
+        await seed_demo_roles(session, workflows, commit=not reset)
         interaction_types = await seed_interaction_types(session, admin)
-        await seed_app_settings(session)
+        await seed_app_settings(session, force=reset)
         await seed_notification_rules(session, admin)
         universities = await seed_universities(session, users)
         products, programs = await seed_catalog(session, universities, users)
@@ -1453,26 +1853,80 @@ async def run_seed() -> None:
         from app.tools.seed_activity import seed_activity_history
 
         activity = await seed_activity_history(
-            session, workflows, universities, products, programs, users
+            session, workflows, universities, products, programs, users, now=demo_now()
         )
+        await hide_demo_onboarding(session, users)
+        if reset:
+            await write_audit(
+                session,
+                actor_user_id=None,
+                action="stand.demo_reset",
+                entity_type="stand",
+                entity_id=None,
+                after={
+                    "anchor": demo_now().isoformat(),
+                    "tables": len(tables),
+                    "removed_roles": removed_roles,
+                },
+            )
         await session.commit()
+    if reset:
+        for workflow, _stages in workflows.values():
+            from app.modules.workflow.service import invalidate_workflow_cache
+
+            await invalidate_workflow_cache(workflow.id)
+        after = await _after_reset(files)
+        print(  # noqa: T201
+            f"seed: сброс — очищено таблиц {len(tables)}, удалено ролей {len(removed_roles)}, "
+            f"файлов из MinIO {after['files_removed']}, ключей кэша {after['caches']}"
+        )
     print(  # noqa: T201
-        "seed: активность КАМов — новых заявок {deals}, файлов {files}, "
+        "seed: активность КАМов — новых заявок {deals}, договоров {contracts}, файлов {files}, "
         "мероприятий {activities}, студентов {students}".format(**activity)
     )
-    print("seed: демо-данные загружены (повторный запуск безопасен)")  # noqa: T201
+    anchor = demo_now().astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
+    print(f"seed: демо-данные загружены от {anchor} (повторный запуск безопасен)")  # noqa: T201
+    return activity
 
 
-def main() -> int:
-    asyncio.run(_amain())
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m app.tools.seed", description="Сид демо-стенда «Альма»"
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="очистить доменные данные и засеять заново (app_user и аудит сохраняются)",
+    )
+    parser.add_argument(
+        "--anchor",
+        default=None,
+        help=f"«сейчас» демо-данных: ГГГГ-ММ-ДД (09:00 МСК) или ISO; иначе {DEMO_ANCHOR_ENV}",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    if args.anchor:
+        set_demo_now(resolve_demo_anchor(args.anchor))
+    if demo_now() > datetime.now(timezone.utc) + timedelta(hours=1):
+        print(  # noqa: T201
+            "seed: якорь в будущем — до него часть событий будет «из будущего»; "
+            "так готовят стенд к дню показа"
+        )
+    asyncio.run(_amain(reset=args.reset))
     return 0
 
 
-async def _amain() -> None:
+async def _amain(*, reset: bool = False) -> None:
+    from app.core.cache import close_cache
+
     try:
-        await run_seed()
+        await run_seed(reset=reset)
     finally:
         await dispose_engine()
+        await close_cache()
 
 
 if __name__ == "__main__":

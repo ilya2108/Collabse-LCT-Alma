@@ -167,25 +167,33 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
       : (request.client?.company_name ?? request.client?.full_name ?? null);
 
   const header = (
-    <div className="min-w-0 flex-1">
+    <div className="min-w-0 flex-1 basis-full sm:basis-0">
       <div className="flex flex-wrap items-center gap-2">
-        {!inDrawer ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0"
-            aria-label="Назад к доске"
-            onClick={() => navigate('/board')}
-          >
-            <ArrowLeft aria-hidden="true" />
-          </Button>
-        ) : null}
-        {/* в Sheet h1 остаётся за страницей-подложкой (один h1 на экран, §8.2) */}
-        {inDrawer ? (
-          <h2 className="m-0 text-lg font-semibold leading-6 text-balance">{request.title}</h2>
-        ) : (
-          <h1 className="m-0 text-xl font-semibold leading-7 text-balance">{request.title}</h1>
-        )}
+        {/* «назад» и заголовок — одна неразрывная группа: на 375 px длинное название
+            переносится внутри группы, а не оставляет стрелку одну в строке (P1-5) */}
+        <div className="flex min-w-0 max-w-full items-start gap-1.5">
+          {!inDrawer ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="-ml-1.5 size-8 shrink-0"
+              aria-label="Назад к доске"
+              onClick={() => navigate('/board')}
+            >
+              <ArrowLeft aria-hidden="true" />
+            </Button>
+          ) : null}
+          {/* в Sheet h1 остаётся за страницей-подложкой (один h1 на экран, §8.2) */}
+          {inDrawer ? (
+            <h2 className="m-0 min-w-0 text-lg font-semibold leading-6 text-balance break-words">
+              {request.title}
+            </h2>
+          ) : (
+            <h1 className="m-0 min-w-0 pt-0.5 text-lg font-semibold leading-7 text-balance break-words sm:pt-0 sm:text-xl">
+              {request.title}
+            </h1>
+          )}
+        </div>
         <StageChip name={request.status.name} color={request.status.color} />
         {request.is_stuck ? <StuckBadge days={request.stuck_days ?? 0} /> : null}
         {request.source !== 'manual' ? (
@@ -251,12 +259,17 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
     </div>
   );
 
-  const actions = (
-    <div className="flex shrink-0 flex-wrap items-center gap-2">
-      {canTransition ? <TransitionMenu request={request} /> : null}
+  // на телефоне действия — своей строкой во всю ширину (крупная цель для пальца, P1-5);
+  // без действий (режим просмотра) пустой строки нет
+  const actions = canTransition || inDrawer ? (
+    <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto">
+      {canTransition ? (
+        <TransitionMenu request={request} triggerClassName="flex-1 sm:flex-none" />
+      ) : null}
       {inDrawer ? (
         <Button
           variant="outline"
+          className="flex-1 sm:flex-none"
           onClick={() => {
             onNavigateAway?.();
             navigate(`/requests/${request.id}`);
@@ -267,21 +280,25 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
         </Button>
       ) : null}
     </div>
-  );
+  ) : null;
 
   const sidebar = <RequestSidebar request={request} canEdit={canEdit} />;
   const twoColumns = !inDrawer && lg;
 
   const tabs = (
     <Tabs defaultValue="timeline">
-      <TabsList aria-label="Разделы заявки">
+      {/* 4 таба не помещаются в 375 px — прокрутка списка, а не всей страницы (P1-5) */}
+      <TabsList
+        aria-label="Разделы заявки"
+        className="max-w-full justify-start overflow-x-auto overflow-y-hidden [scrollbar-width:none]"
+      >
         <TabsTrigger value="timeline">Таймлайн</TabsTrigger>
         <TabsTrigger value="comments">Комментарии</TabsTrigger>
         <TabsTrigger value="files">Файлы</TabsTrigger>
         {!twoColumns ? <TabsTrigger value="details">Сведения</TabsTrigger> : null}
       </TabsList>
       <TabsContent value="timeline">
-        <RequestTimeline requestId={request.id} />
+        <RequestTimeline requestId={request.id} workflowType={request.workflow_type} />
       </TabsContent>
       <TabsContent value="comments">
         <RequestComments requestId={request.id} workflowType={request.workflow_type} />
@@ -296,7 +313,8 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
   if (inDrawer) {
     return (
       <div>
-        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        {/* pr-6 — место под крестик Sheet в правом верхнем углу */}
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3 pr-6">
           {header}
           {actions}
         </div>
@@ -313,11 +331,11 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
       </div>
       {twoColumns ? (
         <div className="grid grid-cols-[minmax(0,1fr)_340px] items-start gap-4">
-          <div className="rounded-lg border bg-card p-5 shadow-card">{tabs}</div>
+          <div className="min-w-0 rounded-lg border bg-card p-5 shadow-card">{tabs}</div>
           {sidebar}
         </div>
       ) : (
-        <div className="rounded-lg border bg-card p-5 shadow-card">{tabs}</div>
+        <div className="min-w-0 rounded-lg border bg-card p-3 shadow-card sm:p-5">{tabs}</div>
       )}
     </>
   );

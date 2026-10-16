@@ -37,9 +37,14 @@ from app.models.user import AppUser
 FEATURE_FLAGS_KEY = "feature_flags"
 
 KNOWN_FLAGS: dict[str, dict[str, Any]] = {
+    # расчётный спрос в отчёте programs-demand (reporting.service.demand_index): индекс
+    # по трём показателям ТЗ и сортировка по нему; ручной priority_rank не меняет (N7)
     "auto_ranking": {
         "default": False,
-        "label": "Авторанжирование программ по числу заявок (бонус, read-only)",
+        "label": (
+            "Расчётный спрос программ: индекс 0–100 по заявкам, обучающимся и параллельным "
+            "потокам (справочно, ручной приоритет не меняет)"
+        ),
     },
     # закрывает только общую табличную PDF-выгрузку дашборда (`report:<code>`);
     # PDF отчёта «Активность КАМов» флагом не закрыт (доработка по замечаниям экспертов)

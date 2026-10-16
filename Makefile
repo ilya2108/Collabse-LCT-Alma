@@ -19,11 +19,18 @@ BENCH_ARGS   ?=
 BENCH_URL     = $(subst postgresql://,postgresql+asyncpg://,$(BENCH_PG))/$(BENCH_DB)
 # интерпретатор backend (путь — относительно backend/): venv, если он есть
 BACKEND_PY   ?= $(if $(wildcard backend/.venv/bin/python),.venv/bin/python,python3)
+# «сейчас» демо-данных для demo-reset: пусто — момент запуска; ГГГГ-ММ-ДД — 09:00 МСК дня
+ANCHOR       ?=
+# k6: секрет клиента crm-loadtest (если не задан — из секрета кластера) и прогон сценария
+K6_SECRET     = LOADTEST_CLIENT_SECRET=$${LOADTEST_CLIENT_SECRET:-$$(kubectl -n $(NS) get secret crm-keycloak-clients -o jsonpath='{.data.LOADTEST_CLIENT_SECRET}' | base64 -d)}
+K6_CHECK      = command -v k6 >/dev/null 2>&1 || \
+	  { echo "k6 не установлен — запуск в docker описан в deploy/load/README.md"; exit 1; }
 
 .PHONY: help dev dev-env dev-down build-images realm-sync k8s-secrets k8s-up \
-        k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo hosts \
-        stuck-check idempotency-purge demo-idempotency bench-migration load-test logs \
-        clean vm-install vm-deploy vm-smoke
+        k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo demo-reset \
+        demo-reset-local hosts stuck-check idempotency-purge demo-idempotency \
+        bench-migration load-test load-test-users load-test-reports load-test-nft logs \
+        clean vm-install vm-deploy vm-smoke vm-demo-reset
 
 help: ## список целей
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -105,8 +112,13 @@ vm-deploy: ## VPS: amd64-образы → scp/import, rsync deploy/, cert-manage
 vm-smoke: ## VPS: только smoke-проверки публичных URL стенда
 	VM_IP=$(VM_IP) VM_HOST=$(VM_HOST) ./deploy/scripts/vm-deploy.sh smoke
 
+vm-demo-reset: ## VPS: сброс стенда к эталону (ANCHOR=ГГГГ-ММ-ДД — дата показа); deploy/ — после vm-deploy
+	ssh $(VM_HOST) "cd /opt/crm && KUBECTL='k3s kubectl' NS=$(NS) ANCHOR='$(ANCHOR)' bash deploy/scripts/demo-reset.sh"
+
 ## --- Данные и демо ------------------------------------------------------------
-seed: ## перезапустить сид демо-данных (идемпотентен)
+# Сид идемпотентен и даты уже созданных строк не двигает: к показу стенд «стареет»
+# (зависшие копятся, «Завершено за месяц» пустеет). Перед показом — make demo-reset.
+seed: ## перезапустить сид демо-данных (идемпотентен; обновляет цвета и пороги этапов)
 	kubectl delete job seed-demo -n $(NS) --ignore-not-found
 	kubectl apply -k $(OVERLAY)
 	kubectl -n $(NS) wait --for=condition=complete job/seed-demo --timeout=300s
@@ -119,6 +131,16 @@ demo: seed ## подготовить демо: сид + триггер зави�
 	@echo "LMS:    http://lms.crm.localhost    CMS: http://cms.crm.localhost"
 	@echo "MinIO:  http://minio.crm.localhost  Keycloak: http://id.crm.localhost"
 	@echo "(вход в UI — только через *.localhost: http://*.local — insecure context, PKCE не работает)"
+
+# Сброс к эталону: CronJob stuck-check на паузе, Job из шаблона cronjob/demo-reset —
+# доменные таблицы очищаются и засеваются от «сегодня» (или ANCHOR), app_user (keycloak_sub,
+# Telegram) и аудит сохраняются, роли F2 и демо-роли kam_b2b/kam_b2c — к исходным.
+# Утром в день показа:  make demo-reset ANCHOR=2026-10-23
+demo-reset: ## сброс стенда к эталону: пересев от сегодня/ANCHOR, роли к исходным (k8s)
+	NS=$(NS) ANCHOR='$(ANCHOR)' ./deploy/scripts/demo-reset.sh
+
+demo-reset-local: ## то же для compose-стека (make dev)
+	MODE=compose ANCHOR='$(ANCHOR)' ./deploy/scripts/demo-reset.sh
 
 hosts: ## строка для /etc/hosts — нужна только для алиасов *.crm.local (curl/API, minikube)
 	@echo "127.0.0.1 crm.local id.crm.local lms.crm.local cms.crm.local minio.crm.local"
@@ -165,12 +187,29 @@ bench-migration: ## замер массового переноса заявок 
 	@cd backend && DATABASE_URL="$(BENCH_URL)" $(BACKEND_PY) -m app.tools.bench_migration $(BENCH_ARGS)
 
 load-test: ## k6: 300→400 VU против стенда (docker-вариант — deploy/load/README.md)
-	@command -v k6 >/dev/null 2>&1 || \
-	  { echo "k6 не установлен — запуск в docker описан в deploy/load/README.md"; exit 1; }
-	LOADTEST_CLIENT_SECRET=$${LOADTEST_CLIENT_SECRET:-$$(kubectl -n $(NS) get secret crm-keycloak-clients -o jsonpath='{.data.LOADTEST_CLIENT_SECRET}' | base64 -d)} \
+	@$(K6_CHECK)
+	$(K6_SECRET) \
 	k6 run deploy/load/k6-script.js \
 	  --out json=docs/defense/load-raw.json \
 	  --summary-export docs/defense/load-summary.json
+
+# НФТ ТЗ (методика — deploy/load/README.md): 50 пользователей под 5 учётками, 10 параллельных
+# отчётов на холодном кэше с выгрузками и оба профиля разом. DURATION=5m по умолчанию.
+load-test-users: ## k6: 50 VU под 5+ учётками (НФТ «50 параллельных пользователей»)
+	@$(K6_CHECK)
+	$(K6_SECRET) k6 run -e SCENARIO=users50 deploy/load/k6-script.js \
+	  --summary-export docs/defense/load-users50-summary.json
+
+load-test-reports: ## k6: 10 VU строят разные отчёты + выгрузки, холодный кэш (НФТ «10 отчётов»)
+	@$(K6_CHECK)
+	$(K6_SECRET) k6 run -e SCENARIO=reports deploy/load/k6-script.js \
+	  --summary-export docs/defense/load-reports-summary.json
+
+load-test-nft: ## k6: 10 отчётов на фоне 50 пользователей одновременно
+	@$(K6_CHECK)
+	$(K6_SECRET) k6 run -e SCENARIO=nft deploy/load/k6-script.js \
+	  --out json=docs/defense/load-nft-raw.json \
+	  --summary-export docs/defense/load-nft-summary.json
 
 logs: ## логи backend в кластере
 	kubectl -n $(NS) logs -f deploy/backend

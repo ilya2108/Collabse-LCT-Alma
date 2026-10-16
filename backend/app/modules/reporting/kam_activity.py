@@ -3,7 +3,9 @@
 Отвечает на вопрос экспертов: какой КАМ за какой период с какими вузами взаимодействовал
 и на каких этапах с ними остановился. Два представления одного набора данных:
 - детализация (А, руководителю КАМов) — дерево КАМ → вузы → заявки;
-- сводка (Б, бизнес-заказчику) — KPI с дельтами к прошлому периоду той же длины,
+- сводка (Б, бизнес-заказчику) — KPI с дельтами к прошлому периоду той же длины (в том
+  числе вузы с действующим договором и обучающиеся), главная диаграмма «Вузы B2B по этапам
+  на конец периода» (`universities_by_stage`, правило отнесения — в ответе), риски,
   конверсия по этапам, «где застревают», динамика взаимодействий, разрез по КАМам,
   студенты на программах из пула талантов и детерминированные текстовые выводы.
 
@@ -11,6 +13,10 @@
 - период — `[from 00:00 МСК; to+1 00:00 МСК)`, «данные на» `as_of = min(конец, сейчас)`;
 - этап остановки — этап заявки на момент `as_of`, восстановленный по `deal_stage_history`
   (для прошлых периодов это этап на конец периода, а не сегодняшний);
+- дней на этапе — от входа в этап до `as_of`. Вход — последняя строка истории со сменой
+  этапа, кроме перевода схемы (`system_migration`); события LMS этап не меняют. Для
+  текущего периода — `deal.stage_entered_at`, как на доске и в боте: живой перевод схемы
+  срок на этапе не обнуляет (интервалы «где застревают» строятся по тому же правилу);
 - взаимодействие — СОБСТВЕННОЕ действие ответственного КАМа в периоде: ручной переход
   (`kind='manual'`), комментарий, файл заявки, мероприятие с вузом (слот в периоде).
   Атрибуция по автору действия: переходы системы (перевод схемы `system_migration`,
@@ -45,13 +51,14 @@ import orjson
 import sqlalchemy as sa
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.access import DealScope, get_catalog_snapshot
 from app.core.cache import get_cache
 from app.core.errors import forbidden, validation_error
-from app.models.crm import Counterparty, Program, University
+from app.models.crm import Contract, Counterparty, Program, University
 from app.models.deal import Deal, DealComment, DealStageHistory
 from app.models.service import FileObject
 from app.models.talent import Activity, ActivitySchedule, Student, StudentStatusHistory
@@ -206,6 +213,9 @@ class PeriodBounds:
     start: datetime  # from 00:00 МСК, tz-aware
     end: datetime  # to+1 00:00 МСК (полуинтервал)
     as_of: datetime  # min(end, now) — «данные на»
+    # период ещё идёт (as_of = сейчас): момент входа в этап — `deal.stage_entered_at`,
+    # как на доске и в боте; для прошедшего периода — по истории (`_stage_entry_lateral`)
+    is_current: bool = False
 
     @property
     def days(self) -> int:
@@ -281,7 +291,12 @@ def _bounds(date_from: date, date_to: date, now: datetime) -> PeriodBounds:
     start = datetime.combine(date_from, time.min, REPORT_TZ)
     end = datetime.combine(date_to + timedelta(days=1), time.min, REPORT_TZ)
     return PeriodBounds(
-        date_from=date_from, date_to=date_to, start=start, end=end, as_of=min(end, now)
+        date_from=date_from,
+        date_to=date_to,
+        start=start,
+        end=end,
+        as_of=min(end, now),
+        is_current=now < end,
     )
 
 
@@ -416,17 +431,51 @@ def _apply_deal_filters(
     return stmt
 
 
+def stage_entry_condition(history: Any) -> sa.ColumnElement[bool]:
+    """Строка истории — ВХОД в этап: этап сменился и это не перевод схемы.
+
+    Перевод схемы (`system_migration`) переносит заявку с удалённого этапа, но
+    `deal.stage_entered_at` не трогает — срок на этапе не обнуляется; события LMS
+    (`integration`, from = to) этап не меняют. Тот же смысл, что у доски и бота.
+    """
+    return and_(
+        history.kind != "system_migration",
+        history.from_stage_id.is_distinct_from(history.to_stage_id),
+    )
+
+
+def _stage_entry_lateral(as_of: datetime) -> Any:
+    """Момент входа в этап остановки: последняя строка-вход в этап до `as_of`."""
+    src = aliased(DealStageHistory, name="dsh_enter")
+    return (
+        select(src.created_at.label("since"))
+        .where(src.deal_id == Deal.id, src.created_at < as_of, stage_entry_condition(src))
+        .order_by(src.created_at.desc(), src.id.desc())
+        .limit(1)
+        .lateral("h_enter")
+    )
+
+
 def deal_rows_stmt(
     params: KamActivityParams,
     bounds: PeriodBounds,
     default_days: int,
     scope: DealScope | None = None,
+    *,
+    stage_ids: Sequence[uuid.UUID] = (),
+    where: Sequence[sa.ColumnElement[bool]] = (),
 ) -> sa.Select:
     """Заявки, с которыми шла работа или которые висели в периоде (D3), с метриками.
 
-    Пять LATERAL: этап на `as_of` и на начало периода (последняя строка истории до даты,
+    LATERAL: этап на `as_of` и на начало периода (последняя строка истории до даты,
     индекс `ix_dsh_deal`), собственные ручные переходы, комментарии и файлы
-    ответственного КАМа (количество в периоде + последний момент до `as_of`).
+    ответственного КАМа (количество в периоде + последний момент до `as_of`). Момент
+    входа в этап остановки: для текущего периода — `deal.stage_entered_at` (как доска и
+    бот), для прошедшего — ещё один LATERAL по строкам-входам (`stage_entry_condition`):
+    строки перевода схемы и LMS срок на этапе не обнуляют.
+
+    `stage_ids` — фильтр по этапу на конец периода, `where` — дополнительные условия
+    по колонкам `deal` (отчёт «Взаимодействия за период»: продукт, программа).
     """
     start, end, as_of = bounds.start, bounds.end, bounds.as_of
 
@@ -435,13 +484,13 @@ def deal_rows_stmt(
         select(
             h_end_src.to_stage_id.label("stage_id"),
             h_end_src.to_stage_name.label("stage_name"),
-            h_end_src.created_at.label("since"),
         )
         .where(h_end_src.deal_id == Deal.id, h_end_src.created_at < as_of)
         .order_by(h_end_src.created_at.desc(), h_end_src.id.desc())
         .limit(1)
         .lateral("h_end")
     )
+    h_enter = None if bounds.is_current else _stage_entry_lateral(as_of)
     h_start_src = aliased(DealStageHistory, name="dsh_start")
     h_start = (
         select(h_start_src.to_stage_id.label("stage_id"))
@@ -507,7 +556,11 @@ def deal_rows_stmt(
 
     end_stage = aliased(WorkflowStage, name="end_stage")
     start_stage = aliased(WorkflowStage, name="start_stage")
-    stage_since = func.coalesce(h_end.c.since, Deal.stage_entered_at)
+    stage_since: Any = (
+        Deal.stage_entered_at
+        if h_enter is None
+        else func.coalesce(h_enter.c.since, Deal.stage_entered_at)
+    )
     threshold = func.coalesce(
         end_stage.stuck_threshold_days, Workflow.stuck_threshold_days, default_days
     )
@@ -554,23 +607,28 @@ def deal_rows_stmt(
         .outerjoin(ev, sa.true())
         .outerjoin(cm, sa.true())
         .outerjoin(fl, sa.true())
-        .where(
-            Deal.status != "archived",
-            Deal.created_at < end,
-            or_(
-                Deal.created_at >= start,  # (а) создана в периоде
-                and_(  # (б) на начало периода была в работе
-                    h_start.c.stage_id.is_not(None), start_stage.is_terminal.is_(False)
-                ),
-                end_stage.is_terminal.is_(False),  # (в) на конец периода в работе
-                stage_since >= start,  # (г) вошла в этап остановки в периоде
-                ev.c.transitions > 0,  # (д) собственные действия КАМа в периоде
-                cm.c.comments > 0,
-                fl.c.files > 0,
-            ),
-        )
-        .order_by(Deal.responsible_user_id, University.name.asc().nulls_last(), Deal.created_at)
     )
+    if h_enter is not None:
+        stmt = stmt.outerjoin(h_enter, sa.true())
+    stmt = stmt.where(
+        Deal.status != "archived",
+        Deal.created_at < end,
+        or_(
+            Deal.created_at >= start,  # (а) создана в периоде
+            and_(  # (б) на начало периода была в работе
+                h_start.c.stage_id.is_not(None), start_stage.is_terminal.is_(False)
+            ),
+            end_stage.is_terminal.is_(False),  # (в) на конец периода в работе
+            stage_since >= start,  # (г) вошла в этап остановки в периоде
+            ev.c.transitions > 0,  # (д) собственные действия КАМа в периоде
+            cm.c.comments > 0,
+            fl.c.files > 0,
+        ),
+    ).order_by(Deal.responsible_user_id, University.name.asc().nulls_last(), Deal.created_at)
+    if stage_ids:
+        stmt = stmt.where(end_stage.id.in_(tuple(stage_ids)))
+    if where:
+        stmt = stmt.where(*where)
     return _apply_deal_filters(stmt, params, scope)
 
 
@@ -1194,9 +1252,18 @@ class PeriodKpi:
     interactions: int
     stuck: int
     talent_pool_added: int = 0
+    # вид Б (сводка для заказчика): вузы с действующим договором и обучающиеся на конец
+    universities_with_contract: int = 0
+    students_studying: int = 0
 
 
-def summarize_period(tree: Mapping[str, Any], *, talent_pool_added: int = 0) -> PeriodKpi:
+def summarize_period(
+    tree: Mapping[str, Any],
+    *,
+    talent_pool_added: int = 0,
+    universities_with_contract: int = 0,
+    students_studying: int = 0,
+) -> PeriodKpi:
     totals = tree["totals"]
     return PeriodKpi(
         coverage_pct=totals["coverage_pct"],
@@ -1212,6 +1279,8 @@ def summarize_period(tree: Mapping[str, Any], *, talent_pool_added: int = 0) -> 
         interactions=totals["interactions"]["total"],
         stuck=totals["stuck"],
         talent_pool_added=talent_pool_added,
+        universities_with_contract=universities_with_contract,
+        students_studying=students_studying,
     )
 
 
@@ -1305,34 +1374,71 @@ def _ts(value: datetime) -> sa.BindParameter[Any]:
 
 
 def stage_reached_stmt(deal_ids: Sequence[uuid.UUID], bounds: PeriodBounds) -> sa.Select:
+    """Сколько заявок дошли до этапа: строки-входы в этап до `as_of` (без перевода схемы
+    и событий LMS — они не «продвигают» заявку)."""
     history = DealStageHistory
     return (
         select(history.to_stage_id, func.count(func.distinct(history.deal_id)))
         .where(
             history.deal_id == sa.any_(_deal_ids_param(deal_ids)),
             history.created_at < bounds.as_of,
+            stage_entry_condition(history),
         )
         .group_by(history.to_stage_id)
     )
 
 
 def stage_dwell_stmt(deal_ids: Sequence[uuid.UUID], bounds: PeriodBounds) -> sa.Select:
-    """Интервалы пребывания на этапах (оконная LEAD), пересекающиеся с периодом."""
+    """Интервалы пребывания на этапах, пересекающиеся с периодом.
+
+    Интервал — от строки-входа в этап до следующей строки-входа (или до `as_of`):
+    строки перевода схемы и LMS его не рвут (как `stage_entered_at` на доске). Интервал
+    относится к этапу, на котором заявка была в его конце (последняя строка внутри,
+    в том числе строка перевода), — так же, как «дней на этапе» в строке заявки.
+    """
     history = DealStageHistory
-    intervals = (
+    is_entry = stage_entry_condition(history)
+    marked = (
         select(
+            history.deal_id.label("deal_id"),
             history.to_stage_id.label("stage_id"),
-            history.created_at.label("entered"),
-            func.lead(history.created_at)
+            history.created_at.label("created_at"),
+            history.id.label("row_id"),
+            sa.case((is_entry, history.created_at), else_=None).label("entered"),
+            func.sum(sa.case((is_entry, sa.literal_column("1")), else_=sa.literal_column("0")))
             .over(partition_by=history.deal_id, order_by=(history.created_at, history.id))
-            .label("left_at"),
+            .label("segment"),
         )
         .where(
             history.deal_id == sa.any_(_deal_ids_param(deal_ids)),
             history.created_at < bounds.as_of,
         )
-        .subquery("intervals")
+        .subquery("marked")
     )
+    last_stage = func.array_agg(
+        aggregate_order_by(marked.c.stage_id, marked.c.created_at.desc(), marked.c.row_id.desc())
+    )
+    segments = (
+        select(
+            marked.c.deal_id,
+            marked.c.segment,
+            func.min(marked.c.entered).label("entered"),
+            sa.type_coerce(last_stage, postgresql.ARRAY(postgresql.UUID(as_uuid=True)))[
+                sa.literal_column("1")
+            ].label("stage_id"),
+        )
+        # строки до первого входа (данные без строки создания) интервала не образуют
+        .where(marked.c.segment > sa.literal_column("0"))
+        .group_by(marked.c.deal_id, marked.c.segment)
+        .subquery("segments")
+    )
+    intervals = select(
+        segments.c.stage_id,
+        segments.c.entered,
+        func.lead(segments.c.entered)
+        .over(partition_by=segments.c.deal_id, order_by=segments.c.segment)
+        .label("left_at"),
+    ).subquery("intervals")
     left = func.coalesce(intervals.c.left_at, _ts(bounds.as_of))
     days = func.extract("epoch", left - intervals.c.entered) / 86400.0
     return (
@@ -1715,6 +1821,157 @@ def untouched_assigned(tree: Mapping[str, Any]) -> list[str]:
     return sorted(names.values(), key=_name_key)
 
 
+# --- вид Б: вузы по этапам, риски --------------------------------------------------------
+
+UNIVERSITIES_BY_STAGE_RULE = (
+    "Каждый вуз учитывается один раз — по самому продвинутому этапу его B2B-заявок на конец "
+    "периода (этап — по истории переходов): выигрыш важнее любого этапа в работе, этап в "
+    "работе — тем дальше, чем позже он в схеме; «Отказ» — только если других заявок нет. "
+    "«Без заявок в работе» — закреплённые вузы и вузы с мероприятиями без B2B-заявок в периоде."
+)
+NO_REQUESTS_LABEL = "Без заявок в работе"
+UNIVERSITY_NAMES_LIMIT = 8
+RISK_ITEMS_LIMIT = 5
+
+
+def _stage_rank(stage: Mapping[str, Any]) -> tuple[int, int]:
+    """Насколько продвинут этап: выигрыш > этапы в работе (по порядку схемы) > отказ."""
+    if stage["is_terminal"]:
+        return (2 if stage["outcome"] == "won" else 0, stage["sort_order"])
+    return (1, stage["sort_order"])
+
+
+def _universities_at_stage(
+    tree: Mapping[str, Any],
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """(вуз → (id этапа, подпись вуза)) по самому продвинутому этапу B2B-заявок и
+    вузы отчёта без B2B-заявок (вуз → подпись)."""
+    best: dict[str, tuple[tuple[int, int], str]] = {}
+    labels: dict[str, str] = {}
+    for row in tree["rows"]:
+        for node in row["universities"]:
+            uid = node["university_id"]
+            if uid is None:
+                continue
+            labels.setdefault(uid, _university_label(node))
+            for request in node["_requests"]:
+                stage = request["stage"]
+                if request["workflow_type"] != "b2b":
+                    continue
+                rank = _stage_rank(stage)
+                if uid not in best or rank > best[uid][0]:
+                    best[uid] = (rank, stage["id"])
+    placed = {uid: (stage_id, labels[uid]) for uid, (_rank, stage_id) in best.items()}
+    without = {uid: label for uid, label in labels.items() if uid not in best}
+    return placed, without
+
+
+def universities_by_stage(
+    tree: Mapping[str, Any],
+    prev_tree: Mapping[str, Any],
+    stages: Sequence[StageRef],
+) -> dict[str, Any]:
+    """Главная диаграмма вида Б: сколько вузов B2B на каком этапе на конец периода
+    (и на конец прошлого периода той же длины). Правило — `UNIVERSITIES_BY_STAGE_RULE`."""
+    current, without = _universities_at_stage(tree)
+    previous, without_prev = _universities_at_stage(prev_tree)
+    names: dict[str, list[str]] = {}
+    for stage_id, label in current.values():
+        names.setdefault(stage_id, []).append(label)
+    counts_prev: dict[str, int] = {}
+    for stage_id, _label in previous.values():
+        counts_prev[stage_id] = counts_prev.get(stage_id, 0) + 1
+
+    active = sorted((s for s in stages if not s.is_terminal), key=lambda s: s.sort_order)
+    terminal = sorted(
+        (s for s in stages if s.is_terminal), key=lambda s: (s.outcome != "won", s.sort_order)
+    )
+    rows: list[dict[str, Any]] = []
+    for stage in active + terminal:
+        key = str(stage.stage_id)
+        value = len(names.get(key, []))
+        prev = counts_prev.get(key, 0)
+        if stage.deleted and not value and not prev:
+            continue
+        rows.append(
+            {
+                "id": key,
+                "code": stage.code,
+                "name": f"{stage.name}{DELETED_SUFFIX}" if stage.deleted else stage.name,
+                "color": stage.color,
+                "is_terminal": stage.is_terminal,
+                "outcome": stage.outcome,
+                "value": value,
+                "prev": prev,
+                "universities": sorted(names.get(key, []), key=_name_key)[:UNIVERSITY_NAMES_LIMIT],
+            }
+        )
+    return {
+        "workflow_type": "b2b",
+        "rule": UNIVERSITIES_BY_STAGE_RULE,
+        "total": len(current),
+        "total_prev": len(previous),
+        "rows": rows,
+        "without_requests": {
+            "label": NO_REQUESTS_LABEL,
+            "value": len(without),
+            "prev": len(without_prev),
+            "universities": sorted(without.values(), key=_name_key)[:UNIVERSITY_NAMES_LIMIT],
+        },
+    }
+
+
+def _stuck_risk_item(item: Mapping[str, Any]) -> str:
+    """«Заявка (вуз): «Этап», N дн.» — вуз не повторяется, если он уже в названии."""
+    title, place = item["title"], item.get("university")
+    label = f"{title} ({place})" if place and place not in title else title
+    return f"{label}: «{item['stage']['name']}», {item['days_on_stage']} дн."
+
+
+def build_risks(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Риски для заказчика (вид Б): только ненулевые, тот же состав в UI и PDF."""
+    kpi = summary["kpi"]
+    risks: list[dict[str, Any]] = []
+    stuck = kpi["stuck"]["value"] or 0
+    if stuck:
+        risks.append(
+            {
+                "key": "stuck",
+                "label": "Зависшие заявки",
+                "value": stuck,
+                "note": "На нефинальном этапе дольше порога на конец периода",
+                "items": [
+                    _stuck_risk_item(item)
+                    for item in summary.get("top_stuck", [])[:RISK_ITEMS_LIMIT]
+                ],
+            }
+        )
+    untouched = list(summary.get("untouched_assigned", []))
+    if untouched:
+        risks.append(
+            {
+                "key": "untouched",
+                "label": "Закреплённые вузы без контакта",
+                "value": len(untouched),
+                "note": "За период ни одного взаимодействия ответственного КАМа",
+                "items": untouched[:RISK_ITEMS_LIMIT],
+            }
+        )
+    lost = kpi["lost"]["value"] or 0
+    if lost:
+        delta = kpi["lost"]["delta"]
+        risks.append(
+            {
+                "key": "lost",
+                "label": "Отказы за период",
+                "value": lost,
+                "note": f"К прошлому периоду {_signed(delta)}" if delta is not None else None,
+                "items": [],
+            }
+        )
+    return risks
+
+
 # --- склонения и форматирование выводов -----------------------------------------------
 
 
@@ -1879,6 +2136,7 @@ def _empty_talent() -> dict[str, Any]:
             for status in FUNNEL_ORDER
         ],
         "talent_pool_added": {"value": 0, "prev": 0, "delta": 0},
+        "students_studying": {"value": 0, "prev": 0, "delta": 0},
         "programs": [],
     }
 
@@ -1977,6 +2235,7 @@ async def fetch_talent(
         for status, cur, previous in (await session.execute(entered_stmt)).all()
     }
     added_cur, added_prev = entered.get("talent_pool", (0, 0))
+    studying_prev = (await _status_counts_at(session, condition, prev.as_of)).get("studying", 0)
     top = sorted(
         programs.values(),
         key=lambda item: (
@@ -2005,8 +2264,96 @@ async def fetch_talent(
             "prev": added_prev,
             "delta": added_cur - added_prev,
         },
+        "students_studying": {
+            "value": by_status["studying"],
+            "prev": studying_prev,
+            "delta": by_status["studying"] - studying_prev,
+        },
         "programs": top,
     }
+
+
+async def _status_counts_at(
+    session: AsyncSession, condition: sa.ColumnElement[bool], as_of: datetime
+) -> dict[str, int]:
+    """Студенты по статусу воронки на момент `as_of` (по истории статусов)."""
+    history = aliased(StudentStatusHistory, name="ssh_at")
+    last = (
+        select(history.to_status.label("to_status"))
+        .where(history.student_id == Student.id, history.created_at < as_of)
+        .order_by(history.created_at.desc(), history.id.desc())
+        .limit(1)
+        .lateral("status_at")
+    )
+    status_at = func.coalesce(last.c.to_status, Student.funnel_status).label("funnel_at")
+    stmt = (
+        select(status_at, func.count())
+        .select_from(Student)
+        .outerjoin(last, sa.true())
+        .where(condition, or_(last.c.to_status.is_not(None), Student.created_at < as_of))
+        .group_by(sa.text("funnel_at"))
+    )
+    return {status: int(count) for status, count in (await session.execute(stmt)).all()}
+
+
+def _contract_day(bounds: PeriodBounds) -> date:
+    """Последний день периода, на который смотрим договоры (для текущего — сегодня)."""
+    return min(bounds.date_to, bounds.as_of.astimezone(REPORT_TZ).date())
+
+
+def contract_active_on(day: date) -> sa.ColumnElement[bool]:
+    """Договор действует на дату: статус «действует» и дата в сроке действия (начало —
+    `valid_from`, иначе дата подписания); завершённый — если срок ещё не истёк."""
+    begins = func.coalesce(Contract.valid_from, Contract.signed_at)
+    return and_(
+        or_(begins.is_(None), begins <= day),
+        or_(
+            and_(
+                Contract.status == "active",
+                or_(Contract.valid_to.is_(None), Contract.valid_to >= day),
+            ),
+            and_(Contract.status == "completed", Contract.valid_to >= day),
+        ),
+    )
+
+
+async def fetch_contract_universities(
+    session: AsyncSession,
+    params: KamActivityParams,
+    scope: DealScope,
+    bounds: PeriodBounds,
+    prev: PeriodBounds,
+    *,
+    university_ids: set[uuid.UUID],
+) -> tuple[int, int]:
+    """Вузы с действующим договором на конец периода и прошлого периода (вид Б).
+
+    Договоры вузов — сущность B2B: вне области b2b — ноль. Без фильтров — все вузы,
+    иначе — вузы отчёта (как блок студентов).
+    """
+    if "b2b" not in _visible_workflows(params, scope):
+        return 0, 0
+    wide = _is_wide(params, scope)
+    if not wide and not university_ids:
+        return 0, 0
+    counts: list[int] = []
+    for period in (bounds, prev):
+        stmt = select(func.count(func.distinct(Contract.university_id))).where(
+            Contract.university_id.is_not(None), contract_active_on(_contract_day(period))
+        )
+        if not wide:
+            stmt = stmt.where(
+                Contract.university_id
+                == sa.any_(
+                    sa.bindparam(
+                        "contract_universities",
+                        value=sorted(university_ids, key=str),
+                        type_=postgresql.ARRAY(postgresql.UUID(as_uuid=True)),
+                    )
+                )
+            )
+        counts.append(int((await session.execute(stmt)).scalar_one() or 0))
+    return counts[0], counts[1]
 
 
 # --------------------------------------------------------------------------------------
@@ -2120,16 +2467,31 @@ async def kam_activity_summary(
         university_ids=university_ids,
         counterparty_ids=counterparty_ids,
     )
+    contracts, contracts_prev = await fetch_contract_universities(
+        session, params, scope, bounds, prev, university_ids=university_ids
+    )
     added = talent["talent_pool_added"]
+    studying = talent["students_studying"]
     kpi = kpi_with_delta(
-        summarize_period(tree, talent_pool_added=added["value"]),
-        summarize_period(prev_tree, talent_pool_added=added["prev"]),
+        summarize_period(
+            tree,
+            talent_pool_added=added["value"],
+            universities_with_contract=contracts,
+            students_studying=studying["value"],
+        ),
+        summarize_period(
+            prev_tree,
+            talent_pool_added=added["prev"],
+            universities_with_contract=contracts_prev,
+            students_studying=studying["prev"],
+        ),
     )
 
     deal_ids = [row.deal_id for row in rows]
     workflows = _visible_workflows(params, scope)
+    stages_by_workflow = await fetch_stages(session, workflows, default_days=default_days)
     stages = stage_rows(
-        await fetch_stages(session, workflows, default_days=default_days),
+        stages_by_workflow,
         await fetch_stage_stats(session, deal_ids, bounds),
         tree,
     )
@@ -2150,8 +2512,15 @@ async def kam_activity_summary(
         "top_stuck": top_stuck(tree),
         "untouched_assigned": untouched_assigned(tree),
         "talent": talent,
+        # главная диаграмма вида Б — только при процессе b2b в отчёте (вузы — сущность B2B)
+        "universities_by_stage": universities_by_stage(
+            tree, prev_tree, stages_by_workflow.get("b2b", [])
+        )
+        if "b2b" in workflows
+        else None,
     }
     body["highlights"] = build_highlights(body)
+    body["risks"] = build_risks(body)
     return body
 
 

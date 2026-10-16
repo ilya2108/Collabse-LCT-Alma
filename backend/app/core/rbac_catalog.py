@@ -218,6 +218,14 @@ PERMISSIONS: tuple[PermissionDef, ...] = (
         requires=("universities:read",),
     ),
     PermissionDef(
+        "universities:assign",
+        "crm",
+        "Назначение ответственного КАМа за вуз",
+        "Смена КАМа вуза (в том числе при создании) и передача вузов в портфеле КАМа; "
+        "без этого права КАМ заводит вуз только на себя",
+        requires=("universities:write",),
+    ),
+    PermissionDef(
         "universities:delete",
         "crm",
         "Удаление вузов",
@@ -539,6 +547,7 @@ _HEAD_KAM = (_KAM - {"requests:kam"}) | frozenset(
         "requests:assign_any",
         "workflow:history",
         "workflow:change",  # пакеты изменений и impact-preview, публикует admin
+        "universities:assign",  # ответственные за вузы — право Руководителя (ТЗ, ФТ11)
         "contacts:delete",
         "contracts:files_delete",
         "crm:write_any",

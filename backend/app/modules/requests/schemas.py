@@ -60,10 +60,17 @@ class AssignBody(_ApiModel):
     version: int | None = None  # optimistic lock опционален (контракт §4.1 тела не требует)
 
 
+# файлов на одном переходе — не больше (защита от случайной «папки целиком»)
+MAX_TRANSITION_FILES = 10
+
+
 class TransitionBody(_ApiModel):
     to_status_id: UUID
     comment: str | None = Field(default=None, max_length=4000)
     version: int
+    # файлы, загруженные этим пользователем в заявку перед переходом (POST /files):
+    # после перехода они привязываются к его строке истории — «файл в статусе» (ТЗ, ФТ3)
+    file_ids: list[UUID] = Field(default_factory=list, max_length=MAX_TRANSITION_FILES)
 
 
 class ReopenBody(_ApiModel):
@@ -132,6 +139,38 @@ class RequestOut(BaseModel):
     updated_at: datetime
     available_transitions: list[dict[str, Any]] | None = None
     last_comments: list[dict[str, Any]] | None = None
+
+
+class RequestFileOut(BaseModel):
+    """Файл заявки: метаданные + этап, в котором его приложили (`stage_history_id`)."""
+
+    id: UUID
+    file_name: str
+    content_type: str | None = None
+    size_bytes: int | None = None
+    s3_key: str
+    uploaded_by: UUID | None = None
+    uploaded_by_name: str | None = None
+    created_at: datetime
+    stage_history_id: UUID | None = None
+    # снапшот имени этапа строки истории — как этап назывался, когда файл приложили
+    stage_name: str | None = None
+
+
+class PortfolioTransferBody(_ApiModel):
+    """Передача портфеля КАМа (уход, отпуск, перераспределение) одним действием."""
+
+    from_user_id: UUID
+    to_user_id: UUID
+    include_universities: bool = True
+    # предпросмотр: тот же отчёт без изменений — для подтверждения в интерфейсе
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def _check_users(self) -> PortfolioTransferBody:
+        if self.from_user_id == self.to_user_id:
+            raise ValueError("Передать портфель можно только другому сотруднику")
+        return self
 
 
 class CommentOut(BaseModel):

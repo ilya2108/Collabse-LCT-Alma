@@ -7,6 +7,7 @@ import type {
   WorkflowTransition,
   WorkflowTransitionBody,
 } from '@/shared/api/types';
+import { STAGE_COLOR_PRESET } from '@/shared/config/tokens';
 
 /**
  * Модель клиентского черновика конструктора workflow (ux.md §10, engine §6.1):
@@ -72,17 +73,12 @@ const TERMINAL_ROW_OFFSET = 280;
 
 const snapToGrid = (value: number): number => Math.round(value / CANVAS_GRID) * CANVAS_GRID;
 
-/** Пресет из 8 цветов этапа (ux.md §10.3), совпадает с палитрой seed-схем. */
-export const STAGE_COLOR_PRESETS = [
-  '#8c8c8c',
-  '#13c2c2',
-  '#1677ff',
-  '#722ed1',
-  '#fa8c16',
-  '#52c41a',
-  '#237804',
-  '#f5222d',
-] as const;
+/**
+ * Пресет из 8 цветов этапа (ux.md §10.3) — фирменная палитра STAGE_COLOR_PRESET
+ * (shared/config/tokens.ts), та же, что в сидах схем B2B/B2C: на одной доске нет двух
+ * палитр, текст бейджа любого пресета — ≥ 4.5:1 (stageText).
+ */
+export const STAGE_COLOR_PRESETS: readonly string[] = STAGE_COLOR_PRESET;
 
 /**
  * Автораскладка по рангам (замена BFS-уровней): основная цепочка нетерминальных

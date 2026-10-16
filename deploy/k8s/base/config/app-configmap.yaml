@@ -26,3 +26,8 @@ data:
   # сидирует app_setting['stuck_threshold_days_default']; фактические пороги
   # per-workflow/per-этап живут в БД и настраиваются в админке/конструкторе
   STUCK_DEFAULT_DAYS: "14"
+  # бюджет соединений PostgreSQL (max_connections=150, postgres/statefulset.yaml):
+  # пул на процесс uvicorn → (maxReplicas 6 + surge 2) × 2 воркера × (4 + 2) = 96,
+  # + Keycloak ≤ 10 + Jobs ≤ 9 → 115 < 150. Проверка — backend/tests/test_connection_budget.py
+  DB_POOL_SIZE: "4"
+  DB_MAX_OVERFLOW: "2"

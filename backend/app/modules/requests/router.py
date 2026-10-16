@@ -20,6 +20,18 @@ B2B/B2C, «только свои») фильтрует списки и доск�
 `requests:write_any` в процессе. Скачивание — общий `GET /files/{id}/download` (вне области
 заявки — 404, без `files:business` — 403). Загрузка КАМом — взаимодействие в отчёте
 «Активность КАМов».
+
+Файлы в статусах (ТЗ, ФТ3): белый список 10 форматов (`check_attachment_format`); каждый
+файл привязан к строке истории (`file_object.stage_history_id`) — к переходу, на котором его
+приложили (модалка перехода: файлы загружаются с `pending_transition=true`, затем
+`POST /transitions` с `file_ids` привязывает их к строке перехода), либо ко входу в текущий
+этап (вкладка «Файлы»). История отдаёт файлы под их переходом.
+
+Передача портфеля (`POST /requests/transfer-portfolio`): открытые заявки КАМа в процессах,
+где у пользователя `requests:assign_any`, и закреплённые вузы (`universities:assign`) —
+другому сотруднику одной транзакцией; аудит `request.assigned` по каждой заявке и
+`university.kam_changed` по каждому вузу. История, комментарии, файлы и авторство прошлых
+действий не меняются.
 """
 
 from __future__ import annotations
@@ -29,7 +41,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,13 +67,14 @@ from app.models.service import AuditLog, FileObject
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
 from app.modules.crm.deps import check_version
-from app.modules.crm.schemas import FileOut
 from app.modules.files.service import soft_delete_file, store_upload
 from app.modules.requests.schemas import (
     AssignBody,
     CommentCreate,
+    PortfolioTransferBody,
     ReopenBody,
     RequestCreate,
+    RequestFileOut,
     RequestUpdate,
     TransitionBody,
 )
@@ -184,9 +197,11 @@ async def list_requests(
     params: Annotated[ListParams, Depends(list_params)],
     workflow_type: Annotated[Literal["b2b", "b2c"] | None, Query()] = None,
     status_id: Annotated[list[uuid.UUID] | None, Query()] = None,
-    assignee_id: Annotated[uuid.UUID | None, Query()] = None,
-    university_id: Annotated[uuid.UUID | None, Query()] = None,
-    product_id: Annotated[uuid.UUID | None, Query()] = None,
+    # КАМ, вуз и продукт — повторяемые (`?assignee_id=a&assignee_id=b`, условие IN):
+    # переход с дашборда на доску переносит мультифильтр целиком; один параметр — как раньше
+    assignee_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    university_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    product_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     program_id: Annotated[uuid.UUID | None, Query()] = None,
     stuck: Annotated[bool | None, Query()] = None,
     created_from: Annotated[date | None, Query()] = None,
@@ -206,11 +221,11 @@ async def list_requests(
     if status_id:
         stmt = stmt.where(Deal.stage_id.in_(status_id))
     if assignee_id:
-        stmt = stmt.where(Deal.responsible_user_id == assignee_id)
+        stmt = stmt.where(Deal.responsible_user_id.in_(assignee_id))
     if university_id:
-        stmt = stmt.where(Deal.university_id == university_id)
+        stmt = stmt.where(Deal.university_id.in_(university_id))
     if product_id:
-        stmt = stmt.where(Deal.product_id == product_id)
+        stmt = stmt.where(Deal.product_id.in_(product_id))
     if program_id:
         stmt = stmt.where(Deal.program_id == program_id)
     if source:
@@ -461,6 +476,190 @@ async def create_request(
     return payload
 
 
+@router.post(
+    "/transfer-portfolio",
+    summary="Передать портфель КАМа (открытые заявки и вузы) другому сотруднику",
+)
+async def transfer_portfolio(
+    body: PortfolioTransferBody,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("requests:assign_any"))],
+    request: Request,
+) -> dict[str, Any]:
+    """Уход или отпуск КАМа: открытые заявки и закреплённые вузы — другому одним действием.
+
+    Заявки — только открытые, только в процессах, где у пользователя `requests:assign_any`
+    (и в его области записей); заявку процесса, недоступного получателю, не передаём —
+    она попадает в отчёт `skipped`. Вузы — с правом `universities:assign`. История,
+    комментарии, файлы и авторство прошлых действий не меняются; `last_activity_at` не
+    сдвигается — передача не контакт с вузом. `dry_run` — тот же отчёт без изменений.
+    """
+    from_user = await session.get(AppUser, body.from_user_id)
+    if from_user is None:
+        raise validation_error(
+            "Ошибка валидации данных",
+            [
+                {
+                    "field": "from_user_id",
+                    "code": "lookup_not_found",
+                    "message": "Пользователь не найден",
+                }
+            ],
+        )
+    to_user = await session.get(AppUser, body.to_user_id)
+    if to_user is None or not to_user.is_active:
+        raise validation_error(
+            "Ошибка валидации данных",
+            [
+                {
+                    "field": "to_user_id",
+                    "code": "lookup_not_found",
+                    "message": "Получатель не найден или деактивирован",
+                }
+            ],
+        )
+    if body.include_universities and not user.access.has("universities:assign"):
+        raise forbidden(
+            "Передача вузов недоступна вашей роли: нужно право "
+            "«Назначение ответственного КАМа за вуз»"
+        )
+
+    scope = user.access.deal_scope("requests:assign_any", user.id)
+    deals = (
+        (
+            await session.execute(
+                scope.apply(
+                    select(Deal)
+                    .where(Deal.responsible_user_id == from_user.id, Deal.status == "open")
+                    .order_by(Deal.created_at, Deal.id)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    transferred: list[Deal] = []
+    skipped: list[dict[str, Any]] = []
+    for deal in deals:
+        if to_user.access.has("requests:read", deal.pipeline):
+            transferred.append(deal)
+        else:
+            skipped.append(
+                {
+                    "id": str(deal.id),
+                    "title": deal.title,
+                    "workflow_type": deal.pipeline,
+                    "reason": (f"Получателю недоступен процесс {_workflow_label(deal.pipeline)}"),
+                }
+            )
+    universities: list[University] = []
+    if body.include_universities:
+        universities = list(
+            (
+                await session.execute(
+                    select(University)
+                    .where(University.kam_user_id == from_user.id)
+                    .order_by(University.name)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    by_workflow: dict[str, int] = {}
+    for deal in transferred:
+        by_workflow[deal.pipeline] = by_workflow.get(deal.pipeline, 0) + 1
+    report: dict[str, Any] = {
+        "dry_run": body.dry_run,
+        "from_user": {"id": str(from_user.id), "full_name": from_user.full_name},
+        "to_user": {"id": str(to_user.id), "full_name": to_user.full_name},
+        "requests": {
+            "transferred": len(transferred),
+            "skipped": len(skipped),
+            "by_workflow": by_workflow,
+            "items": [
+                {"id": str(d.id), "title": d.title, "workflow_type": d.pipeline}
+                for d in transferred
+            ],
+            "skipped_items": skipped,
+        },
+        "universities": {
+            "included": body.include_universities,
+            "transferred": len(universities),
+            "items": [
+                {"id": str(u.id), "name": u.short_name or u.name, "is_active": u.is_active}
+                for u in universities
+            ],
+        },
+    }
+    if body.dry_run or (not transferred and not universities):
+        return report
+
+    ip = client_ip(request)
+    for deal in transferred:
+        deal.responsible_user_id = to_user.id
+        await write_audit(
+            session,
+            actor_user_id=user.id,
+            action="request.assigned",
+            entity_type="deal",
+            entity_id=deal.id,
+            before={"assignee_id": str(from_user.id)},
+            after={"assignee_id": str(to_user.id), "reason": "portfolio_transfer"},
+            ip=ip,
+        )
+    for university in universities:
+        university.kam_user_id = to_user.id
+        await write_audit(
+            session,
+            actor_user_id=user.id,
+            action="university.kam_changed",
+            entity_type="university",
+            entity_id=university.id,
+            before={"kam_user_id": str(from_user.id)},
+            after={"kam_user_id": str(to_user.id), "reason": "portfolio_transfer"},
+            ip=ip,
+        )
+    await write_audit(
+        session,
+        actor_user_id=user.id,
+        action="user.portfolio_transferred",
+        entity_type="app_user",
+        entity_id=from_user.id,
+        after={
+            "to_user_id": str(to_user.id),
+            "requests": len(transferred),
+            "universities": len(universities),
+            "skipped": len(skipped),
+        },
+        ip=ip,
+    )
+    if to_user.id != user.id:
+        await emit_event_notifications(
+            session,
+            event_type=EVENT_REQUEST_ASSIGNED,
+            entity_type="app_user",
+            entity_id=to_user.id,
+            subject="Вам передан портфель",
+            body=(
+                f"Вам передан портфель {from_user.full_name or from_user.username}: "
+                f"заявок — {len(transferred)}, вузов — {len(universities)}"
+            ),
+            payload={
+                "title": f"Портфель {from_user.full_name or from_user.username}",
+                "url": f"/board?kam={to_user.id}",
+            },
+            direct_recipients=[DirectRecipient(user=to_user)],
+        )
+    await session.commit()
+    cache = get_cache()
+    for deal in transferred:
+        await cache.delete(f"deal:{deal.id}")
+    if universities:
+        await cache.delete("dict:universities")
+    return report
+
+
 @router.get("/{request_id}", summary="Карточка заявки", dependencies=[_READ])
 async def get_request(
     request_id: uuid.UUID,
@@ -679,6 +878,9 @@ async def perform_transition(
         user_id=user.id,
     ):
         raise forbidden("Переход доступен только ответственному по заявке")
+    # файлы перехода проверяются ДО движка: невалидный файл не должен оставить заявку
+    # переведённой без своего вложения; привязка к строке истории — в транзакции перехода
+    files = await _transition_files(session, request_id, pipeline, body.file_ids, user)
     deal = await workflow_service.transition_deal(
         session,
         deal_id=request_id,
@@ -687,6 +889,7 @@ async def perform_transition(
         comment=body.comment,
         version=body.version,
         ip=client_ip(request),
+        files=files,
     )
     return await serialize_deal(
         session,
@@ -751,11 +954,19 @@ async def request_history(
             .scalars()
             .all()
         }
-    items = [serialize_history_row(row, stages, users) for row in history_rows]
+    # файлы в статусах: каждый файл — под строкой истории, к которой он приложен
+    files_by_row: dict[str, list[dict[str, Any]]] = {}
+    for file_item in await request_files_payload(session, await _deal_files(session, deal.id)):
+        if file_item["stage_history_id"]:
+            files_by_row.setdefault(file_item["stage_history_id"], []).append(file_item)
+    items = [
+        {**serialize_history_row(row, stages, users), "files": files_by_row.get(str(row.id), [])}
+        for row in history_rows
+    ]
     for row in audit_rows:
         item = serialize_audit_history_item(row, users)
         if item is not None:
-            items.append(item)
+            items.append({**item, "files": []})
     items.sort(key=lambda item: item["created_at"])
     return {"items": items, "total": len(items)}
 
@@ -873,24 +1084,126 @@ def _ensure_files_permission(user: AppUser, deal: Deal) -> None:
         )
 
 
-@router.get(
-    "/{request_id}/files",
-    summary="Файлы заявки",
-    dependencies=[_READ],
-)
-async def list_request_files(
-    request_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
-) -> dict[str, Any]:
-    deal = await _load_deal(session, request_id, user)
-    files = (
+async def _current_stage_entry_id(
+    session: AsyncSession, deal_id: uuid.UUID, stage_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Строка истории, которой заявка вошла в текущий этап (переход, создание, миграция
+    схемы): файл из вкладки «Файлы» приложен «в этом статусе»."""
+    return (
+        await session.execute(
+            select(DealStageHistory.id)
+            .where(DealStageHistory.deal_id == deal_id, DealStageHistory.to_stage_id == stage_id)
+            .order_by(DealStageHistory.created_at.desc(), DealStageHistory.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _transition_files(
+    session: AsyncSession,
+    deal_id: uuid.UUID,
+    pipeline: str,
+    file_ids: list[uuid.UUID],
+    user: AppUser,
+) -> list[FileObject]:
+    """Файлы, которые пользователь прикладывает к переходу (`file_ids`).
+
+    Это файлы, только что загруженные им в заявку «для перехода» (`POST /files` с
+    `pending_transition=true` — без привязки к этапу): свои, не удалённые и ещё ни к чему
+    не привязанные. Файл, уже приложенный к переходу или этапу, второй раз не приложить.
+    Иначе — 400 до движка: переход без обещанного вложения хуже, чем повтор действия.
+    """
+    if not file_ids:
+        return []
+    if not user.access.has("requests:files", pipeline):
+        raise forbidden(f"Файлы заявок процесса {_workflow_label(pipeline)} недоступны вашей роли")
+    unique_ids = list(dict.fromkeys(file_ids))
+    found = {
+        row.id: row
+        for row in (
+            await session.execute(select(FileObject).where(FileObject.id.in_(unique_ids)))
+        ).scalars()
+    }
+    details = []
+    for file_id in unique_ids:
+        file_object = found.get(file_id)
+        if (
+            file_object is None
+            or file_object.entity_type != "deal"
+            or file_object.entity_id != deal_id
+            or file_object.deleted_at is not None
+            or file_object.uploaded_by != user.id
+            or file_object.stage_history_id is not None
+        ):
+            details.append(
+                {
+                    "field": "file_ids",
+                    "code": "lookup_not_found",
+                    "message": (
+                        f"Файл {file_id} не найден среди ваших новых файлов заявки "
+                        "или уже приложен к другому переходу"
+                    ),
+                }
+            )
+    if details:
+        raise validation_error("Ошибка валидации данных", details)
+    return [found[file_id] for file_id in unique_ids]
+
+
+async def request_files_payload(
+    session: AsyncSession,
+    files: list[FileObject],
+) -> list[dict[str, Any]]:
+    """Файлы заявки для API: этап (снапшот имени из строки истории) и имя автора."""
+    history_ids = {f.stage_history_id for f in files if f.stage_history_id}
+    stage_names: dict[uuid.UUID, str] = {}
+    if history_ids:
+        stage_names = {
+            row.id: row.to_stage_name
+            for row in (
+                await session.execute(
+                    select(DealStageHistory.id, DealStageHistory.to_stage_name).where(
+                        DealStageHistory.id.in_(history_ids)
+                    )
+                )
+            ).all()
+        }
+    author_ids = {f.uploaded_by for f in files if f.uploaded_by}
+    authors: dict[uuid.UUID, str | None] = {}
+    if author_ids:
+        authors = {
+            row.id: row.full_name
+            for row in (
+                await session.execute(
+                    select(AppUser.id, AppUser.full_name).where(AppUser.id.in_(author_ids))
+                )
+            ).all()
+        }
+    return [
+        RequestFileOut(
+            id=f.id,
+            file_name=f.original_name,
+            content_type=f.content_type,
+            size_bytes=f.size_bytes,
+            s3_key=f.s3_key,
+            uploaded_by=f.uploaded_by,
+            uploaded_by_name=authors.get(f.uploaded_by) if f.uploaded_by else None,
+            created_at=f.created_at,
+            stage_history_id=f.stage_history_id,
+            stage_name=stage_names.get(f.stage_history_id) if f.stage_history_id else None,
+        ).model_dump(mode="json")
+        for f in files
+    ]
+
+
+async def _deal_files(session: AsyncSession, deal_id: uuid.UUID) -> list[FileObject]:
+    return list(
         (
             await session.execute(
                 select(FileObject)
                 .where(
                     FileObject.entity_type == "deal",
-                    FileObject.entity_id == deal.id,
+                    FileObject.entity_id == deal_id,
                     FileObject.deleted_at.is_(None),
                 )
                 .order_by(FileObject.created_at, FileObject.id)
@@ -899,24 +1212,86 @@ async def list_request_files(
         .scalars()
         .all()
     )
-    items = [FileOut.model_validate(f).model_dump(mode="json") for f in files]
+
+
+@router.get(
+    "/{request_id}/files",
+    summary="Файлы заявки (с этапом, в котором файл приложен)",
+    dependencies=[_READ],
+)
+async def list_request_files(
+    request_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
+) -> dict[str, Any]:
+    deal = await _load_deal(session, request_id, user)
+    items = await request_files_payload(session, await _deal_files(session, deal.id))
     return {"items": items, "total": len(items)}
 
 
 @router.post(
     "/{request_id}/files",
     status_code=201,
-    summary="Загрузить файл в заявку (до 50 МБ)",
+    summary="Загрузить файл в заявку (до 50 МБ; PNG, JPEG, PDF, ZIP, GZIP, RAR, DOC(X), XLS(X))",
 )
 async def upload_request_file(
     request_id: uuid.UUID,
-    file: Annotated[UploadFile, File(description="Вложение заявки (до 50 МБ)")],
+    file: Annotated[UploadFile, File(description="Вложение заявки (до 50 МБ, 10 форматов ТЗ)")],
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[AppUser, Depends(require_permission("requests:files"))],
     request: Request,
+    stage_history_id: Annotated[
+        uuid.UUID | None,
+        Form(
+            description=(
+                "Строка истории заявки (переход), к которой приложить файл; "
+                "по умолчанию — вход в текущий этап"
+            )
+        ),
+    ] = None,
+    pending_transition: Annotated[
+        bool,
+        Form(
+            description=(
+                "Файл для перехода из модалки: без привязки, пока `POST /transitions` "
+                "с `file_ids` не приложит его к строке истории перехода"
+            )
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     deal = await _load_deal(session, request_id, user)
     _ensure_files_permission(user, deal)
+    if pending_transition:
+        if stage_history_id is not None:
+            raise validation_error(
+                "Ошибка валидации данных",
+                [
+                    {
+                        "field": "stage_history_id",
+                        "code": "invalid",
+                        "message": "Файл для перехода привязывается к переходу при его выполнении",
+                    }
+                ],
+            )
+    elif stage_history_id is not None:
+        history_deal = (
+            await session.execute(
+                select(DealStageHistory.deal_id).where(DealStageHistory.id == stage_history_id)
+            )
+        ).scalar_one_or_none()
+        if history_deal != deal.id:
+            raise validation_error(
+                "Ошибка валидации данных",
+                [
+                    {
+                        "field": "stage_history_id",
+                        "code": "lookup_not_found",
+                        "message": "Переход не найден в истории этой заявки",
+                    }
+                ],
+            )
+    else:
+        stage_history_id = await _current_stage_entry_id(session, deal.id, deal.stage_id)
     file_object = await store_upload(
         session,
         upload=file,
@@ -924,6 +1299,8 @@ async def upload_request_file(
         entity_type="deal",
         entity_id=deal.id,
         uploaded_by=user.id,
+        check_format=True,
+        stage_history_id=stage_history_id,
     )
     deal.last_activity_at = _now()
     await write_audit(
@@ -932,12 +1309,17 @@ async def upload_request_file(
         action="request.file_uploaded",
         entity_type="deal",
         entity_id=deal.id,
-        after={"file_id": str(file_object.id), "file_name": file_object.original_name},
+        after={
+            "file_id": str(file_object.id),
+            "file_name": file_object.original_name,
+            "stage_history_id": str(stage_history_id) if stage_history_id else None,
+        },
         ip=client_ip(request),
     )
     await session.commit()
     await get_cache().delete(f"deal:{deal.id}")
-    return FileOut.model_validate(file_object).model_dump(mode="json")
+    (payload,) = await request_files_payload(session, [file_object])
+    return payload
 
 
 @router.delete(

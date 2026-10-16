@@ -8,15 +8,31 @@
   (неактивен, заявки закрыты летом). Пользователи — зеркала без учётки Keycloak:
   в отчётах они видны, войти под ними нельзя (синхронизация их не деактивирует);
 - 48 вузов, закреплённых за КАМами, включая «Университет ИТМО» (kam1) и «Томский
-  государственный университет» (kam2) — закреплены, но контакта нет;
+  государственный университет» (kam2) — закреплены, но контакта нет. Названия — реальные
+  вузы (среди них партнёры «ИТ Школы», о которых сообщалось публично: МЭИ, МТУСИ,
+  Мосполитех, РАНХиГС, Центральный университет); заявки, этапы, договоры и комментарии
+  демонстрационные и не утверждают ничего о действительных отношениях с вузом;
 - заявки B2B/B2C с историей переходов: ручные переходы КАМа, подписание договора
-  руководителем (переход только head_kam/admin), закрытие из LMS (kind=integration),
+  руководителем (переход только head_kam/admin), событие ЛМС «обучение завершено»
+  (запись kind=integration без смены этапа — как пишет её вебхук ЛМС) и закрытие КАМом,
   возвраты на предыдущий этап; часть заявок зависает дольше порога;
 - исторические заявки kam1/kam2 возрастом 130–330 дней — «Прошлый квартал» (Q3)
   отличается от Q2 по всем KPI;
 - комментарии и файлы КАМов (плюс пара комментариев руководителя — «чужие»
   действия в отчёт не идут), прошедшие мероприятия с вузами, студенты на программах
-  с историей воронки (для блока «пул талантов» сводки).
+  с историей воронки (для блока «пул талантов» сводки);
+- договоры вузов: вуз, чья заявка дошла до «Договор подписан», получает действующий
+  договор на год с даты подписания (KPI «Вузы с договором» и покрытие вузов не пустые);
+  вуз с договором из базового сида второго не получает — «один вуз — один договор».
+
+Все даты — от якоря сида (`app.tools.seed.demo_now()`: момент запуска или
+`DEMO_ANCHOR_DATE`), поэтому к показу стенд пересевают (`make demo-reset`), а не
+повторяют идемпотентный сид. Закрытые заявки КАМов не закрываются позже чем за 3 дня до
+якоря, и минимум несколько закрытий приходится на последние 3–20 дней — KPI «за месяц»
+не пустые. Заявок с `source='lms'` нет: ЛМС заявок не создаёт и этапы не двигает — она
+только пишет события в историю заявки (`kind=integration`, этап тот же).
+Открытые заявки активных КАМов стоят на этапе не дольше своего темпа, а старые закрыты:
+зависших — меньшинство (вялые и «пропавший» КАМ, пара заявок средних).
 
 Окно активности — с 01.09.2026 по «сейчас»; если сид запускают вне хакатонного
 окна (раньше 15.09 или позже конца декабря 2026) — последние 45 дней, чтобы пресеты
@@ -35,7 +51,7 @@ import random
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -48,6 +64,8 @@ from app.models import (
     Activity,
     ActivitySchedule,
     AppUser,
+    Contract,
+    ContractProduct,
     Counterparty,
     Deal,
     DealComment,
@@ -63,7 +81,7 @@ from app.models import (
     WorkflowStage,
     WorkflowTransition,
 )
-from app.tools.seed import _NOW, SEEDS_DIR, _demo_sub
+from app.tools.seed import SEEDS_DIR, _demo_sub, demo_now
 
 MSK = timezone(timedelta(hours=3), "MSK")
 WINDOW_START = datetime(2026, 9, 1, tzinfo=MSK)
@@ -123,6 +141,7 @@ KAMS: list[tuple[str, str, str, bool]] = [
 # сколько заявок «добрать» КАМам базового сида (у них уже 18 заявок на двоих)
 EXISTING_KAM_EXTRA = {"kam1@demo": 3, "kam2@demo": 2}
 LEFT_AT_DAYS_BEFORE_WINDOW = 3  # уволившийся: последняя активность — конец августа
+CLOSE_GAP_DAYS = 3  # закрытия — не позже чем за 3 дня до якоря (последние 3–20 дней — KPI)
 
 # (название, короткое, регион, город, КАМ)
 NEW_UNIVERSITIES: list[tuple[str, str, str, str, str]] = [
@@ -149,7 +168,13 @@ NEW_UNIVERSITIES: list[tuple[str, str, str, str, str]] = [
         "Москва",
         "kam03@demo",
     ),
-    ("Российский университет дружбы народов", "РУДН", "Москва", "Москва", "kam04@demo"),
+    (
+        "Московский технический университет связи и информатики",
+        "МТУСИ",
+        "Москва",
+        "Москва",
+        "kam04@demo",
+    ),
     ("Московский авиационный институт", "МАИ", "Москва", "Москва", "kam04@demo"),
     ("МИРЭА — Российский технологический университет", "МИРЭА", "Москва", "Москва", "kam04@demo"),
     (
@@ -286,19 +311,14 @@ NEW_UNIVERSITIES: list[tuple[str, str, str, str, str]] = [
     ),
     ("Национальный исследовательский университет «МЭИ»", "МЭИ", "Москва", "Москва", "kam13@demo"),
     (
-        "Финансовый университет при Правительстве Российской Федерации",
-        "Финуниверситет",
+        "Российская академия народного хозяйства и государственной службы "
+        "при Президенте Российской Федерации",
+        "РАНХиГС",
         "Москва",
         "Москва",
         "kam13@demo",
     ),
-    (
-        "Российский экономический университет имени Г.В. Плеханова",
-        "РЭУ им. Плеханова",
-        "Москва",
-        "Москва",
-        "kam14@demo",
-    ),
+    ("Московский политехнический университет", "Мосполитех", "Москва", "Москва", "kam14@demo"),
     (
         "Саратовский национальный исследовательский государственный университет "
         "имени Н.Г. Чернышевского",
@@ -342,7 +362,7 @@ NEW_UNIVERSITIES: list[tuple[str, str, str, str, str]] = [
         "Владимир",
         "kam16@demo",
     ),
-    ("Тульский государственный университет", "ТулГУ", "Тульская область", "Тула", "kam16@demo"),
+    ("Центральный университет", "Центральный университет", "Москва", "Москва", "kam16@demo"),
     (
         "Омский государственный технический университет",
         "ОмГТУ",
@@ -436,11 +456,11 @@ COMMENTS_B2B: list[str] = [
     "Вуз подтвердил бюджет, ждём служебную записку проректора.",
     "Направил проект договора на согласование.",
     "Обсудили стажировки для лучших студентов потока.",
-    "Получили письмо поддержки от ректора.",
+    "Запросили у вуза список ответственных по ИТ-направлениям.",
     "Договорились о пилотной группе на 10 человек.",
     "Передал контакты преподавателей для синхронизации программы.",
     "Вуз попросил добавить модуль по MLOps.",
-    "Подписан протокол намерений.",
+    "Согласовали повестку следующей встречи с кафедрой.",
     "Финансовый отдел вуза запросил счёт-оферту.",
     "Уточняем источник финансирования: «Приоритет-2030» или собственные средства.",
     "Согласовали даты старта обучения.",
@@ -461,6 +481,8 @@ COMMENTS_HEAD: list[str] = [
     "Согласовал скидку, можно двигать дальше.",
 ]
 RETURN_REASON = "Вуз вернул договор на доработку условий"
+LMS_COMPLETED_EVENT = "lms.learning.completed"
+LMS_COMPLETED_LABEL = "LMS: обучение завершено"
 LOST_REASONS_B2B = [
     "Вуз выбрал другого поставщика по итогам конкурса",
     "Нет бюджета в этом году",
@@ -632,6 +654,7 @@ class StepPlan:
     kind: str = "manual"
     is_return: bool = False
     comment: str | None = None
+    reason: str | None = None  # событие интеграции (у записи ЛМС этап не меняется)
 
 
 @dataclass
@@ -734,6 +757,7 @@ def _route(pipeline: str, outcome: str, rng: random.Random) -> list[str]:
 
 
 _RETURN_PAIRS = {"b2b": ("contract_prep", "negotiation"), "b2c": ("payment_pending", "proposal")}
+_TERMINAL = frozenset({"completed", "rejected"})
 _HEAD_ONLY = {("contract_prep", "contract_signed")}  # переход только head_kam/admin
 
 
@@ -747,6 +771,7 @@ def _simulate(
     limit: datetime,
     kam: str,
     lost_reasons: Sequence[str],
+    close_limit: datetime | None = None,
 ) -> list[StepPlan]:
     steps = [StepPlan(route[0], created, kam)]
     moment = created
@@ -768,16 +793,43 @@ def _simulate(
         gap = rng.uniform(*dwell)
         if moment + timedelta(days=gap) >= limit:
             break  # время вышло — заявка остаётся на текущем этапе (может зависнуть)
-        moment += timedelta(days=gap)
+        if code in _TERMINAL and close_limit and moment + timedelta(days=gap) > close_limit:
+            break  # закрытия не позже чем за CLOSE_GAP_DAYS до якоря — заявка ещё открыта
         actor: str | None = kam
-        kind = "manual"
         if (previous, code) in _HEAD_ONLY:
             actor = HEAD
         elif code == "completed" and rng.random() < 0.4:
-            actor, kind = None, "integration"  # LMS сообщила о завершении обучения
+            # ЛМС сообщает о завершении обучения записью в историю без смены этапа
+            # (автоперехода нет — integrations/service.py), заявку закрывает КАМ
+            lms_at = moment + timedelta(days=gap * rng.uniform(0.5, 0.9))
+            steps.append(
+                StepPlan(
+                    previous,
+                    lms_at,
+                    None,
+                    kind="integration",
+                    comment=LMS_COMPLETED_LABEL,
+                    reason=LMS_COMPLETED_EVENT,
+                )
+            )
+        moment += timedelta(days=gap)
         comment = rng.choice(lost_reasons) if code == "rejected" else None
-        steps.append(StepPlan(code, moment, actor, kind=kind, comment=comment))
+        steps.append(StepPlan(code, moment, actor, comment=comment))
     return steps
+
+
+def _keep_open_deal_fresh(
+    rng: random.Random, steps: list[StepPlan], dwell: tuple[float, float], now: datetime
+) -> list[StepPlan]:
+    """Открытая заявка КАМа стоит на этапе не дольше его обычного темпа (`dwell`): если
+    маршрут кончился давно, вся история сдвигается вперёд. Иначе заявка активного КАМа
+    «висела» бы месяцами и зависшими оказались бы почти все открытые заявки стенда."""
+    idle = now - steps[-1].at
+    keep = timedelta(days=rng.uniform(*dwell))
+    if idle <= keep:
+        return steps
+    shift = idle - keep
+    return [replace(step, at=step.at + shift) for step in steps]
 
 
 def _uniform_time(rng: random.Random, start: datetime, end: datetime) -> datetime | None:
@@ -911,6 +963,10 @@ def build_activity_plan(now: datetime) -> ActivityPlanSet:
                 )
                 limit = now - timedelta(hours=6)
                 outcome = rng.choices(("won", "lost", "open"), weights=(25, 15, 60))[0]
+                if not recent and outcome == "open":
+                    # старая заявка активного КАМа не «висит» полгода на одном этапе:
+                    # она давно закрыта (иначе зависшими были бы все старые заявки)
+                    outcome = "won" if rng.random() < 0.6 else "lost"
             route = _route(pipeline, outcome, rng)
             if pipeline == "b2b":
                 short = own_unis[index % len(own_unis)]
@@ -953,7 +1009,10 @@ def build_activity_plan(now: datetime) -> ActivityPlanSet:
                 limit=limit,
                 kam=username,
                 lost_reasons=lost,
+                close_limit=now - timedelta(days=CLOSE_GAP_DAYS),
             )
+            if plan.steps[-1].stage not in _TERMINAL and persona_code not in ("left", "idle"):
+                plan.steps = _keep_open_deal_fresh(rng, plan.steps, persona.dwell, now)
             hard_limit = limit if persona_code in ("left", "idle") else now
             _plan_interactions(
                 rng,
@@ -1237,6 +1296,16 @@ async def _store_file(
             print(f"seed: файлы заявок пропущены — MinIO недоступен ({type(exc).__name__})")  # noqa: T201
         return
     file_object.created_at = at
+    # файл «в статусе» (миграция 0006): строка истории, действовавшая на момент загрузки;
+    # бэкфилл 0006 идёт при миграции, а сид — после неё, поэтому привязка здесь
+    file_object.stage_history_id = (
+        await session.execute(
+            select(DealStageHistory.id)
+            .where(DealStageHistory.deal_id == deal.id, DealStageHistory.created_at <= at)
+            .order_by(DealStageHistory.created_at.desc(), DealStageHistory.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     state.stored += 1
 
 
@@ -1306,7 +1375,7 @@ async def _create_deal(
                 is_return=step.is_return,
                 actor_user_id=actor.id if actor else None,
                 kind=step.kind,
-                reason="created" if index == 0 else None,
+                reason="created" if index == 0 else step.reason,
                 comment=step.comment,
                 created_at=step.at,
             )
@@ -1323,7 +1392,7 @@ async def _create_deal(
 
 
 async def _base_deal_extras(
-    session: AsyncSession, users: Mapping[str, AppUser], files: _Files
+    session: AsyncSession, users: Mapping[str, AppUser], files: _Files, *, now: datetime
 ) -> tuple[int, int]:
     """Комментарии и файлы к заявкам базового сида (по заголовку)."""
     comments = 0
@@ -1345,7 +1414,7 @@ async def _base_deal_extras(
         ).first()
         if exists is not None:
             continue
-        at = max(_NOW - timedelta(days=days), deal.created_at + timedelta(hours=1))
+        at = max(now - timedelta(days=days), deal.created_at + timedelta(hours=1))
         author_user = (
             users[author] if author else await session.get(AppUser, deal.responsible_user_id)
         )
@@ -1363,7 +1432,7 @@ async def _base_deal_extras(
         uploader = await session.get(AppUser, deal.responsible_user_id)
         if uploader is None:
             continue
-        at = max(_NOW - timedelta(days=days), deal.created_at + timedelta(hours=2))
+        at = max(now - timedelta(days=days), deal.created_at + timedelta(hours=2))
         await _store_file(session, files, deal=deal, uploader=uploader, name=name, at=at)
     return comments, files.stored
 
@@ -1459,6 +1528,103 @@ async def _ensure_students(
     return created
 
 
+CONTRACT_SIGNED_STAGE = "contract_signed"
+CONTRACT_VALID_DAYS = 365
+
+
+@dataclass(frozen=True)
+class ContractPlan:
+    number: str
+    university: str  # короткое имя вуза
+    kam: str
+    product: str | None
+    amount: Decimal | None
+    signed_at: datetime
+
+
+def plan_contracts(plan: ActivityPlanSet, now: datetime) -> list[ContractPlan]:
+    """Договоры вузов по плану: первая B2B-заявка вуза, вошедшая в «Договор подписан» не
+    позже `now`, даёт договор, подписанный в момент этого перехода. Номера — по порядку
+    подписания (`Д-<год>/2NN`, вне диапазона номеров базового сида)."""
+    first: dict[str, tuple[datetime, DealPlan]] = {}
+    for deal in plan.deals:
+        if deal.pipeline != "b2b" or deal.university is None:
+            continue
+        signed = next(
+            (s.at for s in deal.steps if s.stage == CONTRACT_SIGNED_STAGE and s.at <= now),
+            None,
+        )
+        if signed is None:
+            continue
+        known = first.get(deal.university)
+        if known is None or signed < known[0]:
+            first[deal.university] = (signed, deal)
+    ordered = sorted(first.items(), key=lambda item: (item[1][0], item[0]))
+    return [
+        ContractPlan(
+            number=f"Д-{signed.year}/{200 + index:03d}",
+            university=university,
+            kam=deal.kam,
+            product=deal.product,
+            amount=deal.amount,
+            signed_at=signed,
+        )
+        for index, (university, (signed, deal)) in enumerate(ordered, start=1)
+    ]
+
+
+async def _ensure_contracts(
+    session: AsyncSession,
+    contracts: Sequence[ContractPlan],
+    users: Mapping[str, AppUser],
+    universities: Mapping[str, University],
+    products: Mapping[str, Product],
+) -> int:
+    """Действующие договоры вузов из плана (идемпотентно по номеру; у вуза уже есть
+    договор — пропуск)."""
+    created = 0
+    admin = users.get(ADMIN)
+    for spec in contracts:
+        university = universities.get(spec.university)
+        if university is None:
+            continue
+        exists = (
+            await session.execute(
+                select(Contract.id).where(
+                    (func.lower(Contract.number) == spec.number.lower())
+                    | (Contract.university_id == university.id)
+                )
+            )
+        ).first()
+        if exists is not None:
+            continue
+        signed = spec.signed_at.astimezone(MSK).date()
+        contract = Contract(
+            number=spec.number,
+            university_id=university.id,
+            status="active",
+            signed_at=signed,
+            valid_from=signed,
+            valid_to=signed + timedelta(days=CONTRACT_VALID_DAYS),
+            amount=spec.amount,
+            responsible_user_id=users[spec.kam].id if spec.kam in users else None,
+        )
+        session.add(contract)
+        await session.flush()
+        product = products.get(spec.product) if spec.product else None
+        if product is not None:
+            session.add(
+                ContractProduct(
+                    contract_id=contract.id,
+                    product_id=product.id,
+                    added_by=admin.id if admin else None,
+                )
+            )
+        created += 1
+    await session.flush()
+    return created
+
+
 async def seed_activity_history(
     session: AsyncSession,
     workflows: Mapping[str, tuple[Workflow, Mapping[str, WorkflowStage]]],
@@ -1470,7 +1636,8 @@ async def seed_activity_history(
     now: datetime | None = None,
 ) -> dict[str, int]:
     """Дополняет стенд историей активности ~20 КАМов (идемпотентно, без commit)."""
-    plan = build_activity_plan(now or _NOW)
+    now = now or demo_now()
+    plan = build_activity_plan(now)
     all_users = await _ensure_kams(session, users)
     all_universities = await _ensure_universities(session, universities, all_users)
     clients = await _ensure_clients(session, plan.clients)
@@ -1506,15 +1673,19 @@ async def seed_activity_history(
             files=files,
         ):
             deals += 1
-    base_comments, _ = await _base_deal_extras(session, all_users, files)
+    base_comments, _ = await _base_deal_extras(session, all_users, files, now=now)
     activities = await _ensure_activities(session, plan.activities, all_users, all_universities)
     students = await _ensure_students(
         session, plan.students, all_universities, programs, all_users.get(ADMIN)
+    )
+    contracts = await _ensure_contracts(
+        session, plan_contracts(plan, now), all_users, all_universities, products
     )
     await session.flush()
     return {
         "kams": len(KAMS),
         "deals": deals,
+        "contracts": contracts,
         "base_comments": base_comments,
         "files": files.stored,
         "activities": activities,

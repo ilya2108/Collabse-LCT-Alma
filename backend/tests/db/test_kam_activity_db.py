@@ -25,6 +25,7 @@ from app.models import (
     AppSetting,
     AppUser,
     AuditLog,
+    Contract,
     Deal,
     DealStageHistory,
     FileObject,
@@ -451,9 +452,17 @@ async def test_case9_assigned_university_without_activity(db_session, people, mi
     assert any("ИТМО" in line for line in summary["highlights"])
 
 
+async def _without_own_threshold(db_session, stage: WorkflowStage) -> None:
+    """Каскад порога проверяется на этапе без своего порога: сид может задать этапу
+    обучения свой (длинный) порог — тест от этого не зависит."""
+    stage.stuck_threshold_days = None
+    await db_session.flush()
+
+
 async def test_case10_stuck_thresholds_cascade(db_session, workflows, people) -> None:
     wf, stages = workflows["b2b"]
     kam2 = people["kam2"]
+    await _without_own_threshold(db_session, stages["in_learning"])
     on_new = await factories.make_deal(
         db_session, workflow=wf, stages=stages, responsible=kam2, created_at=ago(10)
     )
@@ -494,6 +503,7 @@ async def test_case11_activity_slots(db_session, people, mipt_deal) -> None:
 
 async def test_case12_summary(db_session, workflows, people, mipt_deal) -> None:
     kam1 = people["kam1"]
+    await _without_own_threshold(db_session, workflows["b2b"][1]["in_learning"])
     report = await _summary(db_session, people["head"], kam_ids=(kam1.id,))
     assert report["report"] == "kam-activity-summary"
     assert report["previous_period"]["from"] == "2026-08-22"
@@ -881,7 +891,10 @@ async def test_case14_request_files(api, db_session, workflows, people, memory_s
     assert deleted_audit == 1
 
     # руководитель удаляет чужие файлы (requests:write_any в процессе)
-    second = await api.as_user(kam1).post(url, files={"file": ("Протокол.docx", b"doc")})
+    second = await api.as_user(kam1).post(
+        url,
+        files={"file": ("Протокол.docx", b"PK\x03\x04 docx")},  # сигнатура ZIP/DOCX
+    )
     assert second.status_code == 201
     by_head = await api.as_user(head).delete(f"{url}/{second.json()['id']}")
     assert by_head.status_code == 204
@@ -1069,10 +1082,27 @@ async def test_seed_activity_history_is_idempotent(db_session, memory_storage) -
     )
     assert stats["deals"] >= 90 and stats["activities"] >= 20 and stats["students"] == 36
     assert stats["files"] > 0 and memory_storage.objects  # файлы легли в хранилище
+    # договоры вузов, дошедших до «Договор подписан»: МФТИ уже с договором базового сида
+    assert stats["contracts"] >= 5
+    active_contracts = (
+        await db_session.execute(
+            sa.select(sa.func.count(sa.distinct(Contract.university_id))).where(
+                Contract.status == "active"
+            )
+        )
+    ).scalar_one()
+    assert active_contracts == stats["contracts"] + 1
     again = await seed_activity_history(
         db_session, workflows, universities, products, programs, users, now=now
     )
-    assert again == {**again, "deals": 0, "base_comments": 0, "activities": 0, "students": 0}
+    assert again == {
+        **again,
+        "deals": 0,
+        "contracts": 0,
+        "base_comments": 0,
+        "activities": 0,
+        "students": 0,
+    }
     assert again["files"] == 0
 
     kam_count = (

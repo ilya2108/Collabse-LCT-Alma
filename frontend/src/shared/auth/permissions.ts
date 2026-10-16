@@ -31,6 +31,7 @@ export const P = {
   // Вузы, договоры, продукты, программы
   UNIVERSITIES_READ: 'universities:read',
   UNIVERSITIES_WRITE: 'universities:write',
+  UNIVERSITIES_ASSIGN: 'universities:assign',
   UNIVERSITIES_DELETE: 'universities:delete',
   CONTACTS_DELETE: 'contacts:delete',
   CONTRACTS_READ: 'contracts:read',
@@ -141,6 +142,7 @@ export const WRITE_PERMISSIONS: readonly PermissionCode[] = [
   P.WORKFLOW_CHANGE,
   P.WORKFLOW_APPROVE,
   P.UNIVERSITIES_WRITE,
+  P.UNIVERSITIES_ASSIGN,
   P.UNIVERSITIES_DELETE,
   P.CONTACTS_DELETE,
   P.CONTRACTS_WRITE,

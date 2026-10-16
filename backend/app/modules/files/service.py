@@ -7,6 +7,9 @@ backend проверяет RBAC и отдаёт proxy-поток либо `302` 
 Права (F2): чужие импорты и выгрузки — `files:others`; файлы договоров, студентов и
 заявок — `files:business`; файлы заявки и её комментариев вне области роли (процесс
 B2B/B2C, «только свои») не существуют для пользователя — 404 (`ensure_deal_file_visible`).
+
+Вложения заявки (файлы в статусах) проходят белый список `check_attachment_format`:
+10 форматов ТЗ по расширению и сигнатуре, иначе 400 `file_type_not_allowed` в деталях.
 """
 
 from __future__ import annotations
@@ -48,6 +51,80 @@ def file_too_large(limit_bytes: int) -> ApiError:
     )
 
 
+# --- белый список вложений заявки (ТЗ, ФТ3: 10 форматов) --------------------------------------
+# расширение → (тип содержимого, допустимые сигнатуры начала файла). Тип отдачи задаёт
+# сервер, а не заголовок клиента: «отчёт.pdf» с text/html скачается как PDF, не откроется
+# страницей. Сигнатура сверяется с расширением — переименованный exe/html не пройдёт.
+_ZIP_MAGIC = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+_OLE2_MAGIC = (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",)  # doc, xls (Office 97–2003)
+_GZIP_MAGIC = (b"\x1f\x8b",)
+ATTACHMENT_FORMATS: dict[str, tuple[str, tuple[bytes, ...]]] = {
+    "png": ("image/png", (b"\x89PNG\r\n\x1a\n",)),
+    "jpg": ("image/jpeg", (b"\xff\xd8\xff",)),
+    "jpeg": ("image/jpeg", (b"\xff\xd8\xff",)),
+    "pdf": ("application/pdf", (b"%PDF-",)),
+    "zip": ("application/zip", _ZIP_MAGIC),
+    "gz": ("application/gzip", _GZIP_MAGIC),
+    "gzip": ("application/gzip", _GZIP_MAGIC),
+    "tgz": ("application/gzip", _GZIP_MAGIC),
+    "rar": ("application/vnd.rar", (b"Rar!\x1a\x07",)),
+    # Word сохраняет .doc и как RTF — открывается тем же Word
+    "doc": ("application/msword", (*_OLE2_MAGIC, b"{\\rtf")),
+    "docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        _ZIP_MAGIC,
+    ),
+    "xls": ("application/vnd.ms-excel", _OLE2_MAGIC),
+    "xlsx": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ZIP_MAGIC,
+    ),
+}
+ATTACHMENT_FORMATS_LABEL = "PNG, JPEG, PDF, ZIP, GZIP, RAR, DOC, DOCX, XLS, XLSX"
+# PDF допускает мусор до заголовка (до 1 КБ) — так пишут некоторые сканеры
+_PDF_HEADER_WINDOW = 1024
+
+
+def _file_type_error(message: str) -> ApiError:
+    # общий текст + причина в деталях: тост показывает обе строки без повтора
+    return validation_error(
+        "Недопустимый формат файла",
+        details=[{"field": "file", "code": "file_type_not_allowed", "message": message}],
+    )
+
+
+def attachment_extension(file_name: str) -> str:
+    """Расширение имени файла в нижнем регистре без точки (`архив.tar.gz` → `gz`)."""
+    _stem, dot, ext = (file_name or "").rpartition(".")
+    return ext.lower() if dot else ""
+
+
+def check_attachment_format(file_name: str, data: bytes) -> str:
+    """Белый список вложений заявки: расширение из 10 форматов ТЗ и сигнатура содержимого.
+
+    Возвращает тип содержимого для хранения и отдачи; иначе — 400 с кодом детали
+    `file_type_not_allowed` и понятным текстом (какие форматы можно приложить).
+    """
+    ext = attachment_extension(file_name)
+    spec = ATTACHMENT_FORMATS.get(ext)
+    if spec is None:
+        shown = f"«.{ext}»" if ext else "без расширения"
+        raise _file_type_error(
+            f"Формат {shown} не поддерживается. Можно приложить: {ATTACHMENT_FORMATS_LABEL}"
+        )
+    content_type, signatures = spec
+    if ext == "pdf":
+        matches = b"%PDF-" in data[:_PDF_HEADER_WINDOW]
+    else:
+        matches = data.startswith(signatures)
+    if not matches:
+        raise _file_type_error(
+            f"Содержимое файла «{file_name}» не похоже на {ext.upper()} — "
+            "проверьте, что расширение не переименовано"
+        )
+    return content_type
+
+
 def guess_content_type(upload: UploadFile) -> str:
     if upload.content_type and upload.content_type != "application/octet-stream":
         return upload.content_type
@@ -78,11 +155,13 @@ async def store_bytes(
     entity_type: str,
     entity_id: uuid.UUID,
     uploaded_by: uuid.UUID | None,
+    stage_history_id: uuid.UUID | None = None,
 ) -> FileObject:
     """Загружает объект в MinIO и добавляет `file_object` в ТЕКУЩУЮ сессию (без commit).
 
     MinIO-запись выполняется до вставки строки: при недоступности хранилища
-    транзакция не фиксирует «висячие» метаданные.
+    транзакция не фиксирует «висячие» метаданные. `stage_history_id` — только у файлов
+    заявки: строка истории (переход или вход в этап), к которой файл приложен.
     """
     file_id = uuid.uuid4()
     s3_key = build_s3_key(entity_type, entity_id, file_id, original_name)
@@ -98,6 +177,7 @@ async def store_bytes(
         entity_type=entity_type,
         entity_id=entity_id,
         uploaded_by=uploaded_by,
+        stage_history_id=stage_history_id,
     )
     session.add(file_object)
     await session.flush()
@@ -113,17 +193,26 @@ async def store_upload(
     entity_id: uuid.UUID,
     uploaded_by: uuid.UUID | None,
     max_bytes: int = MAX_ATTACHMENT_BYTES,
+    check_format: bool = False,
+    stage_history_id: uuid.UUID | None = None,
 ) -> FileObject:
+    """Multipart-файл → MinIO + `file_object`. `check_format` — белый список вложений
+    заявки (`check_attachment_format`): тип содержимого тогда задаёт сервер."""
     data = await read_upload(upload, max_bytes)
+    original_name = upload.filename or "file"
+    content_type = (
+        check_attachment_format(original_name, data) if check_format else guess_content_type(upload)
+    )
     return await store_bytes(
         session,
         data=data,
-        original_name=upload.filename or "file",
-        content_type=guess_content_type(upload),
+        original_name=original_name,
+        content_type=content_type,
         bucket=bucket,
         entity_type=entity_type,
         entity_id=entity_id,
         uploaded_by=uploaded_by,
+        stage_history_id=stage_history_id,
     )
 
 

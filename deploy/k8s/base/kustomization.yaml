@@ -34,6 +34,7 @@ resources:
   - cronjobs/stuck-check-cronjob.yaml
   - cronjobs/purge-deleted-cronjob.yaml
   - cronjobs/idempotency-purge-cronjob.yaml
+  - cronjobs/demo-reset-cronjob.yaml # шаблон Job сброса стенда (suspend)
   - ingress/ingress.yaml
   - networkpolicy/00-default-deny.yaml
   - networkpolicy/10-allow-dns.yaml

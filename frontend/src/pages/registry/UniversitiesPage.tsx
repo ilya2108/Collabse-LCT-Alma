@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import {
+  UNIVERSITIES_ASSIGN,
   createUniversity,
   listUniversities,
   type UniversityPayload,
@@ -127,6 +128,10 @@ function CreateUniversitySheet({
 }): ReactNode {
   const queryClient = useQueryClient();
   const { user, hasPermission } = useAuth();
+  // КАМа вуза назначает руководитель (universities:assign); КАМ без права заводит вуз на
+  // себя — сервер это разрешает, других ответственных без права не примет (403)
+  const canAssign = hasPermission(UNIVERSITIES_ASSIGN);
+  const ownsByDefault = !canAssign && hasPermission('requests:kam');
   const form = useForm<UniversityFormValues>({
     resolver: zodResolver(universitySchema),
     mode: 'onTouched',
@@ -141,8 +146,11 @@ function CreateUniversitySheet({
         inn: values.inn?.trim() || null,
         region: values.region?.trim() || null,
         city: values.city?.trim() || null,
-        // kam создаёт вуз на себя; выбор КАМа — у head_kam/admin
-        kam_user_id: values.kam_user_id ?? user?.id ?? null,
+        kam_user_id: canAssign
+          ? (values.kam_user_id ?? null)
+          : ownsByDefault
+            ? (user?.id ?? null)
+            : null,
       } as UniversityPayload),
     onSuccess: (university) => {
       toastSuccess(`Вуз «${university.name}» создан`);
@@ -238,8 +246,8 @@ function CreateUniversitySheet({
                 )}
               />
             </div>
-            {/* КАМа вуза назначает тот, кто правит чужие вузы (crm:write_any) */}
-            {hasPermission('crm:write_any') ? (
+            {/* КАМа вуза назначает руководитель — право universities:assign */}
+            {canAssign ? (
               <FormField
                 control={form.control}
                 name="kam_user_id"
@@ -259,7 +267,22 @@ function CreateUniversitySheet({
                   </FormItem>
                 )}
               />
-            ) : null}
+            ) : (
+              <div className="grid gap-1.5">
+                <span className="text-sm font-medium">Ответственный КАМ</span>
+                <div
+                  aria-disabled="true"
+                  className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                >
+                  {ownsByDefault ? 'Вы' : 'Не назначен'}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {ownsByDefault
+                    ? 'Вуз закрепится за вами; передать его другому КАМу может руководитель'
+                    : 'Ответственного КАМа назначает руководитель'}
+                </span>
+              </div>
+            )}
             <div className="mt-2 flex gap-2">
               <Button type="submit" disabled={mutation.isPending}>
                 {mutation.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}

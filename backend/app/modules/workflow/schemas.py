@@ -32,6 +32,9 @@ from app.modules.workflow.conditions import validate_condition_syntax
 # проверок без БД (юнит-тесты).
 DEFAULT_TRANSITION_ROLES = ("admin", "head_kam", "kam")
 MAX_ALLOWED_ROLES = 20
+# порог зависания этапа, дни: долгие этапы («Обучение», «Сопровождение внедрения») живут
+# месяцами; CHECK в БД — тот же предел (миграция 0006)
+MAX_STAGE_STUCK_DAYS = 365
 
 RoleCode = Annotated[str, StringConstraints(pattern=ROLE_CODE_PATTERN)]
 
@@ -69,7 +72,7 @@ class StatusSpec(_Model):
     position: int = Field(default=0, ge=0)
     is_terminal: bool = False
     terminal_outcome: Literal["won", "lost"] | None = None
-    stuck_threshold_days: int | None = Field(default=None, ge=1, le=60)
+    stuck_threshold_days: int | None = Field(default=None, ge=1, le=MAX_STAGE_STUCK_DAYS)
     triggers_lms_handover: bool = False
     ui_position: dict[str, Any] | None = None
 
@@ -88,7 +91,7 @@ class StatusPatch(_Model):
     color: str | None = Field(default=None, max_length=20)
     description: str | None = None
     position: int | None = Field(default=None, ge=0)
-    stuck_threshold_days: int | None = Field(default=None, ge=1, le=60)
+    stuck_threshold_days: int | None = Field(default=None, ge=1, le=MAX_STAGE_STUCK_DAYS)
     reset_stuck_threshold: bool = False  # явный сброс порога в NULL (наследовать workflow)
     triggers_lms_handover: bool | None = None
     ui_position: dict[str, Any] | None = None

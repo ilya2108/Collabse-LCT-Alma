@@ -25,6 +25,7 @@ import { RadioGroup, RadioGroupItem } from '@/shared/ui/radio-group';
 import { Separator } from '@/shared/ui/separator';
 import { Switch } from '@/shared/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
+import { STAGE_COLOR_NAMES } from '@/shared/config/tokens';
 import {
   STAGE_COLOR_PRESETS,
   aliveTransitions,
@@ -48,16 +49,10 @@ export interface CanvasSelection {
 }
 
 /** Русские имена пресетных цветов этапа (§1.2) — для aria-label свотчей. */
-const COLOR_NAMES: Record<string, string> = {
-  '#1E56A0': 'синий',
-  '#C46A00': 'оранжевый',
-  '#12917E': 'морской',
-  '#8250C8': 'фиолетовый',
-  '#C13B63': 'малиновый',
-  '#946300': 'охра',
-  '#2E9E5B': 'зелёный',
-  '#5A6B80': 'серый',
-};
+const COLOR_NAMES = STAGE_COLOR_NAMES;
+
+/** Предел порога зависания этапа — как CHECK в БД и MAX_STAGE_STUCK_DAYS на сервере (0006). */
+const MAX_STAGE_STUCK_DAYS = 365;
 
 interface PropertiesPanelProps {
   /** Процесс схемы: роли перехода — из каталога ролей, способных переводить заявки в нём. */
@@ -213,8 +208,10 @@ const numbersSchema = z.object({
   stuck: z
     .string()
     .refine(
-      (value) => value === '' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 60),
-      'От 1 до 60 дней; пусто — наследуется',
+      (value) =>
+        value === '' ||
+        (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_STAGE_STUCK_DAYS),
+      `От 1 до ${MAX_STAGE_STUCK_DAYS} дней; пусто — наследуется`,
     ),
   position: z.string().refine((value) => /^\d+$/.test(value), 'Целое число от 0'),
 });
@@ -249,14 +246,18 @@ function StageNumberFields({
                   type="number"
                   inputMode="numeric"
                   min={1}
-                  max={60}
+                  max={MAX_STAGE_STUCK_DAYS}
                   placeholder="наследуется от процесса…"
                   onChange={(event) => {
                     field.onChange(event);
                     const value = event.target.value;
                     if (value === '') {
                       onPatchStage(stage.id, { stuck_threshold_days: null });
-                    } else if (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 60) {
+                    } else if (
+                      /^\d+$/.test(value) &&
+                      Number(value) >= 1 &&
+                      Number(value) <= MAX_STAGE_STUCK_DAYS
+                    ) {
                       onPatchStage(stage.id, { stuck_threshold_days: Number(value) });
                     }
                   }}

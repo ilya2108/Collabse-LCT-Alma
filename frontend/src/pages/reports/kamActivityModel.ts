@@ -1,11 +1,14 @@
 import type { EChartsOption } from 'echarts';
 import type {
+  InteractionsColumnKey,
+  InteractionsParams,
   KamActivityDynamicsSeries,
   KamActivityInteractions,
   KamActivityParams,
   KamActivityTalent,
   KamBreakdownRow,
   StageConversionRow,
+  UniversitiesStageRow,
 } from '@/shared/api/endpoints/kamActivity';
 import type { WorkflowType } from '@/shared/api/types';
 import { chartAnimation } from '@/shared/config/echartsTheme';
@@ -19,7 +22,11 @@ import { dayjs, type Dayjs } from '@/shared/lib/dayjs';
  */
 
 export type PeriodPreset = 'week' | 'month' | 'quarter' | 'prev_quarter' | 'custom';
-export type KamActivityTab = 'detail' | 'summary';
+export type KamActivityTab = 'detail' | 'summary' | 'interactions';
+
+/** Период по умолчанию — «Месяц» (с 1-го числа по сегодня): один для всех вкладок. */
+export const DEFAULT_PRESET: PeriodPreset = 'month';
+const TABS = new Set<string>(['detail', 'summary', 'interactions']);
 
 export const PRESETS: Array<{ value: PeriodPreset; label: string }> = [
   { value: 'week', label: 'Неделя' },
@@ -39,6 +46,12 @@ export interface KamActivityFilters {
   wf: WorkflowType | null;
   kam: string[];
   university: string[];
+  /** Вкладка «Взаимодействия за период»: ИТ-продукты, программы, статусы (этапы). */
+  product: string[];
+  program: string[];
+  status: string[];
+  /** Выбранные колонки таблицы и выгрузки; null — колонки по умолчанию. */
+  columns: string[] | null;
   tab: KamActivityTab;
   request: string | null;
 }
@@ -84,9 +97,10 @@ export function filtersFromParams(
       ? (presetRaw as PeriodPreset)
       : from || to
         ? 'custom'
-        : 'quarter';
+        : DEFAULT_PRESET;
   const wf = params.get('wf');
   const tab = params.get('tab');
+  const columns = params.get('cols');
   return {
     preset,
     from,
@@ -94,7 +108,11 @@ export function filtersFromParams(
     wf: wf === 'b2b' || wf === 'b2c' ? wf : null,
     kam: params.getAll('kam'),
     university: params.getAll('university'),
-    tab: tab === 'detail' || tab === 'summary' ? tab : defaults.tab,
+    product: params.getAll('product'),
+    program: params.getAll('program'),
+    status: params.getAll('status'),
+    columns: columns ? columns.split(',').filter(Boolean) : null,
+    tab: tab && TABS.has(tab) ? (tab as KamActivityTab) : defaults.tab,
     request: params.get('request'),
   };
 }
@@ -121,6 +139,44 @@ export function toApiParams(filters: KamActivityFilters, today: Dayjs = dayjs())
 
 export function hasNarrowingFilters(filters: KamActivityFilters): boolean {
   return filters.wf !== null || filters.kam.length > 0 || filters.university.length > 0;
+}
+
+/** Параметры «Взаимодействий за период»: фильтры отчёта КАМов + продукт, программа, статус. */
+export function toInteractionsParams(
+  filters: KamActivityFilters,
+  today: Dayjs = dayjs(),
+): InteractionsParams {
+  const sorted = (values: string[]): string[] | undefined =>
+    values.length > 0 ? [...values].sort() : undefined;
+  return {
+    ...toApiParams(filters, today),
+    product_id: sorted(filters.product),
+    program_id: sorted(filters.program),
+    stage_id: sorted(filters.status),
+  };
+}
+
+export function hasInteractionFilters(filters: KamActivityFilters): boolean {
+  return (
+    hasNarrowingFilters(filters) ||
+    filters.product.length > 0 ||
+    filters.program.length > 0 ||
+    filters.status.length > 0
+  );
+}
+
+/** Колонки таблицы: выбранные пользователем (только известные отчёту) или по умолчанию. */
+export function resolveColumns(
+  selected: string[] | null,
+  available: Array<{ key: InteractionsColumnKey }>,
+  defaults: InteractionsColumnKey[],
+): InteractionsColumnKey[] {
+  if (!selected) return defaults;
+  const known = new Set(available.map((column) => column.key));
+  const picked = available
+    .map((column) => column.key)
+    .filter((key) => selected.includes(key) && known.has(key));
+  return picked.length > 0 ? picked : defaults;
 }
 
 // --- форматтеры -----------------------------------------------------------------------
@@ -556,6 +612,78 @@ export function talentStatusOption(
           value: row.value,
           key: row.key,
           itemStyle: { color: row.color, borderRadius: [0, 4, 4, 0] },
+        })),
+      },
+    ],
+    graphic: captionGraphic(caption, compact),
+  };
+}
+
+/**
+ * Главная диаграмма вида Б: вузы B2B по этапам на конец периода (текущий — цвет этапа,
+ * прошлый период той же длины — светлый контур рядом). Ось — от нуля.
+ */
+export function universitiesByStageOption(
+  rows: Array<Pick<UniversitiesStageRow, 'code' | 'name' | 'color' | 'value' | 'prev' | 'universities'>>,
+  caption: string,
+  labels: { current: string; previous: string },
+  compact = false,
+): EChartsOption {
+  const ordered = [...rows].reverse(); // первый этап сверху
+  return {
+    ...chartAnimation(),
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params: unknown) => {
+        const row = ordered[(params as Array<{ dataIndex: number }>)[0]?.dataIndex ?? 0];
+        if (!row) return '';
+        const names = row.universities.length > 0 ? `<br/>${row.universities.join(', ')}` : '';
+        return `<b>${row.name}</b><br/>Вузов: <b>${row.value}</b> (прошлый период — ${row.prev})${names}`;
+      },
+    },
+    legend: { top: 0, textStyle: AXIS_LABEL },
+    grid: { left: 8, right: compact ? 40 : 72, top: compact ? 48 : 32, bottom: captionBottom(40, compact), containLabel: true },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      minInterval: 1,
+      name: 'Вузов',
+      nameLocation: 'middle',
+      nameGap: 24,
+      nameTextStyle: AXIS_LABEL,
+      axisLabel: AXIS_LABEL,
+      splitLine: SPLIT_LINE,
+    },
+    yAxis: {
+      type: 'category',
+      data: ordered.map((row) => shorten(row.name, compact ? 14 : 26)),
+      axisLabel: AXIS_LABEL,
+    },
+    series: [
+      {
+        name: labels.previous,
+        type: 'bar',
+        barMaxWidth: 10,
+        itemStyle: { color: STATUS_TRIPLES.draft.tint, borderColor: SURFACE.mutedForeground, borderWidth: 1 },
+        data: ordered.map((row) => ({ value: row.prev, key: row.code })),
+      },
+      {
+        name: labels.current,
+        type: 'bar',
+        barMaxWidth: 16,
+        label: { show: true, position: 'right', color: SURFACE.mutedForeground, fontSize: 12 },
+        data: ordered.map((row, index) => ({
+          value: row.value,
+          key: row.code,
+          itemStyle: {
+            // «Без заявок в работе» — нейтральный серый, этапы — в своих цветах
+            color:
+              row.code === 'without_requests'
+                ? SURFACE.mutedForeground
+                : row.color || CHART_PALETTE[index % CHART_PALETTE.length],
+            borderRadius: [0, 4, 4, 0],
+          },
         })),
       },
     ],

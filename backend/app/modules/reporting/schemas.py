@@ -1,4 +1,5 @@
-"""Pydantic-схемы ответов отчёта «Активность КАМов» (api-contract.md §7.2.1).
+"""Pydantic-схемы ответов отчётов «Активность КАМов» (api-contract.md §7.2.1) и
+«Взаимодействия за период» (таблица по колонкам ТЗ ФТ4).
 
 Нужны для качественного OpenAPI (Swagger показывают экспертам): каждое поле описано,
 форма совпадает с тем, что собирает `kam_activity.py`. Деньги — строкой decimal
@@ -204,6 +205,14 @@ class KamActivityKpi(_ApiModel):
     interactions: KpiValue
     stuck: KpiValue
     talent_pool_added: KpiValue
+    universities_with_contract: KpiValue = Field(
+        default_factory=KpiValue,
+        description="Вузы с действующим договором на конец периода (вид Б)",
+    )
+    students_studying: KpiValue = Field(
+        default_factory=KpiValue,
+        description="Студенты вузов отчёта в статусе «Обучается» на конец периода (вид Б)",
+    )
 
 
 class PreviousPeriod(_ApiModel):
@@ -319,7 +328,46 @@ class KamActivityTalent(_ApiModel):
     on_programs: int = Field(description="Обучаются, выпустились или в пуле талантов")
     by_status: list[TalentStatusRow]
     talent_pool_added: KpiValue
+    students_studying: KpiValue = Field(default_factory=KpiValue)
     programs: list[TalentProgramRow]
+
+
+class UniversitiesStageRow(_ApiModel):
+    id: str
+    code: str
+    name: str
+    color: str | None = None
+    is_terminal: bool
+    outcome: Outcome | None = None
+    value: int = Field(description="Вузов на этапе на конец периода")
+    prev: int = Field(description="То же на конец прошлого периода той же длины")
+    universities: list[str] = Field(description="Вузы этапа (до 8, по алфавиту)")
+
+
+class UniversitiesWithoutRequests(_ApiModel):
+    label: str
+    value: int
+    prev: int
+    universities: list[str]
+
+
+class UniversitiesByStage(_ApiModel):
+    """Главная диаграмма вида Б: вузы B2B по самому продвинутому этапу заявок."""
+
+    workflow_type: Literal["b2b"]
+    rule: str = Field(description="Правило отнесения вуза к этапу (то же в UI и PDF)")
+    total: int
+    total_prev: int
+    rows: list[UniversitiesStageRow]
+    without_requests: UniversitiesWithoutRequests
+
+
+class SummaryRisk(_ApiModel):
+    key: Literal["stuck", "untouched", "lost"]
+    label: str
+    value: int
+    note: str | None = None
+    items: list[str] = Field(default_factory=list)
 
 
 class KamActivitySummaryOut(_ApiModel):
@@ -337,3 +385,107 @@ class KamActivitySummaryOut(_ApiModel):
     top_stuck: list[StuckRequestRow]
     untouched_assigned: list[str] = Field(description="Закреплённые вузы без взаимодействий")
     talent: KamActivityTalent
+    universities_by_stage: UniversitiesByStage | None = Field(
+        default=None, description="Вузы B2B по этапам на конец периода; null — B2B вне отчёта"
+    )
+    risks: list[SummaryRisk] = Field(
+        default_factory=list, description="Риски для заказчика: только ненулевые"
+    )
+
+
+# --- «Взаимодействия за период» (ТЗ ФТ4) --------------------------------------------------
+
+
+class InteractionsParamsOut(KamActivityParamsOut):
+    product_id: list[str] = Field(default_factory=list)
+    program_id: list[str] = Field(default_factory=list)
+    stage_id: list[str] = Field(default_factory=list)
+
+
+class InteractionsColumn(_ApiModel):
+    key: str
+    label: str
+    default: bool = Field(description="Колонка выбрана по умолчанию")
+    group: str = Field(description="«ТЗ», «Даты» или «Дополнительно»")
+
+
+class InteractionsStageOption(_ApiModel):
+    id: str
+    code: str
+    name: str
+    color: str | None = None
+    workflow_type: WorkflowType
+    is_terminal: bool
+
+
+class InteractionsStage(_ApiModel):
+    id: str
+    code: str
+    name: str = Field(description="Этап на конец периода; удалённый — «(удалён)»")
+    color: str | None = None
+    is_terminal: bool
+    outcome: Outcome | None = None
+    deleted: bool = False
+
+
+class InteractionsCounts(_ApiModel):
+    transitions: int
+    returns: int
+    comments: int
+    files: int
+    total: int = Field(description="Переходы + комментарии + файлы ответственного КАМа")
+
+
+class InteractionsRow(_ApiModel):
+    request_id: str
+    title: str
+    workflow_type: WorkflowType
+    university_id: str | None = None
+    university: str | None = Field(default=None, description="Наименование вуза (B2B)")
+    university_short: str | None = None
+    client: str | None = Field(default=None, description="Псевдоним B2C-клиента")
+    it_direction: str | None = Field(
+        default=None, description="ИТ-направление: появится со справочником направлений"
+    )
+    product_id: str | None = None
+    product: str | None = Field(default=None, description="ИТ-продукт")
+    program_id: str | None = None
+    program: str | None = None
+    stage: InteractionsStage
+    responsible_id: str
+    responsible: str
+    created_at: datetime
+    stage_since: datetime
+    days_on_stage: int
+    threshold_days: int
+    is_stuck: bool
+    closed_in_period: Outcome | None = None
+    interactions: InteractionsCounts
+    last_contact_at: datetime | None = None
+    amount: str | None = None
+
+
+class InteractionsTotals(_ApiModel):
+    requests: int
+    universities: int
+    responsibles: int
+    with_interactions: int
+    interactions: int
+    stuck: int
+    won: int
+    lost: int
+    amount: str
+
+
+class InteractionsReportOut(_ApiModel):
+    report: Literal["interactions"]
+    generated_at: datetime
+    params: InteractionsParamsOut
+    period: KamActivityPeriod
+    scope: KamActivityScope
+    columns: list[InteractionsColumn] = Field(description="Каталог колонок таблицы и выгрузки")
+    default_columns: list[str]
+    stages: list[InteractionsStageOption] = Field(description="Этапы для фильтра «Статус»")
+    totals: InteractionsTotals
+    truncated: bool = Field(description="Строк больше 5000 — полный список в выгрузке")
+    rows: list[InteractionsRow]

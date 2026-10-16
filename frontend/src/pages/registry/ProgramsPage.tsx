@@ -15,7 +15,14 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, GripVertical, ListOrdered, TrendingUp } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
+  GripVertical,
+  ListOrdered,
+  TrendingUp,
+} from 'lucide-react';
 import {
   createContext,
   useContext,
@@ -26,12 +33,14 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from 'react';
-import { Link } from 'react-router-dom';
-import { api } from '@/shared/api/client';
+import { Link, useSearchParams } from 'react-router-dom';
 import { listPrograms, reorderProgramPriorities } from '@/shared/api/endpoints/programs';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
+import { getProgramsDemand, type ProgramDemandItem } from '@/shared/api/endpoints/reports';
 import type { Program } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
+import { cn } from '@/shared/lib/cn';
+import { dayjs } from '@/shared/lib/dayjs';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
 import { formatDate, formatText } from '@/shared/lib/format';
 import { toastError } from '@/shared/lib/toast';
@@ -62,7 +71,12 @@ import {
  * Реестр программ с ручным ранжированием (ux.md §9.4, redesign.md §6.5):
  * `priority_rank` — меньше = выше; drag строки (GripVertical) или ▲/▼ вызывают
  * POST /programs/priorities/reorder (optimistic). Тумблер «Ручной приоритет /
- * По заявкам» — SegmentedControl (§3.10).
+ * Востребованность» — SegmentedControl (§3.10); `?mode=demand` открывает второй режим
+ * (переход с дашборда).
+ *
+ * «Востребованность» (§2 ТЗ): три показателя по каждой программе — заявки на обучение,
+ * обучающиеся, параллельные потоки — за выбранный период, ручной приоритет рядом;
+ * при фичефлаге auto_ranking — расчётный индекс 0–100 (справочно, приоритет не меняет).
  */
 
 const RANK_STEP = 10;
@@ -122,60 +136,201 @@ function SortableRow({ rowId, children, ...props }: SortableRowProps): ReactNode
   );
 }
 
-// --- Режим «По заявкам» (отчёт programs-demand, §7.2) -------------------------
+// --- Режим «Востребованность» (отчёт programs-demand, §7.2) ---------------------
 
-interface DemandSeriesItem {
-  key: string;
+type DemandPeriod = 'all' | '30' | '90' | '365';
+
+const DEMAND_PERIODS: { value: DemandPeriod; label: string }[] = [
+  { value: 'all', label: 'Всё время' },
+  { value: '30', label: '30 дней' },
+  { value: '90', label: 'Квартал' },
+  { value: '365', label: 'Год' },
+];
+
+/** Период пресета: последние N дней включительно по сегодняшний. */
+function demandPeriodRange(period: DemandPeriod): { from?: string; to?: string } {
+  if (period === 'all') return {};
+  const to = dayjs();
+  return {
+    from: to.subtract(Number(period) - 1, 'day').format('YYYY-MM-DD'),
+    to: to.format('YYYY-MM-DD'),
+  };
+}
+
+type DemandSortKey =
+  | 'requests_count'
+  | 'students_studying'
+  | 'parallel_streams'
+  | 'priority_rank'
+  | 'computed_demand';
+
+interface DemandColumn {
+  key: DemandSortKey;
   label: string;
-  color?: string;
-  value: number;
+  hint: string;
 }
 
-interface DemandReport {
-  report: string;
-  series: DemandSeriesItem[];
+const DEMAND_COLUMNS: DemandColumn[] = [
+  {
+    key: 'requests_count',
+    label: 'Заявки на обучение',
+    hint: 'Заявки по программе, созданные в периоде (без архива); ниже — сколько из них открыто',
+  },
+  {
+    key: 'students_studying',
+    label: 'Обучающиеся',
+    hint: 'Студенты программы в статусе «Обучается» — сейчас или хотя бы день периода',
+  },
+  {
+    key: 'parallel_streams',
+    label: 'Параллельные потоки',
+    hint: 'Заявки программы на этапе обучения (сейчас или в периоде); два потока в одном вузе — два',
+  },
+  { key: 'priority_rank', label: 'Ручной приоритет', hint: 'Меньше = выше; меняется в режиме «Ручной приоритет»' },
+];
+
+const INDEX_COLUMN: DemandColumn = {
+  key: 'computed_demand',
+  label: 'Расчётный спрос',
+  hint: 'Индекс 0–100: среднее долей от максимума по трём показателям',
+};
+
+function demandValue(row: ProgramDemandItem, key: DemandSortKey): number {
+  return key === 'computed_demand' ? (row.computed_demand ?? 0) : row[key];
 }
 
-function DemandView({ productId }: { productId?: string }): ReactNode {
+function DemandView({
+  productId,
+  universityId,
+  period,
+}: {
+  productId?: string;
+  universityId?: string;
+  period: DemandPeriod;
+}): ReactNode {
+  const range = demandPeriodRange(period);
   const query = useQuery({
-    queryKey: ['programs-demand', productId ?? 'all'],
+    queryKey: ['programs-demand', productId ?? 'all', universityId ?? 'all', range.from ?? '', range.to ?? ''],
     queryFn: ({ signal }) =>
-      api.get<DemandReport>('/reports/programs-demand', {
-        query: { product_id: productId },
+      getProgramsDemand(
+        {
+          ...range,
+          product_id: productId ? [productId] : undefined,
+          university_id: universityId ? [universityId] : undefined,
+        },
         signal,
-      }),
+      ),
   });
+  const autoRanking = query.data?.auto_ranking ?? false;
+  const [sortKey, setSortKey] = useState<DemandSortKey | null>(null);
+  const activeSort: DemandSortKey = sortKey ?? (autoRanking ? 'computed_demand' : 'requests_count');
+  const columns = autoRanking ? [...DEMAND_COLUMNS, INDEX_COLUMN] : DEMAND_COLUMNS;
+  const rows = useMemo(() => {
+    const list = [...(query.data?.rows ?? [])];
+    return list.sort((a, b) =>
+      activeSort === 'priority_rank'
+        ? a.priority_rank - b.priority_rank || a.name.localeCompare(b.name)
+        : demandValue(b, activeSort) - demandValue(a, activeSort) ||
+          b.requests_count - a.requests_count ||
+          a.priority_rank - b.priority_rank,
+    );
+  }, [query.data, activeSort]);
+
   if (query.isLoading) return <LoadingState rows={6} card={false} />;
   if (query.isError) {
     return (
       <ErrorState
         error={query.error}
-        title="Не удалось загрузить отчёт по заявкам"
+        title="Не удалось загрузить востребованность программ"
         onRetry={() => void query.refetch()}
       />
     );
   }
-  const series = [...(query.data?.series ?? [])].sort((a, b) => b.value - a.value);
-  if (series.length === 0) {
-    return <EmptyState illustration="search-empty" title="Нет данных по заявкам" compact />;
+  if (rows.length === 0) {
+    return <EmptyState illustration="search-empty" title="Нет активных программ под фильтры" compact />;
   }
   return (
-    <Table>
-      <TableHeader>
-        <TableRow className="hover:bg-transparent">
-          <TableHead>Программа</TableHead>
-          <TableHead className="w-[120px] text-right">Заявок</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {series.map((item) => (
-          <TableRow key={item.key}>
-            <TableCell>{item.label}</TableCell>
-            <TableCell className="tabular text-right font-medium">{item.value}</TableCell>
+    <div className="flex flex-col gap-3">
+      <Table>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead>Программа</TableHead>
+            {columns.map((column) => {
+              const active = column.key === activeSort;
+              return (
+                <TableHead
+                  key={column.key}
+                  className={cn('text-right', column.key !== 'requests_count' && 'max-md:hidden')}
+                  aria-sort={active ? (column.key === 'priority_rank' ? 'ascending' : 'descending') : 'none'}
+                >
+                  <button
+                    type="button"
+                    title={column.hint}
+                    onClick={() => setSortKey(column.key)}
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-sm font-medium hover:text-foreground',
+                      active ? 'text-foreground' : 'text-muted-foreground',
+                    )}
+                  >
+                    {column.label}
+                    {active ? (
+                      column.key === 'priority_rank' ? (
+                        <ArrowUp className="size-3.5" aria-hidden="true" />
+                      ) : (
+                        <ArrowDown className="size-3.5" aria-hidden="true" />
+                      )
+                    ) : (
+                      <ChevronsUpDown className="size-3.5 opacity-50" aria-hidden="true" />
+                    )}
+                  </button>
+                </TableHead>
+              );
+            })}
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={row.program_id}>
+              <TableCell>
+                <Link
+                  to={`/registry/programs/${row.program_id}`}
+                  className="font-medium text-primary hover:underline"
+                >
+                  {row.name}
+                </Link>
+              </TableCell>
+              <TableCell className="tabular text-right">
+                <span className="font-medium">{row.requests_count}</span>
+                <span className="block text-xs text-muted-foreground">открыто {row.open_requests}</span>
+              </TableCell>
+              <TableCell className="tabular text-right font-medium max-md:hidden">
+                {row.students_studying}
+              </TableCell>
+              <TableCell className="tabular text-right font-medium max-md:hidden">
+                {row.parallel_streams}
+              </TableCell>
+              <TableCell className="tabular text-right text-muted-foreground max-md:hidden">
+                {row.priority_rank}
+              </TableCell>
+              {autoRanking ? (
+                <TableCell className="tabular text-right font-medium max-md:hidden">
+                  {row.computed_demand ?? '—'}
+                </TableCell>
+              ) : null}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      <p className="text-pretty text-xs text-muted-foreground">
+        Как считается: заявки на обучение — созданные{' '}
+        {period === 'all' ? 'за всё время' : 'в выбранном периоде'}; обучающиеся — студенты
+        программы в статусе «Обучается»; параллельные потоки — заявки программы на этапе
+        обучения ({period === 'all' ? 'на текущую дату' : 'хотя бы день периода'}).{' '}
+        {autoRanking
+          ? `${query.data?.formula ?? ''}. Ручной приоритет индекс не меняет.`
+          : 'Ранжирование — ручным приоритетом; расчётный индекс включается фичефлагом «Расчётный спрос программ».'}
+      </p>
+    </div>
   );
 }
 
@@ -186,7 +341,20 @@ export function ProgramsPage(): ReactNode {
   const queryClient = useQueryClient();
   const canRank = hasPermission('programs:priority');
 
-  const [mode, setMode] = useState<'manual' | 'demand'>('manual');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode: 'manual' | 'demand' = searchParams.get('mode') === 'demand' ? 'demand' : 'manual';
+  const setMode = (next: 'manual' | 'demand'): void => {
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next === 'demand') params.set('mode', 'demand');
+        else params.delete('mode');
+        return params;
+      },
+      { replace: true },
+    );
+  };
+  const [demandPeriod, setDemandPeriod] = useState<DemandPeriod>('all');
   const [search, setSearch] = useState('');
   const [productId, setProductId] = useState<string | undefined>(undefined);
   const [universityId, setUniversityId] = useState<string | undefined>(undefined);
@@ -391,9 +559,17 @@ export function ProgramsPage(): ReactNode {
               onChange={setMode}
               options={[
                 { value: 'manual', label: 'Ручной приоритет', icon: ListOrdered },
-                { value: 'demand', label: 'По заявкам', icon: TrendingUp },
+                { value: 'demand', label: 'Востребованность', icon: TrendingUp },
               ]}
             />
+            {mode === 'demand' ? (
+              <SegmentedControl<DemandPeriod>
+                size="sm"
+                value={demandPeriod}
+                onChange={setDemandPeriod}
+                options={DEMAND_PERIODS}
+              />
+            ) : null}
             {mode === 'manual' ? (
               <Input
                 placeholder="Название программы"
@@ -408,13 +584,11 @@ export function ProgramsPage(): ReactNode {
               value={productId}
               onChange={(value) => setProductId(value)}
             />
-            {mode === 'manual' ? (
-              <UniversityCombobox
-                className="w-[220px]"
-                value={universityId}
-                onChange={(value) => setUniversityId(value)}
-              />
-            ) : null}
+            <UniversityCombobox
+              className="w-[220px]"
+              value={universityId}
+              onChange={(value) => setUniversityId(value)}
+            />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {mode === 'manual' && canRank ? (
@@ -422,18 +596,34 @@ export function ProgramsPage(): ReactNode {
                 Перетащите строку или используйте ▲/▼ — порядок сохраняется сразу
               </p>
             ) : null}
-            <ExportMenu
-              entityType="programs"
-              fileName="programs"
-              filters={() => ({
-                search: debouncedSearch.trim() || undefined,
-                product_id: productId,
-                university_id: universityId,
-              })}
-            />
+            {mode === 'manual' ? (
+              <ExportMenu
+                entityType="programs"
+                fileName="programs"
+                filters={() => ({
+                  search: debouncedSearch.trim() || undefined,
+                  product_id: productId,
+                  university_id: universityId,
+                })}
+              />
+            ) : (
+              <ExportMenu
+                entityType="report:programs-demand"
+                fileName="programs-demand"
+                filters={() => ({
+                  ...demandPeriodRange(demandPeriod),
+                  product_id: productId,
+                  university_id: universityId,
+                })}
+              />
+            )}
           </div>
         </div>
-        {mode === 'manual' ? manualBody : <DemandView productId={productId} />}
+        {mode === 'manual' ? (
+          manualBody
+        ) : (
+          <DemandView productId={productId} universityId={universityId} period={demandPeriod} />
+        )}
       </div>
     </>
   );

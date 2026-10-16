@@ -1,10 +1,10 @@
 import type { EChartsOption } from 'echarts';
 import type {
-  KamWorkloadRow,
-  ProgramDemandRow,
-  ReportDynamicsSeries,
-  ReportSeriesItem,
-} from '@/shared/api/types';
+  DashboardStageItem,
+  KamWorkloadItem,
+  ProgramDemandItem,
+} from '@/shared/api/endpoints/reports';
+import type { ReportDynamicsSeries, ReportSeriesItem } from '@/shared/api/types';
 import { chartAnimation } from '@/shared/config/echartsTheme';
 import { CHART_PALETTE, STATUS_COLORS, SURFACE, TALENT_FUNNEL_RAMP } from '@/shared/config/tokens';
 
@@ -13,349 +13,545 @@ import { CHART_PALETTE, STATUS_COLORS, SURFACE, TALENT_FUNNEL_RAMP } from '@/sha
  * из конфига workflow внутри отчёта (§7.2) — дашборд и канбан раскрашены из
  * одного источника; фолбэк — категориальная палитра темы 'crm'
  * (redesign.md §2.6, hex из tokens.ts — где нужны строки).
+ *
+ * Объективность диаграмм (критерий финала): счётные величины — бары от нуля с
+ * подписью значения (ширина пропорциональна числу, пустой этап — пустой), линии
+ * динамики — без сглаживания и с точками (между неделями данных нет), у осей —
+ * единицы. «Отказ» — не хвост последовательности этапов, а отдельная строка.
  */
 
 const FALLBACK_PALETTE = [...CHART_PALETTE];
 
-/** Фиолетовый рамп воронки студентов (§2.6): светлеет к концу. */
+/** Фиолетовый рамп воронки студентов (§2.6). */
 const TALENT_PALETTE = [...TALENT_FUNNEL_RAMP];
 
 const AXIS_LABEL = { color: SURFACE.mutedForeground, fontSize: 12 };
+const AXIS_NAME = { color: SURFACE.mutedForeground, fontSize: 11 };
 const SPLIT_LINE = { lineStyle: { color: SURFACE.border } };
+const VALUE_LABEL = { show: true, position: 'right' as const, color: SURFACE.foreground };
 
-function seriesColor(item: ReportSeriesItem, index: number, palette = FALLBACK_PALETTE): string {
+const WORKFLOW_LABELS: Record<string, string> = { b2b: 'B2B', b2c: 'B2C' };
+
+function seriesColor(item: { color?: string | null }, index: number, palette = FALLBACK_PALETTE): string {
   return item.color || palette[index % palette.length]!;
 }
 
-/*
- * — Подписи внутри воронок: контраст ≥ 4.5 (§8.2) —
- * ECharts рисует в canvas, где CSS-строка color-mix() недоступна, поэтому
- * §1.2-формула «микс цвета к чёрному в OKLab» посчитана локально в JS
- * (адаптер к stageText() из tokens.ts). Белая подпись остаётся только на
- * сегментах, где она даёт ≥ 4.5:1; на светлых (например, хвост фиолетового
- * рампа talent pool) берётся тёмный микс цвета самого сегмента — первая доля,
- * проходящая порог. Если белый < 4.5, то почти-чёрный ≥ 4.5 — подбор конечен.
- */
-
-const srgbToLinear = (c: number): number => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-const linearToSrgb = (c: number): number => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
-const clamp01 = (c: number): number => Math.min(1, Math.max(0, c));
-
-/** #RGB/#RRGGBB → линейный RGB [0..1]; null для нераспознанной строки. */
-function hexToLinearRgb(hex: string): [number, number, number] | null {
-  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(hex);
-  const full = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  const parts = full?.slice(1, 4) ?? short?.slice(1, 4).map((c) => c + c);
-  if (!parts) return null;
-  const [r, g, b] = parts.map((c) => srgbToLinear(parseInt(c, 16) / 255));
-  return [r!, g!, b!];
+/** Имена вузов и КАМов в html-tooltip — пользовательские данные: экранируем. */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-function relativeLuminance([r, g, b]: [number, number, number]): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+function truncate(value: string, max = 28): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
-function contrastRatio(a: [number, number, number], b: [number, number, number]): number {
-  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
-  return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
+/** Высота графика с категориями по строкам: не меньше min, по ~28px на строку. */
+export function rowsHeight(rows: number, min = 280): number {
+  return Math.max(min, rows * 28 + 72);
 }
 
-/** color-mix(in oklab, C share, black): в OKLab это масштаб L/a/b на share. */
-function mixBlackOklab([r, g, b]: [number, number, number], share: number): [number, number, number] {
-  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-  const L = (0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s) * share;
-  const A = (1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s) * share;
-  const B = (0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s) * share;
-  const l2 = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
-  const m2 = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
-  const s2 = (L - 0.0894841775 * A - 1.291485548 * B) ** 3;
-  return [
-    clamp01(4.0767416621 * l2 - 3.3077115913 * m2 + 0.2309699292 * s2),
-    clamp01(-1.2684380046 * l2 + 2.6097574011 * m2 - 0.3413193965 * s2),
-    clamp01(-0.0041960863 * l2 - 0.7034186147 * m2 + 1.707614701 * s2),
-  ];
+/** Пусто — когда все значения нулевые (а не когда массив пуст: этапы приходят всегда). */
+export function allZero(values: Iterable<number>): boolean {
+  for (const value of values) if (value !== 0) return false;
+  return true;
 }
 
-function linearRgbToHex(rgb: [number, number, number]): string {
-  return `#${rgb
-    .map((c) =>
-      Math.round(clamp01(linearToSrgb(c)) * 255)
-        .toString(16)
-        .padStart(2, '0'),
-    )
-    .join('')}`;
+// --- «Заявки по текущему этапу» -------------------------------------------------------
+
+/** Ключ клика по этапу: процесс и код (при «Все» этапы двух процессов на одном графике). */
+export function stageClickKey(item: Pick<DashboardStageItem, 'workflow_type' | 'key'>): string {
+  return `${item.workflow_type}:${item.key}`;
 }
 
-const WHITE_LINEAR: [number, number, number] = [1, 1, 1];
-const AA_TEXT = 4.5; // §8.2: порог для текста 12px
-const labelColorCache = new Map<string, string>();
+export function parseStageClickKey(dataKey: string): { wf: string; status: string } | null {
+  const [wf, status] = dataKey.split(':');
+  return wf && status ? { wf, status } : null;
+}
 
-/** Цвет подписи внутри сегмента воронки: гарантированные ≥ 4.5:1 к сегменту. */
-function funnelLabelColor(segmentColor: string): string {
-  const cached = labelColorCache.get(segmentColor);
-  if (cached) return cached;
-  const segment = hexToLinearRgb(segmentColor);
-  let label: string = SURFACE.card; // фолбэк для нераспознанного цвета — прежнее поведение
-  if (segment && contrastRatio(WHITE_LINEAR, segment) < AA_TEXT) {
-    let share = 0.78; // стартовая доля из §1.2, дальше темнее до порога
-    let mixed = mixBlackOklab(segment, share);
-    while (contrastRatio(mixed, segment) < AA_TEXT && share > 0.08) {
-      share -= 0.03;
-      mixed = mixBlackOklab(segment, share);
-    }
-    label = linearRgbToHex(mixed);
+interface StageGroup {
+  wf: string;
+  bars: DashboardStageItem[];
+  lost: DashboardStageItem[];
+}
+
+function stageGroups(series: DashboardStageItem[]): StageGroup[] {
+  const groups = new Map<string, StageGroup>();
+  for (const item of series) {
+    const wf = item.workflow_type ?? 'b2b';
+    const group = groups.get(wf) ?? { wf, bars: [], lost: [] };
+    (item.outcome === 'lost' ? group.lost : group.bars).push(item);
+    groups.set(wf, group);
   }
-  labelColorCache.set(segmentColor, label);
-  return label;
+  for (const group of groups.values()) group.bars.sort((a, b) => a.sort_order - b.sort_order);
+  return [...groups.values()];
 }
 
-/** Воронка по этапам workflow (виджет 2): клик по этапу → канбан с фильтром. */
-export function funnelOption(series: ReportSeriesItem[]): EChartsOption {
+interface StageLayout {
+  groups: StageGroup[];
+  /** Верх каждого блока (заголовок процесса) и сетки, px. */
+  blocks: { headerTop: number; gridTop: number; gridHeight: number }[];
+  footerTop: number;
+  height: number;
+}
+
+const STAGE_ROW = 26;
+const STAGE_HEADER = 28;
+const STAGE_GAP = 14;
+const STAGE_AXIS = 26; // подписи шкалы под последним блоком
+const STAGE_FOOTER = 30; // строка «Отказ»
+
+/** Раскладка в пикселях: ECharts не понимает calc(), высота карточки — отсюда же. */
+function stageLayout(series: DashboardStageItem[]): StageLayout {
+  const groups = stageGroups(series);
+  const several = groups.length > 1;
+  const blocks: StageLayout['blocks'] = [];
+  let y = 8;
+  groups.forEach((group, index) => {
+    const headerTop = y;
+    if (several) y += STAGE_HEADER;
+    const gridHeight = Math.max(group.bars.length, 1) * STAGE_ROW;
+    blocks.push({ headerTop, gridTop: y, gridHeight });
+    y += gridHeight + (index === groups.length - 1 ? STAGE_AXIS : STAGE_GAP);
+  });
+  const hasLost = groups.some((group) => group.lost.length > 0);
+  return { groups, blocks, footerTop: y, height: Math.max(240, y + (hasLost ? STAGE_FOOTER : 8)) };
+}
+
+export function stageBarsHeight(series: DashboardStageItem[]): number {
+  return stageLayout(series).height;
+}
+
+/**
+ * Заявки по текущему этапу (виджет 2): горизонтальные бары от нуля в порядке этапов
+ * процесса, общая шкала для всех процессов (B2B и B2C сравнимы). При «Все» — блок на
+ * процесс с заголовком. «Отказ» — отдельной строкой под графиком, не частью
+ * последовательности. Клик по этапу → канбан этого процесса с фильтром.
+ */
+export function stageBarsOption(series: DashboardStageItem[]): EChartsOption {
+  const layout = stageLayout(series);
+  const { groups } = layout;
+  const several = groups.length > 1;
+  const max = Math.max(1, ...series.filter((s) => s.outcome !== 'lost').map((s) => s.value));
+  const graphic: Record<string, unknown>[] = [];
+  const grids: Record<string, unknown>[] = [];
+  const xAxes: Record<string, unknown>[] = [];
+  const yAxes: Record<string, unknown>[] = [];
+  const bars: Record<string, unknown>[] = [];
+  groups.forEach((group, index) => {
+    const block = layout.blocks[index]!;
+    const last = index === groups.length - 1;
+    if (several) {
+      graphic.push({
+        type: 'text',
+        left: 8,
+        top: block.headerTop + 6,
+        silent: true,
+        style: {
+          text: `Процесс ${WORKFLOW_LABELS[group.wf] ?? group.wf.toUpperCase()}`,
+          fill: SURFACE.foreground,
+          font: '600 12px sans-serif',
+        },
+      });
+    }
+    grids.push({ left: 8, right: 56, top: block.gridTop, height: block.gridHeight, containLabel: true });
+    xAxes.push({
+      type: 'value',
+      gridIndex: index,
+      min: 0,
+      max, // общая шкала: длины баров сравнимы между процессами
+      minInterval: 1,
+      axisLabel: { ...AXIS_LABEL, show: last },
+      splitLine: SPLIT_LINE,
+      name: last ? 'заявок' : undefined,
+      nameTextStyle: AXIS_NAME,
+    });
+    yAxes.push({
+      type: 'category',
+      gridIndex: index,
+      inverse: true,
+      data: group.bars.map((item) => item.stage_label ?? item.label),
+      axisLabel: { ...AXIS_LABEL, width: 150, overflow: 'truncate' },
+    });
+    bars.push({
+      type: 'bar',
+      name: WORKFLOW_LABELS[group.wf] ?? group.wf,
+      xAxisIndex: index,
+      yAxisIndex: index,
+      barMaxWidth: 18,
+      label: VALUE_LABEL,
+      data: group.bars.map((item, i) => ({
+        value: item.value,
+        key: stageClickKey(item),
+        stage: item.stage_label ?? item.label,
+        amount: item.amount,
+        itemStyle: { color: seriesColor(item, i), borderRadius: [0, 4, 4, 0] },
+      })),
+    });
+  });
+  if (groups.some((group) => group.lost.length > 0)) {
+    const parts = groups.map((group) => {
+      const lost = group.lost.reduce((sum, item) => sum + item.value, 0);
+      return several ? `${WORKFLOW_LABELS[group.wf] ?? group.wf} — ${lost}` : `${lost}`;
+    });
+    const name = groups.find((group) => group.lost[0])?.lost[0]?.stage_label ?? 'Отказ';
+    graphic.push({
+      type: 'text',
+      left: 8,
+      top: layout.footerTop + 6,
+      silent: true,
+      style: {
+        text: `${name}: ${parts.join(' · ')} — отдельно от последовательности этапов`,
+        fill: STATUS_COLORS.danger,
+        font: '500 12px sans-serif',
+      },
+    });
+  }
   return {
     ...chartAnimation(),
     tooltip: {
       trigger: 'item',
       formatter: (params: unknown) => {
-        const p = params as { name: string; value: number; data: { amount?: string | null } };
-        const amount = p.data.amount
-          ? `<br/>Сумма: ${Number(p.data.amount).toLocaleString('ru-RU')} ₽`
-          : '';
-        return `${p.name}: <b>${p.value}</b>${amount}`;
+        const p = params as {
+          value: number;
+          seriesName: string;
+          data: { stage: string; amount?: string | null };
+        };
+        const amount =
+          p.data.amount && Number(p.data.amount) > 0
+            ? `<br/>Сумма: ${Number(p.data.amount).toLocaleString('ru-RU')} ₽`
+            : '';
+        const process = several ? `${escapeHtml(p.seriesName)} · ` : '';
+        return `${process}${escapeHtml(p.data.stage)}: <b>${p.value}</b>${amount}`;
       },
     },
-    series: [
-      {
-        type: 'funnel',
-        left: 16,
-        right: 16,
-        top: 8,
-        bottom: 8,
-        sort: 'none',
-        gap: 4,
-        minSize: '12%',
-        label: { show: true, position: 'inside', formatter: '{b}: {c}' },
-        emphasis: { label: { fontSize: 14 } },
-        data: series.map((item, index) => {
-          const color = seriesColor(item, index);
-          return {
-            name: item.label,
-            value: item.value,
-            key: item.key,
-            amount: item.amount,
-            // Подпись контрастна цвету сегмента (§8.2), не жёсткий белый
-            label: { color: funnelLabelColor(color) },
-            // 2px белая обводка между сегментами воронки (§2.6)
-            itemStyle: { color, borderWidth: 2, borderColor: SURFACE.card },
-          };
-        }),
-      },
-    ],
-  };
+    grid: grids,
+    xAxis: xAxes,
+    yAxis: yAxes,
+    series: bars,
+    graphic,
+  } as EChartsOption;
 }
 
-/** Динамика создано/завершено по неделям (виджет 3): area + dataZoom. */
+// --- Динамика ----------------------------------------------------------------------------
+
+const DYNAMICS_COLORS: Record<string, string> = {
+  created: STATUS_COLORS.inProgress,
+  closed: STATUS_COLORS.success,
+  lost: STATUS_COLORS.danger,
+};
+
+function shortDate(iso: string): string {
+  const [, month, day] = iso.split('-');
+  return day && month ? `${day}.${month}` : iso;
+}
+
+/** Динамика по неделям (виджет 3): линии без сглаживания, точка на каждой неделе. */
 export function dynamicsOption(series: ReportDynamicsSeries[]): EChartsOption {
   const dates = [...new Set(series.flatMap((s) => s.points.map((p) => p.date)))].sort();
-  const colors = [STATUS_COLORS.inProgress, STATUS_COLORS.success, STATUS_COLORS.stuck];
+  const fallback = [STATUS_COLORS.inProgress, STATUS_COLORS.success, STATUS_COLORS.danger];
   return {
     ...chartAnimation(),
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'line' },
+      formatter: (params: unknown) => {
+        const list = params as { axisValue: string; marker: string; seriesName: string; value: number }[];
+        const first = list[0];
+        if (!first) return '';
+        const rows = list.map((p) => `${p.marker}${escapeHtml(p.seriesName)}: <b>${p.value}</b>`);
+        return [`Неделя с ${shortDate(first.axisValue)}`, ...rows].join('<br/>');
+      },
+    },
     legend: { top: 0, textStyle: AXIS_LABEL },
-    grid: { left: 48, right: 16, top: 32, bottom: 56 },
-    xAxis: { type: 'category', data: dates, axisLabel: AXIS_LABEL },
-    yAxis: { type: 'value', minInterval: 1, axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
-    dataZoom: [{ type: 'slider', height: 20, bottom: 8 }],
+    grid: { left: 48, right: 24, top: 40, bottom: 64 },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLabel: { ...AXIS_LABEL, formatter: (value: string) => shortDate(value) },
+      name: 'неделя',
+      nameLocation: 'middle',
+      nameGap: 28,
+      nameTextStyle: AXIS_NAME,
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      minInterval: 1,
+      axisLabel: AXIS_LABEL,
+      splitLine: SPLIT_LINE,
+      name: 'заявок',
+      nameTextStyle: AXIS_NAME,
+    },
+    dataZoom: dates.length > 16 ? [{ type: 'slider', height: 16, bottom: 4 }] : [],
     series: series.map((s, index) => {
       const byDate = new Map(s.points.map((p) => [p.date, p.value]));
-      const color = s.color || colors[index % colors.length]!;
+      const color = s.color || DYNAMICS_COLORS[s.key] || fallback[index % fallback.length]!;
       return {
         name: s.label,
         type: 'line' as const,
-        smooth: true,
+        // без сглаживания: сплайн рисовал бы значения между неделями, которых нет в данных
+        smooth: false,
+        showSymbol: true,
+        symbol: 'circle',
         symbolSize: 6,
         data: dates.map((date) => byDate.get(date) ?? 0),
         itemStyle: { color },
-        lineStyle: { color },
-        areaStyle: { color, opacity: 0.12 },
+        lineStyle: { color, width: 2 },
       };
     }),
   };
 }
 
-/** Нагрузка по КАМам (виджет 4): горизонтальный stacked bar по этапам. */
-export function kamWorkloadOption(rows: KamWorkloadRow[]): EChartsOption {
-  // единый набор этапов по всем КАМам — в порядке первого появления
-  const statusKeys: string[] = [];
-  const statusMeta = new Map<string, ReportSeriesItem>();
+// --- Нагрузка по КАМам ------------------------------------------------------------------
+
+interface StageMeta {
+  code: string;
+  labels: string[];
+  color?: string | null;
+  sort: number;
+}
+
+/** Этапы всех КАМов → серии по `code` (B2B и B2C с одним кодом — одна серия, сумма). */
+export function workloadStages(rows: KamWorkloadItem[]): StageMeta[] {
+  const meta = new Map<string, StageMeta>();
   for (const row of rows) {
     for (const item of row.by_status) {
-      if (!statusMeta.has(item.key)) {
-        statusKeys.push(item.key);
-        statusMeta.set(item.key, item);
-      }
+      const code = item.code ?? item.key;
+      const entry = meta.get(code) ?? { code, labels: [], color: item.color, sort: item.sort_order ?? 0 };
+      if (!entry.labels.includes(item.label)) entry.labels.push(item.label);
+      entry.sort = Math.min(entry.sort, item.sort_order ?? entry.sort);
+      meta.set(code, entry);
     }
   }
-  const kamNames = rows.map((r) => r.kam_name);
-  return {
-    ...chartAnimation(),
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    legend: { top: 0, type: 'scroll', textStyle: AXIS_LABEL },
-    grid: { left: 8, right: 24, top: 32, bottom: 8, containLabel: true },
-    xAxis: { type: 'value', minInterval: 1, axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
-    yAxis: { type: 'category', data: kamNames, axisLabel: AXIS_LABEL },
-    series: statusKeys.map((key, index) => {
-      const meta = statusMeta.get(key)!;
-      return {
-        name: meta.label,
-        type: 'bar' as const,
-        stack: 'total',
-        barMaxWidth: 24,
-        // 2px белая обводка между stacked-сегментами (§2.6)
-        itemStyle: { color: seriesColor(meta, index), borderWidth: 2, borderColor: SURFACE.card },
-        data: rows.map((row) => {
-          const found = row.by_status.find((s) => s.key === key);
-          return { value: found?.value ?? 0, key: row.kam_id };
-        }),
-      };
-    }),
-  };
+  return [...meta.values()].sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code));
 }
 
-export type ProgramsMode = 'requests' | 'priority';
+export function workloadCount(row: KamWorkloadItem, code: string): number {
+  return row.by_status
+    .filter((item) => (item.code ?? item.key) === code)
+    .reduce((sum, item) => sum + (item.count ?? item.value ?? 0), 0);
+}
 
-/** Топ программ (виджет 5): тумблер «по заявкам / по приоритету» (ux.md §9.4). */
-export function programsOption(rows: ProgramDemandRow[], mode: ProgramsMode): EChartsOption {
-  const sorted = [...rows].sort((a, b) =>
-    mode === 'requests' ? b.requests_count - a.requests_count : a.priority_rank - b.priority_rank,
-  );
-  const top = sorted.slice(0, 10).reverse(); // reverse: первая строка сверху
+/**
+ * Нагрузка по КАМам (виджет 4): горизонтальный stacked bar по этапам в порядке
+ * процесса; tooltip — этапы, вузы в работе (топ по числу заявок) и зависшие.
+ */
+export function kamWorkloadOption(rows: KamWorkloadItem[]): EChartsOption {
+  const stages = workloadStages(rows);
   return {
     ...chartAnimation(),
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
       formatter: (params: unknown) => {
-        const list = params as { name: string; value: number; dataIndex: number }[];
+        const list = params as { dataIndex: number; marker: string; seriesName: string; value: number }[];
+        const first = list[0];
+        if (!first) return '';
+        const row = rows[first.dataIndex];
+        if (!row) return '';
+        const lines = [`<b>${escapeHtml(row.kam_name)}</b>`];
+        for (const p of list) {
+          if (p.value > 0) lines.push(`${p.marker}${escapeHtml(p.seriesName)}: <b>${p.value}</b>`);
+        }
+        lines.push(`Открытых заявок: <b>${row.active_requests}</b>`);
+        lines.push(`Вузов в работе: <b>${row.universities}</b>`);
+        lines.push(`Зависших: <b>${row.stuck}</b>`);
+        if (row.top_universities.length > 0) {
+          const names = row.top_universities.map((u) => `${escapeHtml(truncate(u.name, 36))} (${u.count})`);
+          const more = row.universities > row.top_universities.length ? ` и ещё ${row.universities - row.top_universities.length}` : '';
+          lines.push(`<span style="color:${SURFACE.mutedForeground}">${names.join(', ')}${more}</span>`);
+        }
+        return lines.join('<br/>');
+      },
+    },
+    legend: { top: 0, type: 'scroll', textStyle: AXIS_LABEL },
+    grid: { left: 8, right: 48, top: 36, bottom: 24, containLabel: true },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      minInterval: 1,
+      axisLabel: AXIS_LABEL,
+      splitLine: SPLIT_LINE,
+      name: 'заявок',
+      nameTextStyle: AXIS_NAME,
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map((r) => r.kam_id),
+      // подпись: КАМ · открытых заявок (зависших) — итог виден без наведения
+      axisLabel: {
+        ...AXIS_LABEL,
+        formatter: (_value: string, index: number) => {
+          const row = rows[index];
+          if (!row) return '';
+          const stuck = row.stuck > 0 ? `, зав. ${row.stuck}` : '';
+          return `${truncate(row.kam_name, 22)} · ${row.active_requests}${stuck}`;
+        },
+      },
+    },
+    series: stages.map((stage, index) => ({
+        name: stage.labels.join(' / '),
+        type: 'bar' as const,
+        stack: 'total',
+        barMaxWidth: 22,
+        // 2px белая обводка между stacked-сегментами (§2.6)
+        itemStyle: { color: seriesColor(stage, index), borderWidth: 2, borderColor: SURFACE.card },
+        data: rows.map((row) => ({ value: workloadCount(row, stage.code), key: row.kam_id })),
+      })),
+  };
+}
+
+// --- Востребованность программ -----------------------------------------------------------
+
+export type ProgramsMode = 'requests' | 'students' | 'streams' | 'priority' | 'demand';
+
+export const PROGRAM_MODES: { value: ProgramsMode; label: string; axis: string }[] = [
+  { value: 'requests', label: 'Заявки', axis: 'заявок на обучение' },
+  { value: 'students', label: 'Обучаются', axis: 'обучающихся' },
+  { value: 'streams', label: 'Потоки', axis: 'параллельных потоков' },
+  { value: 'priority', label: 'Приоритет', axis: 'заявок на обучение' },
+  { value: 'demand', label: 'Индекс', axis: 'расчётный спрос, 0–100' },
+];
+
+export function programMetric(row: ProgramDemandItem, mode: ProgramsMode): number {
+  switch (mode) {
+    case 'students':
+      return row.students_studying;
+    case 'streams':
+      return row.parallel_streams;
+    case 'demand':
+      return row.computed_demand ?? 0;
+    default:
+      return row.requests_count;
+  }
+}
+
+/** Сортировка по выбранному показателю; «Приоритет» — по ручному рангу (меньше = выше). */
+export function sortPrograms(rows: ProgramDemandItem[], mode: ProgramsMode): ProgramDemandItem[] {
+  return [...rows].sort((a, b) =>
+    mode === 'priority'
+      ? a.priority_rank - b.priority_rank || a.name.localeCompare(b.name)
+      : programMetric(b, mode) - programMetric(a, mode) ||
+        b.requests_count - a.requests_count ||
+        a.priority_rank - b.priority_rank,
+  );
+}
+
+/** Востребованность программ (виджет 5): топ-10 по выбранному показателю ТЗ. */
+export function programsOption(rows: ProgramDemandItem[], mode: ProgramsMode): EChartsOption {
+  const top = sortPrograms(rows, mode).slice(0, 10);
+  const axis = PROGRAM_MODES.find((m) => m.value === mode)?.axis ?? '';
+  return {
+    ...chartAnimation(),
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params: unknown) => {
+        const list = params as { dataIndex: number }[];
         const first = list[0];
         if (!first) return '';
         const row = top[first.dataIndex];
-        return `${first.name}<br/>Заявок: <b>${first.value}</b><br/>Приоритет: ${row?.priority_rank ?? '—'}`;
+        if (!row) return '';
+        const lines = [
+          `<b>${escapeHtml(row.name)}</b>`,
+          `Заявки на обучение: <b>${row.requests_count}</b> (открыто ${row.open_requests})`,
+          `Обучающиеся: <b>${row.students_studying}</b>`,
+          `Параллельные потоки: <b>${row.parallel_streams}</b>`,
+          `Ручной приоритет: ${row.priority_rank}`,
+        ];
+        if (row.computed_demand !== null) lines.push(`Расчётный спрос: <b>${row.computed_demand}</b>`);
+        return lines.join('<br/>');
       },
     },
-    grid: { left: 8, right: 40, top: 8, bottom: 8, containLabel: true },
-    xAxis: { type: 'value', minInterval: 1, axisLabel: AXIS_LABEL, splitLine: SPLIT_LINE },
+    grid: { left: 8, right: 48, top: 8, bottom: 28, containLabel: true },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      minInterval: mode === 'demand' ? undefined : 1,
+      axisLabel: AXIS_LABEL,
+      splitLine: SPLIT_LINE,
+      name: axis,
+      nameLocation: 'middle',
+      nameGap: 24,
+      nameTextStyle: AXIS_NAME,
+    },
     yAxis: {
       type: 'category',
-      data: top.map((r) => (r.name.length > 28 ? `${r.name.slice(0, 27)}…` : r.name)),
-      axisLabel: AXIS_LABEL,
+      inverse: true, // первая строка сверху
+      data: top.map((r) => r.name),
+      // длинные названия программ режутся по ширине, а не по числу символов
+      axisLabel: { ...AXIS_LABEL, width: 170, overflow: 'truncate' },
     },
     series: [
       {
         type: 'bar',
         barMaxWidth: 20,
         itemStyle: { color: STATUS_COLORS.inProgress, borderRadius: [0, 4, 4, 0] },
-        label: { show: true, position: 'right', color: SURFACE.mutedForeground },
-        data: top.map((r) => ({ value: r.requests_count, key: r.program_id })),
+        label: {
+          show: true,
+          position: 'right',
+          color: SURFACE.mutedForeground,
+          formatter: (p: unknown) => {
+            const row = top[(p as { dataIndex: number }).dataIndex];
+            if (!row) return '';
+            const value = programMetric(row, mode);
+            return mode === 'priority' ? `${value} · №${row.priority_rank}` : `${value}`;
+          },
+        },
+        data: top.map((r) => ({ value: programMetric(r, mode), key: r.program_id })),
       },
     ],
   };
 }
 
-/** Воронка студентов talent pool (виджет 6): фиолетовая гамма. */
-export function talentFunnelOption(series: ReportSeriesItem[]): EChartsOption {
+// --- Студенты ----------------------------------------------------------------------------
+
+/** Студенты по статусам (виджет 6): бары от нуля в порядке пути, фиолетовая гамма. */
+export function talentBarsOption(series: ReportSeriesItem[]): EChartsOption {
   return {
     ...chartAnimation(),
-    tooltip: { trigger: 'item', formatter: '{b}: <b>{c}</b>' },
+    tooltip: { trigger: 'item', formatter: (p: unknown) => {
+      const item = p as { name: string; value: number };
+      return `${escapeHtml(item.name)}: <b>${item.value}</b>`;
+    } },
+    grid: { left: 8, right: 48, top: 8, bottom: 28, containLabel: true },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      minInterval: 1,
+      axisLabel: AXIS_LABEL,
+      splitLine: SPLIT_LINE,
+      name: 'студентов',
+      nameLocation: 'middle',
+      nameGap: 24,
+      nameTextStyle: AXIS_NAME,
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: series.map((item) => item.label),
+      axisLabel: AXIS_LABEL,
+    },
     series: [
       {
-        type: 'funnel',
-        left: 16,
-        right: 16,
-        top: 8,
-        bottom: 8,
-        sort: 'none',
-        gap: 4,
-        minSize: '16%',
-        label: { show: true, position: 'inside', formatter: '{b}: {c}' },
-        data: series.map((item, index) => {
-          const color = item.color || TALENT_PALETTE[index % TALENT_PALETTE.length]!;
-          return {
-            name: item.label,
-            value: item.value,
-            key: item.key,
-            // Хвост рампа светлеет (§2.6) — подпись темнеет вместе с ним (§8.2)
-            label: { color: funnelLabelColor(color) },
-            itemStyle: { color, borderWidth: 2, borderColor: SURFACE.card },
-          };
-        }),
+        type: 'bar',
+        barMaxWidth: 22,
+        label: VALUE_LABEL,
+        data: series.map((item, index) => ({
+          value: item.value,
+          key: item.key,
+          itemStyle: {
+            color: item.color || TALENT_PALETTE[index % TALENT_PALETTE.length]!,
+            borderRadius: [0, 4, 4, 0],
+          },
+        })),
       },
     ],
   };
-}
-
-/**
- * Композитный PNG всего дашборда (ux.md §6.2): собирается на клиенте из
- * getDataURL каждого графика + подпись с периодом и фильтрами. Без запросов
- * на сервер — работает и офлайн.
- */
-export async function composeDashboardPng(
-  charts: { title: string; dataUrl: string }[],
-  caption: string,
-): Promise<void> {
-  const WIDTH = 1200;
-  const PADDING = 24;
-  const TITLE_H = 34;
-  const HEADER_H = 72;
-
-  const images = await Promise.all(
-    charts.map(
-      (chart) =>
-        new Promise<{ title: string; img: HTMLImageElement }>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve({ title: chart.title, img });
-          img.onerror = () => reject(new Error(`Не удалось подготовить график «${chart.title}»`));
-          img.src = chart.dataUrl;
-        }),
-    ),
-  );
-
-  const contentWidth = WIDTH - PADDING * 2;
-  const blocks = images.map(({ title, img }) => {
-    const scale = contentWidth / img.width;
-    return { title, img, height: Math.round(img.height * scale) };
-  });
-  const totalHeight =
-    HEADER_H + blocks.reduce((sum, b) => sum + TITLE_H + b.height + PADDING, 0) + PADDING;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = WIDTH;
-  canvas.height = totalHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Браузер не поддерживает canvas');
-
-  ctx.fillStyle = SURFACE.card;
-  ctx.fillRect(0, 0, WIDTH, totalHeight);
-  ctx.fillStyle = SURFACE.foreground;
-  ctx.font = '600 22px Inter, "Segoe UI", sans-serif';
-  ctx.fillText('Альма — аналитика', PADDING, 36);
-  ctx.fillStyle = SURFACE.mutedForeground;
-  ctx.font = '400 14px Inter, "Segoe UI", sans-serif';
-  ctx.fillText(caption, PADDING, 58);
-
-  let y = HEADER_H;
-  for (const block of blocks) {
-    ctx.fillStyle = SURFACE.foreground;
-    ctx.font = '600 16px Inter, "Segoe UI", sans-serif';
-    ctx.fillText(block.title, PADDING, y + 20);
-    y += TITLE_H;
-    ctx.drawImage(block.img, PADDING, y, contentWidth, block.height);
-    y += block.height + PADDING;
-  }
-
-  const anchor = document.createElement('a');
-  anchor.href = canvas.toDataURL('image/png');
-  anchor.download = 'crm-dashboard.png';
-  anchor.click();
 }

@@ -666,9 +666,11 @@ class TestSql:
     def test_stage_stats_single_array_param(self) -> None:
         ids = [uuid.uuid4() for _ in range(40_000)]  # больше лимита asyncpg на параметры
         compiled = ka.stage_reached_stmt(ids, PERIOD).compile(dialect=postgresql.dialect())
-        assert list(compiled.params) == ["deal_ids", "created_at_1"]
+        assert list(compiled.params) == ["deal_ids", "created_at_1", "kind_1"]
+        assert compiled.params["kind_1"] == "system_migration"
         dwell = _sql(ka.stage_dwell_stmt(ids, PERIOD))
-        assert "lead(deal_stage_history.created_at) OVER (PARTITION BY" in dwell
+        assert "lead(segments.entered) OVER (PARTITION BY segments.deal_id" in dwell
+        assert dwell.count("%(deal_ids)s") == 1
 
 
 # --- 14: D16 — «Завершено за период» дашборда по истории переходов -----------------------
@@ -875,8 +877,11 @@ class TestActivityPlan:
         plan = self._plan()
         for deal in plan.deals:
             for previous, step in zip(deal.steps, deal.steps[1:], strict=False):
-                transition = allowed[deal.pipeline][(previous.stage, step.stage)]
                 assert previous.at < step.at <= self.NOW
+                lms_event = getattr(step, "kind", "manual") == "integration"
+                if lms_event and step.stage == previous.stage:
+                    continue  # событие LMS: строка истории без смены этапа, не переход схемы
+                transition = allowed[deal.pipeline][(previous.stage, step.stage)]
                 assert step.is_return == transition["is_return"]
                 if transition["requires_comment"]:
                     assert step.comment, (deal.title, step.stage)

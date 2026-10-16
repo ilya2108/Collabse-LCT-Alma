@@ -21,6 +21,7 @@ import logging
 import math
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,7 +51,7 @@ from app.core.rbac_catalog import WORKFLOW_TYPE_LABELS
 from app.core.sse import publish_event
 from app.models.access import AppRole, AppRolePermission
 from app.models.deal import Deal, DealStageHistory
-from app.models.service import AppSetting, Notification, NotificationRule
+from app.models.service import AppSetting, FileObject, Notification, NotificationRule
 from app.models.talent import Student, StudentStatusHistory
 from app.models.user import AppUser
 from app.models.workflow import (
@@ -288,8 +289,15 @@ async def transition_deal(
     comment: str | None,
     version: int,
     ip: str | None = None,
+    files: Sequence[FileObject] = (),
 ) -> Deal:
-    """Единственная точка смены этапа по ребру живой схемы (инвариант I-4)."""
+    """Единственная точка смены этапа по ребру живой схемы (инвариант I-4).
+
+    `files` — вложения перехода («файлы в статусах», 0006), уже проверенные вызывающим
+    (своя заявка, не удалены, не привязаны, право `requests:files`): привязываются к строке
+    истории перехода в той же транзакции — отказ движка (4xx) не оставляет привязки, а
+    зафиксированный переход не остаётся без своих файлов.
+    """
     # Порядок локов строго «advisory → row» — как в apply_change (exclusive advisory,
     # затем FOR UPDATE заявок мигрируемых этапов). Обратный порядок давал ABBA-deadlock:
     # T1 (переход) держит строку заявки и ждёт shared advisory, T2 (применение схемы)
@@ -404,17 +412,32 @@ async def transition_deal(
     elif deal.status != "open":
         deal.status = "open"  # выход возвратом из терминала
 
-    session.add(
-        _history_row(
-            deal,
-            from_stage=from_stage,
-            to_stage=to_stage,
-            transition=transition,
-            kind="manual",
-            actor_id=actor.id,
-            comment=comment.strip() if comment else None,
-        )
+    history = _history_row(
+        deal,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        transition=transition,
+        kind="manual",
+        actor_id=actor.id,
+        comment=comment.strip() if comment else None,
     )
+    session.add(history)
+    if files:
+        await session.flush()  # id строки истории — для привязки файлов
+        for file_object in files:
+            file_object.stage_history_id = history.id
+        await write_audit(
+            session,
+            actor_user_id=actor.id,
+            action="request.files_attached",
+            entity_type="deal",
+            entity_id=deal.id,
+            after={
+                "stage_history_id": str(history.id),
+                "file_ids": [str(f.id) for f in files],
+            },
+            ip=ip,
+        )
     actor_label = actor.full_name or actor.username
     await emit_event_notifications(
         session,

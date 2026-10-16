@@ -17,6 +17,7 @@ import { listContractsByUniversity } from '@/shared/api/endpoints/contracts';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { listRequests } from '@/shared/api/endpoints/requests';
 import {
+  UNIVERSITIES_ASSIGN,
   createUniversityContact,
   deleteUniversityContact,
   getUniversity,
@@ -376,7 +377,10 @@ function EditUniversitySheet({
   onClose: () => void;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
+  // ответственный КАМ — право Руководителя (universities:assign); без права поле
+  // недоступно и в PATCH не уходит
+  const canAssign = hasPermission(UNIVERSITIES_ASSIGN);
   const form = useForm<UniversityEditValues>({
     resolver: zodResolver(universityEditSchema),
     mode: 'onTouched',
@@ -444,7 +448,7 @@ function EditUniversitySheet({
                 region: values.region?.trim() || null,
                 city: values.city?.trim() || null,
                 website: values.website?.trim() || null,
-                kam_user_id: values.kam_user_id ?? null,
+                ...(canAssign ? { kam_user_id: values.kam_user_id ?? null } : {}),
                 notes: values.notes?.trim() || null,
               }),
             )}
@@ -460,7 +464,7 @@ function EditUniversitySheet({
               {textField('city', 'Город')}
             </div>
             {textField('website', 'Сайт', 'https://…')}
-            {hasPermission('crm:write_any') ? (
+            {canAssign ? (
               <FormField
                 control={form.control}
                 name="kam_user_id"
@@ -480,7 +484,24 @@ function EditUniversitySheet({
                   </FormItem>
                 )}
               />
-            ) : null}
+            ) : (
+              <div className="grid gap-1.5">
+                <span className="text-sm font-medium">Ответственный КАМ</span>
+                <div
+                  aria-disabled="true"
+                  className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                >
+                  {university.kam_user_id
+                    ? university.kam_user_id === user?.id
+                      ? 'Вы'
+                      : 'Назначен другой КАМ'
+                    : 'Не назначен'}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Ответственного КАМа назначает руководитель
+                </span>
+              </div>
+            )}
             <FormField
               control={form.control}
               name="notes"
