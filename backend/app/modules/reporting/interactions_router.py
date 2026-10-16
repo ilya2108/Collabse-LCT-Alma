@@ -38,6 +38,10 @@ def interactions_params(
     workflow_type: Annotated[Literal["b2b", "b2c"] | None, Query()] = None,
     kam_id: Annotated[list[uuid.UUID] | None, Query(description=f"КАМ, {_IDS}")] = None,
     university_id: Annotated[list[uuid.UUID] | None, Query(description=f"Вуз, {_IDS}")] = None,
+    direction_id: Annotated[
+        list[uuid.UUID] | None,
+        Query(description=f"ИТ-направление (программы заявки, без него — её продукта), {_IDS}"),
+    ] = None,
     product_id: Annotated[list[uuid.UUID] | None, Query(description=f"ИТ-продукт, {_IDS}")] = None,
     program_id: Annotated[list[uuid.UUID] | None, Query(description=f"Программа, {_IDS}")] = None,
     stage_id: Annotated[
@@ -53,6 +57,7 @@ def interactions_params(
             workflow_type=workflow_type,
             kam_ids=tuple(kam_id or ()),
             university_ids=tuple(university_id or ()),
+            direction_ids=tuple(direction_id or ()),
         ),
         product_ids=tuple(product_id or ()),
         program_ids=tuple(program_id or ()),
@@ -77,6 +82,7 @@ async def report_interactions(
 ) -> dict[str, Any]:
     """Строка — заявка, с которой шла работа в периоде (та же семантика периода, что у
     «Активности КАМов»): вуз, ИТ-направление, ИТ-продукт, программа, статус работы с вузом
-    (этап на конец периода), ответственный, даты. Фильтры — вузы, продукты, программы,
-    КАМы, статус. Каталог колонок и колонки по умолчанию — в ответе (`columns`)."""
+    (этап на конец периода), ответственный, даты. Фильтры — вузы, ИТ-направления,
+    продукты, программы, КАМы, статус. Каталог колонок и колонки по умолчанию — в ответе
+    (`columns`)."""
     return await build_interactions(session, user, params)

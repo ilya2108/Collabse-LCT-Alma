@@ -35,6 +35,8 @@ export interface ProductPayload {
   product_type?: string;
   description?: string | null;
   is_active?: boolean;
+  /** ИТ-направления продукта; передан — набор заменяется целиком. */
+  direction_ids?: string[];
 }
 
 export function createProduct(payload: ProductPayload): Promise<Product> {

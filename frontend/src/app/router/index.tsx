@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { createBrowserRouter, useRouteError } from 'react-router-dom';
 import { AppLayout } from '@/app/layout/AppLayout';
+import { ADMIN_GUIDE_PERMISSIONS } from '@/app/menuConfig';
 import { isApiError } from '@/shared/api/errors';
 import { ErrorState } from '@/shared/ui/data-table';
 import type { PermissionCode } from '@/shared/auth/permissions';
@@ -18,6 +19,7 @@ import {
 import { BoardPage } from '@/pages/board/BoardPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { ForbiddenPage, NotFoundPage } from '@/pages/ErrorPages';
+import { AdminHelpPage, HelpPage } from '@/pages/help/HelpPage';
 import { ImportPage } from '@/pages/ImportPage';
 import { KamActivityPage } from '@/pages/KamActivityPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -173,6 +175,16 @@ export const router = createBrowserRouter([
             element: guarded('admin:audit', <AdminIntegrationsPage />),
           },
           { path: 'admin/audit', element: guarded('admin:audit', <AdminAuditPage />) },
+          // встроенная справка: пользователю — всем вошедшим, администратору — по правам
+          { path: 'help', element: <HelpPage /> },
+          {
+            path: 'help/admin',
+            element: (
+              <RequirePermission anyOf={ADMIN_GUIDE_PERMISSIONS}>
+                <AdminHelpPage />
+              </RequirePermission>
+            ),
+          },
           { path: '403', element: <ForbiddenPage /> },
           { path: '*', element: <NotFoundPage /> },
         ],

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { RequestDrawer } from '@/components/requests/RequestDrawer';
 import {
   exportInteractions,
@@ -120,6 +120,9 @@ function HowItWorks(): ReactNode {
             </div>
           ))}
         </dl>
+        <Link to="/help#kam-activity" className="mt-3 inline-block text-sm text-primary hover:underline">
+          Подробнее в справке
+        </Link>
       </PopoverContent>
     </Popover>
   );
@@ -235,6 +238,7 @@ export function KamActivityScreen(): ReactNode {
     if (patch.wf !== undefined) next.wf = patch.wf;
     if (patch.kam !== undefined) next.kam = patch.kam;
     if (patch.university !== undefined) next.university = patch.university;
+    if (patch.direction !== undefined) next.direction = patch.direction;
     if (patch.product !== undefined) next.product = patch.product;
     if (patch.program !== undefined) next.program = patch.program;
     if (patch.status !== undefined) next.status = patch.status;
@@ -249,6 +253,7 @@ export function KamActivityScreen(): ReactNode {
       wf: null,
       kam: [],
       university: [],
+      direction: [],
       product: [],
       program: [],
       status: [],

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Ellipsis, FolderOpen, Plus, Trash2, Users } from 'lucide-react';
+import { Copy, Ellipsis, FolderOpen, LifeBuoy, Plus, Trash2, Users } from 'lucide-react';
 import { useMemo, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { noteOwnAccessChange } from '@/app/layout/AccessChangeListener';
@@ -310,12 +310,20 @@ export function AdminRolesPage(): ReactNode {
         title="Роли и права"
         subtitle="Набор прав и область данных роли. Изменения применяются сразу, без перезахода пользователей"
         extra={
-          <Button asChild>
-            <Link to="/admin/roles/new">
-              <Plus aria-hidden="true" />
-              Создать роль
-            </Link>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" asChild>
+              <Link to="/help/admin#roles">
+                <LifeBuoy aria-hidden="true" />
+                Справка
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link to="/admin/roles/new">
+                <Plus aria-hidden="true" />
+                Создать роль
+              </Link>
+            </Button>
+          </div>
         }
       />
       <Tabs value={tab} onValueChange={(value) => setTab(value as RolesTab)}>

@@ -251,6 +251,34 @@ export interface FileObject {
 }
 
 /** Продукт (§3.3). */
+/**
+ * ИТ-направление обучения (DevOps, QA, анализ данных…) — справочник `it_direction`.
+ * Читают все роли, правит право «Справочники» (`admin:dictionaries`).
+ */
+export interface ItDirection {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  sort_order: number;
+  is_active: boolean;
+  version: number;
+  /** Активные программы с этим направлением. */
+  programs_count: number;
+  /** ИТ-продукты с этим направлением. */
+  products_count: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Направление в карточках программ и продуктов. */
+export interface DirectionBrief {
+  id: string;
+  code: string;
+  name: string;
+  is_active: boolean;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -258,6 +286,9 @@ export interface Product {
   product_type?: string;
   description: string | null;
   is_active: boolean;
+  /** ИТ-направления, которым помогает учить продукт (M:N). */
+  direction_ids?: string[];
+  directions?: DirectionBrief[];
   version: number;
   created_at?: string;
   updated_at?: string;
@@ -268,6 +299,11 @@ export interface Program {
   id: string;
   product_id: string | null;
   university_id: string | null;
+  /** ИТ-направление программы (одно). */
+  direction_id?: string | null;
+  direction?: DirectionBrief | null;
+  /** Направления ИТ-продукта: если своё не задано, программа относится к ним. */
+  product_directions?: DirectionBrief[];
   name: string;
   description?: string | null;
   priority_rank: number;

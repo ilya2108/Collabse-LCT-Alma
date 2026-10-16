@@ -6,6 +6,8 @@
 - демо-пользователей (зеркала realm-пользователей, manager_id: kam → head_kam);
 - каталог прав и системные роли (сверка с кодом) и демо-роли «КАМ B2B» / «КАМ B2C»
   (права КАМа в одном процессе), вписанные в переходы своих процессов;
+- справочник ИТ-направлений (DevOps, QA, анализ данных…) с привязкой программ (одно
+  направление) и продуктов (несколько направлений);
 - демо-домен: вузы, контакты, продукты, программы (с приоритетами), договоры
   («1 договор — N продуктов»), заявки B2B/B2C с историей (включая заведомо
   зависшие — фактура для демо CronJob), студентов Talent Pool (ПДн шифруются тем же
@@ -70,8 +72,10 @@ from app.models import (
     DealStageHistory,
     FederalProject,
     InteractionType,
+    ItDirection,
     NotificationRule,
     Product,
+    ProductDirection,
     Program,
     Student,
     StudentActivity,
@@ -402,6 +406,37 @@ PROGRAMS: list[dict[str, Any]] = [
         "published_to_cms": True,
     },
 ]
+
+# справочник ИТ-направлений (код, название, описание) — порядок = sort_order
+IT_DIRECTIONS: list[tuple[str, str, str]] = [
+    ("data-analysis", "Анализ данных", "Аналитика, статистика, BI и Data Science"),
+    ("ml-ai", "Машинное обучение и ИИ", "ML, нейросети, компьютерное зрение, NLP"),
+    ("data-engineering", "Инженерия данных", "Хранилища и конвейеры данных, Big Data"),
+    ("devops", "DevOps", "CI/CD, контейнеры, эксплуатация сервисов и MLOps"),
+    ("qa", "Тестирование (QA)", "Ручное и автоматизированное тестирование ПО"),
+    ("backend", "Backend-разработка", "Серверная разработка: Python, Java, Go"),
+    ("frontend", "Frontend-разработка", "Веб-интерфейсы: JavaScript, TypeScript, React"),
+    ("mobile", "Мобильная разработка", "Приложения для iOS и Android"),
+    ("infosec", "Информационная безопасность", "Защита информации, SOC, анализ защищённости"),
+    ("system-analysis", "Системный анализ", "Требования, проектирование информационных систем"),
+]
+
+# программа ведётся по одному направлению
+PROGRAM_DIRECTIONS: dict[str, str] = {
+    "Практикум по ML, весна-2027": "ml-ai",
+    "ИИ-инженер, 256 ч.": "ml-ai",
+    "Аналитик данных с нуля": "data-analysis",
+    "Компьютерное зрение на производстве": "ml-ai",
+    "Корпоративная школа Python": "backend",
+    "MLOps для инженеров": "devops",
+}
+
+# ИТ-продукт помогает учить по нескольким направлениям
+PRODUCT_DIRECTIONS: dict[str, list[str]] = {
+    "dpo-ds": ["data-analysis", "data-engineering", "ml-ai"],
+    "dpo-ai": ["ml-ai", "data-analysis", "devops"],
+    "corp-edu": ["backend", "frontend", "mobile", "qa", "devops", "infosec", "system-analysis"],
+}
 
 CONTRACTS: list[dict[str, Any]] = [
     {
@@ -1239,6 +1274,50 @@ async def seed_catalog(
     return products, programs
 
 
+async def seed_it_directions(
+    session: AsyncSession, products: dict[str, Product], programs: dict[str, Program]
+) -> dict[str, ItDirection]:
+    """Справочник ИТ-направлений и привязка демо-каталога. Повтор ничего не дублирует и
+    не перетирает ручную правку: направление ставится программе без направления, связи —
+    продукту, у которого их ещё нет."""
+    from app.modules.crm.directions import link_product_directions
+
+    directions: dict[str, ItDirection] = {}
+    for index, (code, name, description) in enumerate(IT_DIRECTIONS):
+        row = (
+            await session.execute(select(ItDirection).where(func.lower(ItDirection.code) == code))
+        ).scalar_one_or_none()
+        if row is None:
+            row = ItDirection(
+                code=code, name=name, description=description, sort_order=(index + 1) * 10
+            )
+            session.add(row)
+            await session.flush()
+        directions[code] = row
+
+    for program_name, code in PROGRAM_DIRECTIONS.items():
+        program = programs.get(program_name)
+        if program is not None and program.direction_id is None:
+            program.direction_id = directions[code].id
+    for product_code, codes in PRODUCT_DIRECTIONS.items():
+        product = products.get(product_code)
+        if product is None:
+            continue
+        has_links = (
+            await session.execute(
+                select(func.count())
+                .select_from(ProductDirection)
+                .where(ProductDirection.product_id == product.id)
+            )
+        ).scalar_one()
+        if not has_links:
+            await link_product_directions(
+                session, product.id, [directions[code].id for code in codes]
+            )
+    await session.flush()
+    return directions
+
+
 async def seed_contracts(
     session: AsyncSession,
     universities: dict[str, University],
@@ -1835,6 +1914,7 @@ async def run_seed(*, reset: bool = False) -> dict[str, Any]:
         await seed_notification_rules(session, admin)
         universities = await seed_universities(session, users)
         products, programs = await seed_catalog(session, universities, users)
+        await seed_it_directions(session, products, programs)
         contracts = await seed_contracts(session, universities, products, users)
         counterparties = await seed_counterparties(session)
         await seed_deals(

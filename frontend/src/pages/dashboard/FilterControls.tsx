@@ -76,7 +76,7 @@ export function DateRangeFilter({ from, to, onChange }: DateRangeFilterProps): R
             )
           }
         />
-        <div className="flex items-center gap-1.5 border-t border-border p-2">
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
           {RANGE_PRESETS.map((preset) => (
             <Button
               key={preset.label}
@@ -192,7 +192,11 @@ export function MultiFilter({
           </span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-64 p-0">
+      <PopoverContent
+        align="start"
+        collisionPadding={16}
+        className="w-88 max-w-[calc(100vw-2rem)] p-0"
+      >
         <Command shouldFilter={!onSearch}>
           <CommandInput placeholder="Найти…" onValueChange={onSearch} />
           <CommandList>
@@ -217,7 +221,9 @@ export function MultiFilter({
                     >
                       {active ? <Check className="size-3" /> : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    <span className="min-w-0 flex-1 truncate" title={option.label}>
+                      {option.label}
+                    </span>
                   </CommandItem>
                 );
               })}

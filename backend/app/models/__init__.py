@@ -1,4 +1,4 @@
-"""Все модели SQLAlchemy (35 таблиц по data-model.md §13)."""
+"""Все модели SQLAlchemy (таблицы data-model.md §13 и последующих миграций)."""
 
 from app.models.access import AppPermission, AppRole, AppRolePermission
 from app.models.base import Base
@@ -7,7 +7,9 @@ from app.models.crm import (
     ContractProduct,
     Counterparty,
     InteractionType,
+    ItDirection,
     Product,
+    ProductDirection,
     Program,
     University,
     UniversityContact,
@@ -51,7 +53,9 @@ __all__ = [
     "UniversityContact",
     "Counterparty",
     "InteractionType",
+    "ItDirection",
     "Product",
+    "ProductDirection",
     "Program",
     "Contract",
     "ContractProduct",

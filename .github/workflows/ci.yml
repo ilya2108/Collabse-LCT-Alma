@@ -60,6 +60,8 @@ jobs:
         run: npx tsc --noEmit
       - name: Юнит-тесты (node:test)
         run: npm run test:unit
+      - name: Справка (снимки, якоря, маршруты, формулировки)
+        run: npm run docs:help
       - name: Сборка
         run: npm run build
 

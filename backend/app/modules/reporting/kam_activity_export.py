@@ -186,6 +186,12 @@ def describe_filters(detail: Mapping[str, Any]) -> str:
             if node["university_id"]
         }
         parts.append("Вузы: " + ", ".join(names.get(uid, uid) for uid in university_ids))
+    direction_ids = params.get("direction_id") or []
+    if direction_ids:
+        names = {item["id"]: item["name"] for item in detail.get("directions", [])}
+        parts.append(
+            "ИТ-направления: " + ", ".join(names.get(item, item) for item in direction_ids)
+        )
     return " · ".join(parts)
 
 

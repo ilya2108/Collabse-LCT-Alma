@@ -80,8 +80,8 @@ export function StatCard({
 
   if (loading) {
     return (
-      <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-5 shadow-card">
-        <Skeleton className="size-10 shrink-0 rounded-md" />
+      <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card p-4 shadow-card sm:gap-3 sm:p-5">
+        <Skeleton className="size-9 shrink-0 rounded-md sm:size-10" />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <Skeleton className="h-3 w-2/3 rounded-sm" />
           <Skeleton className="h-7 w-1/3 rounded-sm" />
@@ -94,16 +94,19 @@ export function StatCard({
     <>
       <span
         className={cn(
-          'flex size-10 shrink-0 items-center justify-center rounded-md',
+          'flex size-9 shrink-0 items-center justify-center rounded-md sm:size-10',
           TONE_CLASSES[tone],
         )}
       >
         <Icon className="size-5" aria-hidden="true" />
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-xs font-medium text-muted-foreground">{title}</span>
-        <span className="flex items-baseline gap-2">
-          <span className="tabular text-[28px] font-semibold leading-9 text-foreground">
+        {/* две строки вместо обрезки: на 375 px KPI идут по две в ряд (P1-5) */}
+        <span className="line-clamp-2 text-xs font-medium leading-4 text-muted-foreground" title={title}>
+          {title}
+        </span>
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <span className="tabular text-2xl font-semibold leading-8 text-foreground sm:text-[28px] sm:leading-9">
             {animated}
             {suffix}
           </span>
@@ -121,14 +124,14 @@ export function StatCard({
       onClick={onClick}
       aria-label={`${title}: ${value}${suffix ?? ''}. Открыть детализацию`}
       className={cn(
-        'flex w-full cursor-pointer items-center gap-3 rounded-lg border border-border bg-card p-5 text-left shadow-card',
+        'flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-card p-4 text-left shadow-card sm:gap-3 sm:p-5',
         'transition-[box-shadow,transform,border-color] duration-150 hover:-translate-y-0.5 hover:shadow-overlay',
       )}
     >
       {body}
     </button>
   ) : (
-    <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-5 shadow-card">
+    <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card p-4 shadow-card sm:gap-3 sm:p-5">
       {body}
     </div>
   );

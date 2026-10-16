@@ -22,6 +22,7 @@ import { SiderLogo } from './SiderLogo';
  * (свёрнутый 64px — иконки с тултипами), хедер 56px, контент max-width 1440
  * с PageTransition вокруг <Outlet/>. Адаптив §8.1: lg–xl — сайдбар в иконки,
  * < lg — сайдбар в Sheet по бургеру. Маршруты и guard'ы не меняются.
+ * Печать (справка → «Печать / PDF»): сайдбар и шапка скрыты, остаётся контент.
  */
 export function AppLayout(): ReactNode {
   const { lg, xl } = useBreakpoint();
@@ -39,7 +40,7 @@ export function AppLayout(): ReactNode {
       {sheetMode ? null : (
         <aside
           className={cn(
-            'sticky top-0 flex h-screen shrink-0 flex-col bg-sidebar',
+            'sticky top-0 flex h-screen shrink-0 flex-col bg-sidebar print:hidden',
             effectiveCollapsed ? 'w-16' : 'w-[248px]',
           )}
         >

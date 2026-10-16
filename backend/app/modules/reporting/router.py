@@ -61,6 +61,10 @@ def report_params(
     program_id: Annotated[
         list[uuid.UUID] | None, Query(description=f"Программа — {_IDS_HINT}")
     ] = None,
+    direction_id: Annotated[
+        list[uuid.UUID] | None,
+        Query(description=f"ИТ-направление (программы заявки, иначе продукта) — {_IDS_HINT}"),
+    ] = None,
     region: Annotated[str | None, Query()] = None,
     federal_project: Annotated[uuid.UUID | None, Query()] = None,
     threshold_days: Annotated[int | None, Query(ge=1, le=60)] = None,
@@ -74,6 +78,7 @@ def report_params(
         product_id=product_id,
         university_id=university_id,
         program_id=program_id,
+        direction_id=direction_id,
         region=region,
         federal_project_id=federal_project,
         threshold_days=threshold_days,
@@ -136,6 +141,10 @@ def kam_activity_params(
         list[uuid.UUID] | None,
         Query(description=f"Вуз, повторяемый параметр (не больше {MAX_FILTER_IDS})"),
     ] = None,
+    direction_id: Annotated[
+        list[uuid.UUID] | None,
+        Query(description=f"ИТ-направление, повторяемый параметр (не больше {MAX_FILTER_IDS})"),
+    ] = None,
 ) -> KamActivityParams:
     # период и число id проверяет resolve_params (400 period_* / too_many_values)
     return KamActivityParams(
@@ -144,6 +153,7 @@ def kam_activity_params(
         workflow_type=workflow_type,
         kam_ids=tuple(kam_id or ()),
         university_ids=tuple(university_id or ()),
+        direction_ids=tuple(direction_id or ()),
     )
 
 

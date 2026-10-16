@@ -14,11 +14,9 @@ export interface EntityOption {
   registryPath: string;
 }
 
+/** Только то, что принимает сервер (import_export/mapping.py `_ENTITY_REGISTRY` + справочники). */
 export const ENTITY_OPTIONS: EntityOption[] = [
   { value: 'universities', label: 'Вузы', registryPath: '/registry/universities' },
-  { value: 'university_contacts', label: 'Контакты вузов', registryPath: '/registry/universities' },
-  { value: 'contracts', label: 'Договоры', registryPath: '/registry/contracts' },
-  { value: 'programs', label: 'Программы', registryPath: '/registry/programs' },
   { value: 'requests_b2b', label: 'Заявки B2B (вузы)', registryPath: '/board?wf=b2b' },
   { value: 'requests_b2c', label: 'Заявки B2C (физлица и юрлица)', registryPath: '/board?wf=b2c' },
   { value: 'students', label: 'Студенты (Пул талантов)', registryPath: '/talent-pool' },
@@ -42,7 +40,7 @@ export function registryPathFor(value: string): string {
   return ENTITY_OPTIONS.find((o) => o.value === value)?.registryPath ?? '/dashboard';
 }
 
-export const MAX_FILE_SIZE_MB = 50;
+export const MAX_FILE_SIZE_MB = 20; // = backend files.service.MAX_IMPORT_BYTES
 export const ACCEPTED_EXTENSIONS = ['xlsx', 'xls', 'csv', 'tsv', 'json'];
 
 export function fileExtension(name: string): string {

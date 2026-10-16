@@ -14,6 +14,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Library,
+  LifeBuoy,
   Package,
   Plug,
   ScrollText,
@@ -70,6 +71,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   'admin-integrations': Plug,
   'admin-audit': ScrollText,
   requests: FileText,
+  help: LifeBuoy,
 };
 
 function iconFor(key: string): LucideIcon {

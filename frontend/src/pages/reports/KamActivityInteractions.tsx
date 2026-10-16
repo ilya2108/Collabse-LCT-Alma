@@ -96,7 +96,11 @@ function renderCell(key: InteractionsColumnKey, row: InteractionsRow): ReactNode
     case 'university':
       return <PlaceCell row={row} />;
     case 'it_direction':
-      return row.it_direction ?? <Empty hint="Появится вместе со справочником ИТ-направлений" />;
+      return (
+        row.it_direction ?? (
+          <Empty hint="ИТ-направление не задано ни у программы, ни у ИТ-продукта заявки" />
+        )
+      );
     case 'product':
       return row.product ?? <Empty />;
     case 'program':

@@ -3,8 +3,11 @@ import * as React from 'react';
 import { cn } from '@/shared/lib/cn';
 
 /**
- * Tabs (§5.1): подчёркнутый вариант — list с border-b, активный таб
+ * Tabs (§5.1): подчёркнутый вариант — линия под списком, активный таб
  * border-b-2 border-primary text-primary.
+ * 375 px (P1-5): список не шире контейнера и прокручивается вбок сам — страница
+ * по горизонтали не едет. Линия под списком — inset-тень, а не border + -mb-px:
+ * при overflow-x-auto выступ на 1px давал вертикальную прокрутку и обрезал подчёркивание.
  */
 const Tabs = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Root>,
@@ -26,7 +29,10 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     data-slot="tabs-list"
-    className={cn('inline-flex w-fit items-center gap-4 border-b border-border', className)}
+    className={cn(
+      'inline-flex w-fit max-w-full items-center gap-4 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+      className,
+    )}
     {...props}
   />
 ));
@@ -40,11 +46,12 @@ const TabsTrigger = React.forwardRef<
     ref={ref}
     data-slot="tabs-trigger"
     className={cn(
-      'inline-flex items-center justify-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 pt-1 text-sm font-medium text-muted-foreground transition-[color,border-color] duration-150 -mb-px',
+      'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 pt-1 text-sm font-medium text-muted-foreground transition-[color,border-color] duration-150',
       'hover:text-foreground',
       'data-[state=active]:border-primary data-[state=active]:text-primary',
       'disabled:pointer-events-none disabled:opacity-50',
-      'outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background rounded-t-sm',
+      // кольцо фокуса внутрь: снаружи его обрезал бы overflow списка
+      'outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring rounded-t-sm',
       '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=size-])]:size-4',
       className,
     )}

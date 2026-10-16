@@ -454,19 +454,44 @@ RBAC скачивания (§12.2): файл заявки или вложени�
 
 ### 3.3. Продукты (`/products`)
 
-Продукт — направление/услуга компании (ДПО, корпоративное обучение, олимпиады…).
+Продукт — ИТ-продукт или услуга компании (ДПО, корпоративное обучение, олимпиады…). ИТ-направления —
+отдельный справочник (§3.3a); у продукта их может быть несколько (`direction_ids`, M:N).
 
 | Метод/путь | Роли (write) |
 |---|---|
-| `GET /products` (фильтры: `search`, `is_active`) | все |
+| `GET /products` (фильтры: `search`, `is_active`, `direction_id` — повторяемый) | все |
 | `POST /products` | admin, head_kam |
 | `GET /products/{id}` | все |
 | `PATCH /products/{id}` | admin, head_kam |
 | `DELETE /products/{id}` (мягкое; `409` при привязанных программах) | admin |
 
 ```json
-{"id": "pr-uuid", "name": "ДПО: Data Science", "code": "dpo-ds", "description": "…", "is_active": true, "version": 2}
+{"id": "pr-uuid", "name": "ДПО: Data Science", "code": "dpo-ds", "description": "…", "is_active": true,
+ "direction_ids": ["dir-uuid"], "directions": [{"id": "dir-uuid", "code": "data-analysis", "name": "Анализ данных", "is_active": true}],
+ "version": 2}
 ```
+
+`direction_ids` в `POST`/`PATCH` заменяет набор целиком; смена набора даёт новую `version`.
+
+### 3.3a. ИТ-направления (`/it-directions`)
+
+Справочник ИТ-направлений (анализ данных, ML и ИИ, DevOps, QA…). Код и название уникальны без учёта
+регистра (`409 conflict` на дубль), правка — с `version` (`409` на устаревшую).
+
+| Метод/путь | Описание | Права |
+|---|---|---|
+| `GET /it-directions` | Фильтры `search`, `is_active`; в строке счётчики `programs_count`, `products_count` | все аутентифицированные |
+| `GET /it-directions/{id}` | Карточка | все аутентифицированные |
+| `POST /it-directions` | Создать: `code`, `name`, `description`, `sort_order` | `admin:dictionaries` |
+| `PATCH /it-directions/{id}` | Изменить (с `version`) | `admin:dictionaries` |
+| `DELETE /it-directions/{id}` | Мягкая деактивация; `409`, пока на направлении есть активная программа | `admin:dictionaries` |
+
+**Правило «направление записи»** (одно для фильтров, колонок и отчётов): если у программы записи задано
+своё направление — берётся оно; иначе — направления ИТ-продукта записи (свой продукт заявки или студента,
+без него — продукт программы). Фильтр `direction_id` (повторяемый) принимают `GET /programs`,
+`GET /products`, отчёты `/reports/*` (дашборд), `/reports/kam-activity*`, `/reports/interactions`
+и выгрузки реестров заявок и программ; колонка «ИТ-направление» есть во «Взаимодействиях за период»
+и в выгрузках заявок и программ.
 
 ### 3.4. Программы и приоритеты курсов (`/programs`)
 
@@ -476,7 +501,7 @@ RBAC скачивания (§12.2): файл заявки или вложени�
 
 | Метод/путь | Описание | Роли (write) |
 |---|---|---|
-| `GET /programs` | Фильтры: `product_id`, `university_id`, `is_active`, `search`; сортировка по умолчанию `priority_rank` (по возрастанию: меньше = выше) | все |
+| `GET /programs` | Фильтры: `product_id`, `university_id`, `direction_id`, `is_active`, `search`; сортировка по умолчанию `priority_rank` (по возрастанию: меньше = выше) | все |
 | `POST /programs` | Создать | admin, head_kam, kam |
 | `GET /programs/{id}` | Карточка | все |
 | `PATCH /programs/{id}` | Изменить | admin, head_kam, kam |
@@ -489,6 +514,7 @@ RBAC скачивания (§12.2): файл заявки или вложени�
   "id": "pg-uuid",
   "product_id": "pr-uuid",
   "university_id": "un-uuid",
+  "direction_id": "dir-uuid",
   "name": "Практикум по ML, весна-2027",
   "priority_rank": 80,
   "seats": 30,
@@ -2291,7 +2317,7 @@ sequenceDiagram
 | Каналы TG/Max/Email — подключаемые (Max/Email — заглушки с настройкой) | §9.1 (`/channels`, `status: stub`), outbox notification-service |
 | Talent pool: карточка, воронка, расписание, импорт списков, файлы в MinIO | §8 |
 | K8s обязателен; CronJob для зависших | §11.1 |
-| Мобильная версия не нужна / оффлайн не делаем / ЭЦП нет / версионирование wf нет | В контракте отсутствуют соответствующие API (осознанно) |
+| Мобильного приложения нет (адаптивный веб-интерфейс от 375 px) / оффлайн не делаем / ЭЦП нет / версионирование wf нет | В контракте отсутствуют соответствующие API (осознанно) |
 
 ---
 
@@ -2322,6 +2348,8 @@ GET    /api/v1/files/{file_id}/download
 # продукты, программы, приоритеты
 GET    /api/v1/products                    POST   /api/v1/products
 GET    /api/v1/products/{id}               PATCH  /api/v1/products/{id}          DELETE /api/v1/products/{id}
+GET    /api/v1/it-directions               POST   /api/v1/it-directions
+GET    /api/v1/it-directions/{id}          PATCH  /api/v1/it-directions/{id}     DELETE /api/v1/it-directions/{id}
 GET    /api/v1/programs                    POST   /api/v1/programs
 GET    /api/v1/programs/{id}               PATCH  /api/v1/programs/{id}          DELETE /api/v1/programs/{id}
 PATCH  /api/v1/programs/{id}/priority      POST   /api/v1/programs/priorities/reorder

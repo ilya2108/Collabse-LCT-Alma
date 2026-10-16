@@ -4,11 +4,14 @@ import { DayPicker } from 'react-day-picker';
 import { ru } from 'react-day-picker/locale';
 import { buttonVariants } from '@/shared/ui/button';
 import { cn } from '@/shared/lib/cn';
+import { useBreakpoint } from '@/shared/lib/useBreakpoint';
 
 /**
  * Календарь на react-day-picker v9 (§5.1: замена DatePicker в связке
  * Popover + Calendar). Локаль ru по умолчанию; пресеты периодов —
  * кнопки в футере поповера (на стороне употребления).
+ * 375 px (P1-5): на экране меньше 640 px — всегда один месяц. Два месяца в поповере периода
+ * (дашборд, отчёт КАМов, аудит) на телефоне вставали столбиком выше экрана.
  */
 export type CalendarProps = React.ComponentProps<typeof DayPicker>;
 
@@ -17,12 +20,15 @@ function Calendar({
   classNames,
   showOutsideDays = true,
   locale = ru,
+  numberOfMonths,
   ...props
 }: CalendarProps): React.ReactElement {
+  const { sm } = useBreakpoint();
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
       locale={locale}
+      numberOfMonths={sm ? numberOfMonths : 1}
       className={cn('p-3', className)}
       classNames={{
         months: 'flex flex-col sm:flex-row gap-4 relative',

@@ -25,12 +25,20 @@ from app.core.pii import (
     mask_email,
     normalize_email,
 )
-from app.models.crm import Counterparty, InteractionType, Product, Program, University
+from app.models.crm import (
+    Counterparty,
+    InteractionType,
+    ItDirection,
+    Product,
+    Program,
+    University,
+)
 from app.models.deal import Deal, DealStageHistory
 from app.models.service import AppSetting
 from app.models.talent import FederalProject, Student, StudentStatusHistory
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
+from app.modules.crm.directions import link_product_directions, load_direction_lookup
 from app.modules.import_export.mapping import EntityFields, MappingEntry, entity_fields
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -213,6 +221,7 @@ async def _load_lookups(ctx: ImportContext) -> None:
     ctx.lookups["product_by_name"] = {_norm(p.name): p for p in products}
     projects = (await session.execute(select(FederalProject))).scalars().all()
     ctx.lookups["fedproject_by_name"] = {_norm(p.name): p for p in projects}
+    ctx.lookups["direction_by_key"] = await load_direction_lookup(session)
     itypes = (await session.execute(select(InteractionType))).scalars().all()
     ctx.lookups["itype_by_code"] = {_norm(t.code): t for t in itypes}
     ctx.lookups["itype_by_name"] = {_norm(t.name): t for t in itypes}
@@ -237,6 +246,22 @@ def _lookup_product(ctx: ImportContext, raw: str) -> Product | None:
     return ctx.lookups["product_by_code"].get(_norm(raw)) or ctx.lookups["product_by_name"].get(
         _norm(raw)
     )
+
+
+def _lookup_direction(ctx: ImportContext, raw: str) -> ItDirection | None:
+    """ИТ-направление по коду или названию без регистра (каталог it_direction)."""
+    return ctx.lookups["direction_by_key"].get(_norm(raw))
+
+
+def _check_direction(ctx: ImportContext, row: PreparedRow) -> None:
+    raw = row.values.get("it_direction")
+    if raw and _lookup_direction(ctx, raw) is None:
+        _issue(
+            row,
+            "it_direction",
+            "lookup_not_found",
+            f"ИТ-направление «{raw}» не найдено в справочнике (поиск по коду и названию)",
+        )
 
 
 def _lookup_user(ctx: ImportContext, raw: str) -> AppUser | None:
@@ -599,6 +624,7 @@ async def _validate_requests_b2b(ctx: ImportContext, rows: list[PreparedRow]) ->
                 "lookup_not_found",
                 f"Пользователь «{values['assignee']}» не найден",
             )
+        _check_direction(ctx, row)
         if values.get("amount"):
             try:
                 _parse_amount(values["amount"])
@@ -646,6 +672,11 @@ async def _create_deal_row(
     )
     ctx.session.add(deal)
     await ctx.session.flush()
+    # «ИТ-направление» строки привязывается к продукту заявки (M:N, только добавление)
+    raw_direction = values.get("it_direction")
+    direction = _lookup_direction(ctx, raw_direction) if raw_direction else None
+    if direction is not None and deal.product_id is not None:
+        await link_product_directions(ctx.session, deal.product_id, [direction.id])
     ctx.session.add(
         DealStageHistory(
             deal_id=deal.id,
@@ -740,6 +771,7 @@ async def _validate_requests_b2c(ctx: ImportContext, rows: list[PreparedRow]) ->
                 found=_lookup_program(ctx, values["program"]) is not None,
                 label="Программа",
             )
+        _check_direction(ctx, row)
         if values.get("amount"):
             try:
                 _parse_amount(values["amount"])

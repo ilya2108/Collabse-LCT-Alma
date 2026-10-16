@@ -55,6 +55,7 @@ from app.models.service import FileObject
 from app.models.talent import FederalProject, Student
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
+from app.modules.crm.directions import direction_match, direction_names
 from app.modules.files.service import store_bytes
 from app.modules.reporting.service import REPORT_CODES, ReportParams, build_report
 
@@ -196,7 +197,17 @@ async def _dataset_requests(
     session: AsyncSession, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
     stmt = (
-        select(Deal, WorkflowStage, Workflow, AppUser, University, Counterparty, Product, Program)
+        select(
+            Deal,
+            WorkflowStage,
+            Workflow,
+            AppUser,
+            University,
+            Counterparty,
+            Product,
+            Program,
+            direction_names(Deal.program_id, Deal.product_id).label("it_direction"),
+        )
         .join(WorkflowStage, WorkflowStage.id == Deal.stage_id)
         .join(Workflow, Workflow.id == Deal.workflow_id)
         .join(AppUser, AppUser.id == Deal.responsible_user_id)
@@ -227,6 +238,9 @@ async def _dataset_requests(
     program_ids = filter_uuids(filters, "program_id")
     if program_ids:
         stmt = stmt.where(Deal.program_id.in_(program_ids))
+    direction_ids = filter_uuids(filters, "direction_id")
+    if direction_ids:
+        stmt = stmt.where(direction_match(Deal.program_id, Deal.product_id, direction_ids))
     sources = filter_strings(filters, "source")
     if sources:
         stmt = stmt.where(Deal.source.in_(sources))
@@ -248,13 +262,14 @@ async def _dataset_requests(
         ("amount", "Сумма"),
         ("currency", "Валюта"),
         ("source", "Источник"),
+        ("it_direction", "ИТ-направление"),
         ("product.name", "Продукт"),
         ("program.name", "Программа"),
         ("created_at", "Создана"),
         ("status_updated_at", "На этапе с"),
     ]
     rows = []
-    for deal, stage, workflow, assignee, university, counterparty, product, program in (
+    for deal, stage, workflow, assignee, university, counterparty, product, program, direction in (
         await session.execute(stmt)
     ).all():
         rows.append(
@@ -269,6 +284,7 @@ async def _dataset_requests(
                 "amount": format(deal.amount, "f") if deal.amount is not None else None,
                 "currency": deal.currency,
                 "source": deal.source,
+                "it_direction": direction,
                 "product.name": product.name if product else None,
                 "program.name": program.name if program else None,
                 "created_at": _fmt(deal.created_at),
@@ -365,7 +381,12 @@ async def _dataset_programs(
     session: AsyncSession, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
     stmt = (
-        select(Program, Product, University)
+        select(
+            Program,
+            Product,
+            University,
+            direction_names(Program.id, Program.product_id).label("it_direction"),
+        )
         .outerjoin(Product, Product.id == Program.product_id)
         .outerjoin(University, University.id == Program.university_id)
         .order_by(Program.priority_rank, Program.name)
@@ -374,10 +395,14 @@ async def _dataset_programs(
     product_ids = filter_uuids(filters, "product_id")
     if product_ids:
         stmt = stmt.where(Program.product_id.in_(product_ids))
+    direction_ids = filter_uuids(filters, "direction_id")
+    if direction_ids:
+        stmt = stmt.where(direction_match(Program.id, Program.product_id, direction_ids))
     if filters.get("is_active") is not None:
         stmt = stmt.where(Program.is_active.is_(bool(filters["is_active"])))
     columns = [
         ("name", "Программа"),
+        ("it_direction", "ИТ-направление"),
         ("product.name", "Продукт"),
         ("university.name", "Вуз"),
         ("priority_rank", "Приоритет (меньше = выше)"),
@@ -388,6 +413,7 @@ async def _dataset_programs(
     rows = [
         {
             "name": p.name,
+            "it_direction": direction,
             "product.name": product.name if product else None,
             "university.name": university.name if university else None,
             "priority_rank": p.priority_rank,
@@ -395,7 +421,7 @@ async def _dataset_programs(
             "starts_on": _fmt(p.starts_on),
             "published_to_cms": "да" if p.published_to_cms else "нет",
         }
-        for p, product, university in (await session.execute(stmt)).all()
+        for p, product, university, direction in (await session.execute(stmt)).all()
     ]
     return columns, rows
 

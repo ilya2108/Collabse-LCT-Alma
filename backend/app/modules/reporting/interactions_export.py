@@ -85,7 +85,7 @@ def place_name(row: Mapping[str, Any]) -> str:
 
 def cell_value(row: Mapping[str, Any], key: str) -> Any:
     """Значение колонки для файла: даты — `date` (МСК), числа — числами, пусто — «—»
-    там, где пустота значима (ИТ-направление до справочника направлений)."""
+    там, где пустота значима (у программы и продукта заявки не задано ИТ-направление)."""
     if key == "university":
         return place_name(row)
     if key == "it_direction":
@@ -134,6 +134,9 @@ def describe_filters(report: Mapping[str, Any]) -> str:
     if params.get("university_id"):
         pairs = [(row["university_id"], row["university"]) for row in rows]
         parts.append("Вузы: " + names(params["university_id"], pairs))
+    if params.get("direction_id"):
+        pairs = [(item["id"], item["name"]) for item in report.get("directions", [])]
+        parts.append("ИТ-направления: " + names(params["direction_id"], pairs))
     if params.get("product_id"):
         pairs = [(row["product_id"], row["product"]) for row in rows]
         parts.append("ИТ-продукты: " + names(params["product_id"], pairs))

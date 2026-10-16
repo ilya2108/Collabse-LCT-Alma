@@ -46,6 +46,8 @@ export interface KamActivityFilters {
   wf: WorkflowType | null;
   kam: string[];
   university: string[];
+  /** ИТ-направления — общий фильтр всех вкладок отчёта. */
+  direction: string[];
   /** Вкладка «Взаимодействия за период»: ИТ-продукты, программы, статусы (этапы). */
   product: string[];
   program: string[];
@@ -108,6 +110,7 @@ export function filtersFromParams(
     wf: wf === 'b2b' || wf === 'b2c' ? wf : null,
     kam: params.getAll('kam'),
     university: params.getAll('university'),
+    direction: params.getAll('direction'),
     product: params.getAll('product'),
     program: params.getAll('program'),
     status: params.getAll('status'),
@@ -134,11 +137,17 @@ export function toApiParams(filters: KamActivityFilters, today: Dayjs = dayjs())
     workflow_type: filters.wf ?? undefined,
     kam_id: filters.kam.length > 0 ? [...filters.kam].sort() : undefined,
     university_id: filters.university.length > 0 ? [...filters.university].sort() : undefined,
+    direction_id: filters.direction.length > 0 ? [...filters.direction].sort() : undefined,
   };
 }
 
 export function hasNarrowingFilters(filters: KamActivityFilters): boolean {
-  return filters.wf !== null || filters.kam.length > 0 || filters.university.length > 0;
+  return (
+    filters.wf !== null ||
+    filters.kam.length > 0 ||
+    filters.university.length > 0 ||
+    filters.direction.length > 0
+  );
 }
 
 /** Параметры «Взаимодействий за период»: фильтры отчёта КАМов + продукт, программа, статус. */

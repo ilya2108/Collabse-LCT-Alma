@@ -1,4 +1,4 @@
-"""Pydantic-схемы справочников: вузы, контакты, договоры, продукты, программы.
+"""Pydantic-схемы справочников: вузы, контакты, договоры, ИТ-направления, продукты, программы.
 
 Тела — api-contract.md §3. Поле `version` — optimistic locking (§1.3): PATCH обязан
 передать текущее значение, расхождение → 409 stale_version.
@@ -175,6 +175,53 @@ class ContractOut(ContractBase):
     files: list[FileOut] | None = None
 
 
+# --- ИТ-направления -----------------------------------------------------------------------------
+
+# код направления — стабильный ключ импорта и фильтров: буквы, цифры, «_», «-», «.» без пробелов
+DIRECTION_CODE_PATTERN = r"^[0-9A-Za-zА-Яа-яЁё][0-9A-Za-zА-Яа-яЁё_.\-]{0,63}$"
+
+
+class DirectionBase(_ApiModel):
+    code: str = Field(min_length=1, max_length=64, pattern=DIRECTION_CODE_PATTERN)
+    name: str = Field(min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    sort_order: int = Field(default=100, ge=0, le=100000)
+    is_active: bool = True
+
+
+class DirectionCreate(DirectionBase):
+    pass
+
+
+class DirectionUpdate(_ApiModel):
+    version: int
+    code: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=DIRECTION_CODE_PATTERN
+    )
+    name: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+    is_active: bool | None = None
+
+
+class DirectionOut(DirectionBase):
+    id: UUID
+    version: int = Field(validation_alias=AliasChoices("xmin", "version"))
+    created_at: datetime
+    updated_at: datetime
+    programs_count: int = Field(default=0, description="Программы с этим направлением")
+    products_count: int = Field(default=0, description="ИТ-продукты с этим направлением")
+
+
+class DirectionBrief(_ApiModel):
+    """Направление в карточках программ и продуктов (без счётчиков)."""
+
+    id: UUID
+    code: str
+    name: str
+    is_active: bool = True
+
+
 # --- продукты ---------------------------------------------------------------------------------
 
 
@@ -190,7 +237,8 @@ class ProductBase(_ApiModel):
 
 
 class ProductCreate(ProductBase):
-    pass
+    # ИТ-направления, которым помогает учить продукт (M:N)
+    direction_ids: list[UUID] = Field(default_factory=list, max_length=50)
 
 
 class ProductUpdate(_ApiModel):
@@ -200,10 +248,14 @@ class ProductUpdate(_ApiModel):
     product_type: ProductType | None = None
     description: str | None = None
     is_active: bool | None = None
+    # передан — набор направлений заменяется целиком; не передан — не меняется
+    direction_ids: list[UUID] | None = Field(default=None, max_length=50)
 
 
 class ProductOut(ProductBase):
     id: UUID
+    direction_ids: list[UUID] = Field(default_factory=list)
+    directions: list[DirectionBrief] = Field(default_factory=list)
     version: int = Field(validation_alias=AliasChoices("xmin", "version"))
     created_at: datetime
     updated_at: datetime
@@ -215,6 +267,7 @@ class ProductOut(ProductBase):
 class ProgramBase(_ApiModel):
     product_id: UUID | None = None
     university_id: UUID | None = None
+    direction_id: UUID | None = None  # ИТ-направление программы (одно)
     name: str = Field(min_length=1, max_length=300)
     description: str | None = None
     duration_hours: int | None = Field(default=None, gt=0)
@@ -233,6 +286,7 @@ class ProgramUpdate(_ApiModel):
     version: int
     product_id: UUID | None = None
     university_id: UUID | None = None
+    direction_id: UUID | None = None
     name: str | None = Field(default=None, min_length=1, max_length=300)
     description: str | None = None
     duration_hours: int | None = Field(default=None, gt=0)
@@ -244,6 +298,9 @@ class ProgramUpdate(_ApiModel):
 
 class ProgramOut(ProgramBase):
     id: UUID
+    direction: DirectionBrief | None = None
+    # своё направление не задано — направления ИТ-продукта программы (так же считают отчёты)
+    product_directions: list[DirectionBrief] = Field(default_factory=list)
     priority_updated_by: UUID | None = None
     priority_updated_at: datetime | None = None
     cms_external_id: str | None = None  # read-only, из external_link

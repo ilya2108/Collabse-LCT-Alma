@@ -31,8 +31,19 @@ class KamActivityParamsOut(_ApiModel):
     workflow_type: WorkflowType | None = None
     kam_id: list[str] = Field(default_factory=list)
     university_id: list[str] = Field(default_factory=list)
+    direction_id: list[str] = Field(
+        default_factory=list, description="ИТ-направления фильтра (ключ есть, только если задан)"
+    )
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class ReportDirectionRef(_ApiModel):
+    """Выбранное в фильтре ИТ-направление — подпись чипа и шапки выгрузки."""
+
+    id: str
+    code: str
+    name: str
 
 
 class KamActivityPeriod(_ApiModel):
@@ -445,7 +456,9 @@ class InteractionsRow(_ApiModel):
     university_short: str | None = None
     client: str | None = Field(default=None, description="Псевдоним B2C-клиента")
     it_direction: str | None = Field(
-        default=None, description="ИТ-направление: появится со справочником направлений"
+        default=None,
+        description="ИТ-направление: направление программы заявки, без него — направления "
+        "её ИТ-продукта через запятую",
     )
     product_id: str | None = None
     product: str | None = Field(default=None, description="ИТ-продукт")

@@ -15,7 +15,7 @@ import type {
  *
  * Фильтры — списки id: массив уходит повтором параметра (`kam_id=a&kam_id=b`),
  * backend применяет `IN` во всех секциях (KPI, этапы, динамика, нагрузка,
- * программы, студенты).
+ * программы, студенты); ИТ-направление — по программе и продукту заявки.
  */
 
 export interface DashboardReportParams {
@@ -26,6 +26,8 @@ export interface DashboardReportParams {
   university_id?: string[];
   product_id?: string[];
   program_id?: string[];
+  /** ИТ-направления: направление программы заявки, без него — её ИТ-продукта. */
+  direction_id?: string[];
 }
 
 export type WorkflowCode = 'b2b' | 'b2c';

@@ -71,7 +71,18 @@ _EMAIL_SYNONYMS = ("email", "e mail", "почта", "эл почта", "элек
 _PHONE_SYNONYMS = ("телефон", "тел", "phone", "номер телефона", "моб телефон")
 _UNIVERSITY_SYNONYMS = ("вуз", "университет", "учебное заведение", "организация", "university")
 _PROGRAM_SYNONYMS = ("программа", "курс", "program", "направление подготовки")
-_PRODUCT_SYNONYMS = ("продукт", "направление", "услуга", "product")
+# «направление» — ИТ-направление (каталог it_direction), а не продукт: ИТ-продукт — ПО,
+# помогающее учить по одному или нескольким направлениям
+_PRODUCT_SYNONYMS = ("продукт", "ит продукт", "услуга", "product")
+_DIRECTION_SYNONYMS = (
+    "направление",
+    "ит направление",
+    "it направление",
+    "направление ит",
+    "направление обучения",
+    "direction",
+    "it direction",
+)
 
 STUDENT_FIELDS = EntityFields(
     entity_type="students",
@@ -149,6 +160,12 @@ REQUEST_B2B_FIELDS = EntityFields(
             lookup="by_code_or_name",
         ),
         TargetField(
+            "it_direction",
+            "ИТ-направление (код или название)",
+            synonyms=_DIRECTION_SYNONYMS,
+            lookup="by_code_or_name",
+        ),
+        TargetField(
             "program", "Программа (название)", synonyms=_PROGRAM_SYNONYMS, lookup="by_name"
         ),
         TargetField(
@@ -190,6 +207,12 @@ REQUEST_B2C_FIELDS = EntityFields(
             "product",
             "Продукт (код или название)",
             synonyms=_PRODUCT_SYNONYMS,
+            lookup="by_code_or_name",
+        ),
+        TargetField(
+            "it_direction",
+            "ИТ-направление (код или название)",
+            synonyms=_DIRECTION_SYNONYMS,
             lookup="by_code_or_name",
         ),
         TargetField(

@@ -3,8 +3,8 @@
 Третья вкладка страницы «Активность КАМов»: строка — заявка, с которой шла работа в
 периоде, колонки — обязательный набор ТЗ (`COLUMNS`, группа «ТЗ»: вуз, направление,
 продукт, этап на конец периода, ответственный) плюс программа, заявка, процесс и даты.
-Фильтры — вузы, ИТ-продукты, программы, КАМы, статус (этап на конец периода), процесс
-B2B/B2C.
+Фильтры — вузы, ИТ-направления, ИТ-продукты, программы, КАМы, статус (этап на конец
+периода), процесс B2B/B2C.
 
 Одна семантика периода с отчётом КАМов — без второго определения «за период»:
 - период, «данные на» (`as_of`) и границы по МСК — `kam_activity.resolve_params/_bounds`;
@@ -14,8 +14,10 @@ B2B/B2C.
 - зона видимости — `report_scope` и `_resolve_scope` (явный 403 на процесс вне области и
   на чужой `kam_id` при области «только свои»).
 
-ИТ-направление: каталога направлений пока нет, колонка отдаёт `null` («—» в UI и файлах);
-появится вместе со справочником направлений без изменения контракта колонок.
+ИТ-направление заявки — из справочника `it_direction`: направление её программы, без него —
+направления её ИТ-продукта через запятую (`crm.directions.direction_names`); фильтр
+`direction_id` — по тому же правилу (`direction_match`), поэтому строки с выбранным
+направлением всегда показывают его в колонке. Нет ни того, ни другого — `null` («—»).
 
 Выгрузка — `POST /export/jobs {entity_type: "report:interactions", columns: [...]}`
 (`interactions_export.py`): XLSX и PDF (флагом не закрыт, как PDF отчёта КАМов), CSV/JSON.
@@ -40,6 +42,7 @@ from app.core.errors import validation_error
 from app.models.crm import Product, Program
 from app.models.deal import Deal
 from app.models.user import AppUser
+from app.modules.crm.directions import direction_names, direction_refs
 from app.modules.reporting import kam_activity as ka
 from app.modules.reporting.service import REPORT_CACHE_TTL_SECONDS, _envelope
 from app.modules.workflow.service import _global_stuck_default  # каскад порога (Р-5)
@@ -89,7 +92,9 @@ DEFINITIONS: tuple[str, ...] = (
     "Взаимодействий за период — собственные действия ответственного КАМа: ручные переходы, "
     "комментарии и файлы заявки. Ответственный — текущий ответственный за заявку.",
     "Период — по московскому времени, с 00:00 первого дня по 24:00 последнего.",
-    "ИТ-направление появится вместе со справочником ИТ-направлений; до тех пор — «—».",
+    "ИТ-направление — направление программы заявки; если у программы оно не задано или "
+    "программы нет — направления ИТ-продукта заявки через запятую. Фильтр по направлению "
+    "работает по тому же правилу.",
 )
 
 
@@ -128,7 +133,8 @@ def columns_payload() -> list[dict[str, Any]]:
 
 @dataclass(frozen=True)
 class InteractionsParams:
-    """Фильтры отчёта: период, процесс, КАМы и вузы — общие с отчётом КАМов (`base`)."""
+    """Фильтры отчёта: период, процесс, КАМы, вузы и ИТ-направления — общие с отчётом
+    КАМов (`base`)."""
 
     base: ka.KamActivityParams = field(default_factory=ka.KamActivityParams)
     product_ids: tuple[uuid.UUID, ...] = ()
@@ -216,8 +222,9 @@ def interactions_stmt(
     default_days: int,
     scope: DealScope | None = None,
 ) -> Any:
-    """Запрос отчёта КАМов (D3, этап на конец периода, взаимодействия) + продукт,
-    программа и ответственный; фильтры продуктов и программ — по колонкам заявки."""
+    """Запрос отчёта КАМов (D3, этап на конец периода, взаимодействия) + ИТ-направление,
+    продукт, программа и ответственный; фильтры продуктов и программ — по колонкам заявки,
+    направлений — в `deal_rows_stmt` (`_apply_deal_filters`)."""
     where = []
     if params.product_ids:
         where.append(Deal.product_id.in_(params.product_ids))
@@ -232,6 +239,7 @@ def interactions_stmt(
         .outerjoin(Program, Program.id == Deal.program_id)
         .outerjoin(responsible, responsible.id == Deal.responsible_user_id)
         .add_columns(
+            direction_names(Deal.program_id, Deal.product_id).label("it_direction"),
             Deal.product_id.label("product_id"),
             Product.name.label("product_name"),
             Deal.program_id.label("program_id"),
@@ -260,7 +268,7 @@ def interaction_row(mapping: Mapping[str, Any], bounds: ka.PeriodBounds) -> dict
         "university": deal.university_name,
         "university_short": deal.university_short,
         "client": deal.client if deal.pipeline == "b2c" else None,
-        "it_direction": None,
+        "it_direction": mapping.get("it_direction"),
         "product_id": str(mapping["product_id"]) if mapping["product_id"] else None,
         "product": mapping["product_name"],
         "program_id": str(mapping["program_id"]) if mapping["program_id"] else None,
@@ -364,7 +372,7 @@ async def interactions_body(
     result = await session.execute(interactions_stmt(params, bounds, default_days, scope))
     rows = sorted((interaction_row(row, bounds) for row in result.mappings()), key=_sort_key)
     truncated = limit is not None and len(rows) > limit
-    return {
+    body: dict[str, Any] = {
         "period": bounds.as_json(),
         "scope": ka._scope_payload(scope),
         "columns": columns_payload(),
@@ -376,6 +384,10 @@ async def interactions_body(
         "truncated": truncated,
         "rows": rows[:limit] if truncated else rows,
     }
+    if params.base.direction_ids:
+        # подписи выбранных направлений — для шапки файлов и чипов фильтра
+        body["directions"] = await direction_refs(session, params.base.direction_ids)
+    return body
 
 
 def prepare(

@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ErrorBrokenIllustration } from '@/app/localIllustrations';
+import { listAllItDirections } from '@/shared/api/endpoints/itDirections';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { listPrograms } from '@/shared/api/endpoints/programs';
 import { runExportAndDownload } from '@/shared/api/endpoints/exportJobs';
@@ -57,8 +58,8 @@ import { Segmented } from './Segmented';
  * drill-down кликами и экспорт: PNG и PDF всей панели (на клиенте, по графику на
  * страницу PDF), PNG каждого графика с шапкой, XLSX/CSV данных (через /export/jobs).
  *
- * Один набор фильтров на все секции: КАМы, вузы, продукты, программы — списки
- * (backend применяет IN везде). У каждой карточки подзаголовок — что и за какой
+ * Один набор фильтров на все секции: КАМы, вузы, ИТ-направления, продукты, программы —
+ * списки (backend применяет IN везде). У каждой карточки подзаголовок — что и за какой
  * период показано (срез «сейчас» или период), чтобы цифры на экране не спорили.
  */
 
@@ -68,11 +69,12 @@ interface DashFilters {
   wf: 'b2b' | 'b2c' | null;
   kam: string[];
   university: string[];
+  direction: string[];
   product: string[];
   program: string[];
 }
 
-type ListFilterKey = 'kam' | 'university' | 'product' | 'program';
+type ListFilterKey = 'kam' | 'university' | 'direction' | 'product' | 'program';
 
 function filtersFromParams(params: URLSearchParams): DashFilters {
   const wfRaw = params.get('wf');
@@ -82,6 +84,7 @@ function filtersFromParams(params: URLSearchParams): DashFilters {
     wf: wfRaw === 'b2b' || wfRaw === 'b2c' ? wfRaw : null,
     kam: params.getAll('kam'),
     university: params.getAll('university'),
+    direction: params.getAll('direction'),
     product: params.getAll('product'),
     program: params.getAll('program'),
   };
@@ -98,7 +101,8 @@ function periodText(f: Pick<DashFilters, 'from' | 'to'>): string | null {
 
 /**
  * Ссылка на отчёт «Активность КАМов» с фильтрами дашборда (URL-контракт ux.md §6.4):
- * заданный период — пресет «Произвольный», процесс, КАМы и вузы переносятся как есть.
+ * заданный период — пресет «Произвольный», процесс, КАМы, вузы и ИТ-направления
+ * переносятся как есть.
  */
 function kamActivityHref(f: DashFilters): string {
   const query = new URLSearchParams();
@@ -110,6 +114,7 @@ function kamActivityHref(f: DashFilters): string {
   if (f.wf) query.set('wf', f.wf);
   for (const id of f.kam) query.append('kam', id);
   for (const id of f.university) query.append('university', id);
+  for (const id of f.direction) query.append('direction', id);
   const search = query.toString();
   return search ? `/reports/kam-activity?${search}` : '/reports/kam-activity';
 }
@@ -123,6 +128,7 @@ function reportParams(f: DashFilters): DashboardReportParams {
     university_id: f.university.length > 0 ? f.university : undefined,
     product_id: f.product.length > 0 ? f.product : undefined,
     program_id: f.program.length > 0 ? f.program : undefined,
+    direction_id: f.direction.length > 0 ? f.direction : undefined,
   };
 }
 
@@ -249,6 +255,11 @@ export function DashboardScreen(): ReactNode {
     enabled: canFilterByKam,
     staleTime: 60_000,
   });
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    staleTime: 5 * 60_000,
+  });
   const programsQuery = useQuery({
     queryKey: ['programs-select'],
     queryFn: ({ signal }) =>
@@ -262,6 +273,7 @@ export function DashboardScreen(): ReactNode {
   for (const u of universitiesQuery.data?.items ?? []) labelCache.current.set(u.id, u.name);
   for (const p of productsQuery.data?.items ?? []) labelCache.current.set(p.id, p.name);
   for (const p of programsQuery.data?.items ?? []) labelCache.current.set(p.id, p.name);
+  for (const d of directionsQuery.data?.items ?? []) labelCache.current.set(d.id, d.name);
   for (const k of kamsQuery.data?.items ?? []) labelCache.current.set(k.id, k.full_name);
   if (user) labelCache.current.set(user.id, user.full_name ?? user.username ?? 'я');
 
@@ -278,12 +290,20 @@ export function DashboardScreen(): ReactNode {
     const lists: [string, string[]][] = [
       ['КАМ', filters.kam],
       ['Вуз', filters.university],
+      ['ИТ-направление', filters.direction],
       ['Продукт', filters.product],
       ['Программа', filters.program],
     ];
     for (const [label, ids] of lists) if (ids.length > 0) lines.push(`${label}: ${names(ids)}`);
     return lines;
-  }, [filters, universitiesQuery.data, productsQuery.data, programsQuery.data, kamsQuery.data]);
+  }, [
+    filters,
+    universitiesQuery.data,
+    productsQuery.data,
+    programsQuery.data,
+    kamsQuery.data,
+    directionsQuery.data,
+  ]);
 
   const boardQuery = (extra: Record<string, string>, wf?: string): string => {
     const query = new URLSearchParams();
@@ -596,6 +616,17 @@ export function DashboardScreen(): ReactNode {
           emptyText="Вузы не найдены"
         />
         <MultiFilter
+          placeholder="ИТ-направление"
+          options={(directionsQuery.data?.items ?? []).map((d) => ({
+            value: d.id,
+            label: d.is_active ? d.name : `${d.name} (неактивно)`,
+          }))}
+          value={filters.direction}
+          onChange={(value) => patchParams({ direction: value })}
+          loading={directionsQuery.isLoading}
+          emptyText="Направления не найдены"
+        />
+        <MultiFilter
           placeholder="Продукт"
           options={(productsQuery.data?.items ?? []).map((p) => ({
             value: p.id,
@@ -618,7 +649,7 @@ export function DashboardScreen(): ReactNode {
           emptyText="Программы не найдены"
         />
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {/* отчёт по КАМам — с теми же фильтрами (период, процесс, КАМы, вузы) */}
+          {/* отчёт по КАМам — с теми же фильтрами (период, процесс, КАМы, вузы, направления) */}
           <Button variant="outline" asChild>
             <Link to={kamActivityHref(filters)}>
               Отчёт по КАМам
@@ -634,6 +665,7 @@ export function DashboardScreen(): ReactNode {
                 wf: null,
                 kam: [],
                 university: [],
+                direction: [],
                 product: [],
                 program: [],
               })

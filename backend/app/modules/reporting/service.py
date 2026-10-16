@@ -9,11 +9,14 @@
 admin/head_kam/observer — все (§7.2, §12.2). Любой запрос по `deal` проходит через
 `scope.apply(stmt)`; ключ кэша включает `scope.cache_key()`.
 
-Единый слой фильтров (замечания к «Аналитике»): процесс, КАМы, вузы, продукты и программы —
-списки id, условие `IN`, одинаково во всех секциях дашборда (KPI, этапы, динамика, нагрузка
-КАМов, программы, студенты). Где измерение к секции неприменимо, оно переводится явно
-(студенты по КАМу — студенты вузов, закреплённых за КАМом) или не применяется, и это
-написано в docstring секции. Границы периода — сутки по МСК, как в «Активности КАМов».
+Единый слой фильтров (замечания к «Аналитике»): процесс, КАМы, вузы, ИТ-направления, продукты
+и программы — списки id, условие `IN`, одинаково во всех секциях дашборда (KPI, этапы,
+динамика, нагрузка КАМов, программы, студенты). ИТ-направление записи — направление её
+программы, без него — направления её ИТ-продукта (`crm.directions.direction_match`, EXISTS
+без размножения строк; то же правило у реестра программ и отчётов КАМов). Где измерение
+к секции неприменимо, оно переводится явно (студенты по КАМу — студенты вузов, закреплённых
+за КАМом) или не применяется, и это написано в docstring секции. Границы периода — сутки
+по МСК, как в «Активности КАМов».
 «Завершено» — вход в терминальный этап с исходом `won` по истории переходов (D16), одно
 определение в KPI и в динамике; «Отказ» (`lost`) — отдельно.
 """
@@ -43,6 +46,7 @@ from app.models.deal import Deal, DealStageHistory
 from app.models.talent import Student, StudentStatusHistory
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
+from app.modules.crm.directions import direction_match
 from app.modules.workflow.service import _global_stuck_default  # каскад порога (Р-5)
 
 REPORT_CACHE_TTL_SECONDS = 60
@@ -93,7 +97,7 @@ DEMAND_FORMULA = (
 )
 
 # id-фильтры: имя поля ReportParams = имя query-параметра `/reports/*`
-ID_FILTERS = ("kam_id", "product_id", "university_id", "program_id")
+ID_FILTERS = ("kam_id", "product_id", "university_id", "program_id", "direction_id")
 
 
 # --------------------------------------------------------------------------------------
@@ -156,10 +160,10 @@ def _parse_date(value: Any, field: str, errors: list[dict[str, str]]) -> date | 
 class ReportParams:
     """Фильтры панели дашборда; неиспользуемые отчётом поля игнорируются.
 
-    `kam_id`/`product_id`/`university_id`/`program_id` — кортежи id (условие `IN`):
-    конструктор принимает и один UUID, и строку, и список (прежние вызовы
+    `kam_id`/`product_id`/`university_id`/`program_id`/`direction_id` — кортежи id
+    (условие `IN`): конструктор принимает и один UUID, и строку, и список (прежние вызовы
     `ReportParams(kam_id=uuid)` работают), нормализует и проверяет (400). Читать —
-    через `kam_ids`/`product_ids`/`university_ids`/`program_ids`.
+    через `kam_ids`/`product_ids`/`university_ids`/`program_ids`/`direction_ids`.
     """
 
     workflow_type: str | None = None
@@ -169,6 +173,7 @@ class ReportParams:
     product_id: Any = ()
     university_id: Any = ()
     program_id: Any = ()
+    direction_id: Any = ()  # ИТ-направления (каталог it_direction)
     region: str | None = None
     federal_project_id: uuid.UUID | None = None
     threshold_days: int | None = None
@@ -199,6 +204,10 @@ class ReportParams:
         return self.program_id
 
     @property
+    def direction_ids(self) -> tuple[uuid.UUID, ...]:
+        return self.direction_id
+
+    @property
     def has_period(self) -> bool:
         return self.date_from is not None or self.date_to is not None
 
@@ -211,6 +220,10 @@ class ReportParams:
                 result[name] = [str(item) for item in value]
             else:
                 result[name] = str(value) if value is not None else None
+        if not result["direction_id"]:
+            # фильтр появился позже остальных: без значения не попадает в ключ кэша и эхо
+            # параметров — прежние ответы и ключи не меняются
+            del result["direction_id"]
         return result
 
     @classmethod
@@ -344,11 +357,14 @@ def _apply_dims(
     *,
     products: bool = True,
     programs: bool = True,
+    directions: bool = True,
 ) -> sa.Select:
-    """Измерения панели по заявке: процесс, КАМы, вузы, продукты, программы (`IN`).
+    """Измерения панели по заявке: процесс, КАМы, вузы, ИТ-направления, продукты,
+    программы (`IN`; направление — `direction_match` по программе и продукту заявки).
 
-    `products=False`/`programs=False` — когда измерение применяется к самой сущности
-    отчёта (реестр программ фильтруется по `program.product_id`, а не по заявке).
+    `products=False`/`programs=False`/`directions=False` — когда измерение применяется к
+    самой сущности отчёта (реестр программ фильтруется по `program.product_id` и
+    направлению программы, а не по заявке).
     """
     if params.workflow_type:
         stmt = stmt.where(Deal.pipeline == params.workflow_type)
@@ -360,6 +376,8 @@ def _apply_dims(
         stmt = stmt.where(Deal.product_id.in_(params.product_ids))
     if programs and params.program_ids:
         stmt = stmt.where(Deal.program_id.in_(params.program_ids))
+    if directions and params.direction_ids:
+        stmt = stmt.where(direction_match(Deal.program_id, Deal.product_id, params.direction_ids))
     return stmt
 
 
@@ -377,7 +395,8 @@ def _kam_universities(kam_ids: Iterable[uuid.UUID]) -> sa.Select:
 
 
 def _student_dims(stmt: sa.Select, params: ReportParams) -> sa.Select:
-    """Измерения панели по студенту: вуз, КАМ (вузы КАМа), программа, продукт, ФП."""
+    """Измерения панели по студенту: вуз, КАМ (вузы КАМа), программа, продукт,
+    ИТ-направление (программы или продукта студента), ФП."""
     if params.university_ids:
         stmt = stmt.where(Student.university_id.in_(params.university_ids))
     if params.kam_ids:
@@ -392,6 +411,10 @@ def _student_dims(stmt: sa.Select, params: ReportParams) -> sa.Select:
                     select(Program.id).where(Program.product_id.in_(params.product_ids))
                 ),
             )
+        )
+    if params.direction_ids:
+        stmt = stmt.where(
+            direction_match(Student.program_id, Student.product_id, params.direction_ids)
         )
     if params.federal_project_id:
         stmt = stmt.where(Student.federal_project_id == params.federal_project_id)
@@ -759,7 +782,9 @@ async def report_stuck(
 async def report_universities_coverage(
     session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
-    """Вузы по регионам; фильтры: регион, вузы (`IN`), КАМы — вузы, закреплённые за ними."""
+    """Вузы по регионам; фильтры: регион, вузы (`IN`), КАМы — вузы, закреплённые за ними.
+    Продукты, программы и ИТ-направления к охвату вузов не применяются (это реестр вузов,
+    а не заявок)."""
     scope = _scope_or_all(scope)
     active_contract = (
         select(Contract.id)
@@ -918,7 +943,8 @@ def programs_demand_stmt(params: ReportParams, scope: DealScope) -> sa.Select:
 
     Заявки — в процессах области зрителя без ограничения «только свои» (спрос на
     программы — общий), с фильтрами процесса, КАМов и вузов. Студенты — по вузам (и вузам
-    КАМов). Продукты и программы фильтруют сам реестр программ.
+    КАМов). Продукты, программы и ИТ-направления фильтруют сам реестр программ
+    (направление программы, без него — её продукта).
     """
     window = _Window.of(params.date_from, params.date_to)
     workflow_clause = scope.workflow_clause()
@@ -937,7 +963,9 @@ def programs_demand_stmt(params: ReportParams, scope: DealScope) -> sa.Select:
         )
         .group_by(Deal.program_id)
     )
-    requests = _apply_dims(requests, params, products=False, programs=False).subquery("req")
+    requests = _apply_dims(
+        requests, params, products=False, programs=False, directions=False
+    ).subquery("req")
 
     streams = (
         select(Deal.program_id.label("program_id"), func.count().label("streams"))
@@ -949,7 +977,9 @@ def programs_demand_stmt(params: ReportParams, scope: DealScope) -> sa.Select:
         )
         .group_by(Deal.program_id)
     )
-    streams = _apply_dims(streams, params, products=False, programs=False).subquery("streams")
+    streams = _apply_dims(
+        streams, params, products=False, programs=False, directions=False
+    ).subquery("streams")
 
     students = (
         select(Student.program_id.label("program_id"), func.count().label("students"))
@@ -982,6 +1012,8 @@ def programs_demand_stmt(params: ReportParams, scope: DealScope) -> sa.Select:
         stmt = stmt.where(Program.product_id.in_(params.product_ids))
     if params.program_ids:
         stmt = stmt.where(Program.id.in_(params.program_ids))
+    if params.direction_ids:
+        stmt = stmt.where(direction_match(Program.id, Program.product_id, params.direction_ids))
     return stmt
 
 
@@ -1078,7 +1110,8 @@ async def report_talent_pool_funnel(
     session: AsyncSession, params: ReportParams, scope: DealScope
 ) -> dict[str, Any]:
     """Студенты по статусам на текущую дату; фильтры: вузы, КАМы (вузы, закреплённые за
-    КАМом), программы, продукты, федеральный проект. Период не применяется (срез)."""
+    КАМом), программы, продукты, ИТ-направления, федеральный проект. Период не применяется
+    (срез)."""
     stmt = _student_dims(
         select(Student.funnel_status, func.count()).group_by(Student.funnel_status), params
     )

@@ -34,6 +34,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { listAllItDirections } from '@/shared/api/endpoints/itDirections';
 import { listPrograms, reorderProgramPriorities } from '@/shared/api/endpoints/programs';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { getProgramsDemand, type ProgramDemandItem } from '@/shared/api/endpoints/reports';
@@ -50,6 +51,7 @@ import {
   EmptyState,
   ErrorState,
   ExportMenu,
+  FilterSelect,
   LoadingState,
   PageHeader,
   ProductCombobox,
@@ -199,24 +201,50 @@ function demandValue(row: ProgramDemandItem, key: DemandSortKey): number {
   return key === 'computed_demand' ? (row.computed_demand ?? 0) : row[key];
 }
 
+/**
+ * ИТ-направление программы в строке реестра: своё — бейджем, без своего — направления её
+ * продукта приглушённо (так же программу относят к направлению фильтры и отчёты).
+ */
+function ProgramDirectionCell({ program }: { program: Program }): ReactNode {
+  if (program.direction) return <Badge variant="secondary">{program.direction.name}</Badge>;
+  const inherited = program.product_directions ?? [];
+  if (inherited.length === 0) return formatText(null);
+  const names = inherited.map((d) => d.name).join(', ');
+  return (
+    <span className="line-clamp-2 text-xs text-muted-foreground" title={`По продукту: ${names}`}>
+      по продукту: {names}
+    </span>
+  );
+}
+
 function DemandView({
   productId,
   universityId,
+  directionId,
   period,
 }: {
   productId?: string;
   universityId?: string;
+  directionId?: string;
   period: DemandPeriod;
 }): ReactNode {
   const range = demandPeriodRange(period);
   const query = useQuery({
-    queryKey: ['programs-demand', productId ?? 'all', universityId ?? 'all', range.from ?? '', range.to ?? ''],
+    queryKey: [
+      'programs-demand',
+      productId ?? 'all',
+      universityId ?? 'all',
+      directionId ?? 'all',
+      range.from ?? '',
+      range.to ?? '',
+    ],
     queryFn: ({ signal }) =>
       getProgramsDemand(
         {
           ...range,
           product_id: productId ? [productId] : undefined,
           university_id: universityId ? [universityId] : undefined,
+          direction_id: directionId ? [directionId] : undefined,
         },
         signal,
       ),
@@ -358,19 +386,31 @@ export function ProgramsPage(): ReactNode {
   const [search, setSearch] = useState('');
   const [productId, setProductId] = useState<string | undefined>(undefined);
   const [universityId, setUniversityId] = useState<string | undefined>(undefined);
+  const [directionId, setDirectionId] = useState<string | undefined>(undefined);
   const debouncedSearch = useDebouncedValue(search, 400);
 
   const programsQuery = useQuery({
-    queryKey: ['programs-ranked', debouncedSearch, productId ?? '', universityId ?? ''],
+    queryKey: [
+      'programs-ranked',
+      debouncedSearch,
+      productId ?? '',
+      universityId ?? '',
+      directionId ?? '',
+    ],
     queryFn: ({ signal }) =>
       listPrograms({
         limit: 200,
         offset: 0,
         sort: 'priority_rank',
         search: debouncedSearch.trim() || undefined,
-        filters: { product_id: productId, university_id: universityId },
+        filters: { product_id: productId, university_id: universityId, direction_id: directionId },
         signal,
       }),
+  });
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    staleTime: 5 * 60_000,
   });
   const productsQuery = useQuery({
     queryKey: ['products-select'],
@@ -479,6 +519,9 @@ export function ProgramsPage(): ReactNode {
           formatText(null)
         )}
       </TableCell>
+      <TableCell className="max-md:hidden">
+        <ProgramDirectionCell program={record} />
+      </TableCell>
       <TableCell className="max-lg:hidden">{formatDate(record.starts_on)}</TableCell>
       <TableCell className="tabular w-[80px] text-right max-lg:hidden">{record.seats ?? '—'}</TableCell>
       <TableCell className="max-lg:hidden">
@@ -493,6 +536,7 @@ export function ProgramsPage(): ReactNode {
         <TableHead className="w-[170px]">Приоритет</TableHead>
         <TableHead>Название</TableHead>
         <TableHead>Продукт</TableHead>
+        <TableHead className="max-md:hidden">ИТ-направление</TableHead>
         <TableHead className="max-lg:hidden">Старт</TableHead>
         <TableHead className="w-[80px] text-right max-lg:hidden">Мест</TableHead>
         <TableHead className="max-lg:hidden">На сайте</TableHead>
@@ -589,6 +633,17 @@ export function ProgramsPage(): ReactNode {
               value={universityId}
               onChange={(value) => setUniversityId(value)}
             />
+            <FilterSelect
+              className="w-[200px]"
+              placeholder="ИТ-направление"
+              allLabel="ИТ-направление: все"
+              options={(directionsQuery.data?.items ?? []).map((d) => ({
+                value: d.id,
+                label: d.is_active ? d.name : `${d.name} (неактивно)`,
+              }))}
+              value={directionId}
+              onChange={setDirectionId}
+            />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {mode === 'manual' && canRank ? (
@@ -604,6 +659,7 @@ export function ProgramsPage(): ReactNode {
                   search: debouncedSearch.trim() || undefined,
                   product_id: productId,
                   university_id: universityId,
+                  direction_id: directionId,
                 })}
               />
             ) : (
@@ -614,6 +670,7 @@ export function ProgramsPage(): ReactNode {
                   ...demandPeriodRange(demandPeriod),
                   product_id: productId,
                   university_id: universityId,
+                  direction_id: directionId,
                 })}
               />
             )}
@@ -622,7 +679,12 @@ export function ProgramsPage(): ReactNode {
         {mode === 'manual' ? (
           manualBody
         ) : (
-          <DemandView productId={productId} universityId={universityId} period={demandPeriod} />
+          <DemandView
+            productId={productId}
+            universityId={universityId}
+            directionId={directionId}
+            period={demandPeriod}
+          />
         )}
       </div>
     </>

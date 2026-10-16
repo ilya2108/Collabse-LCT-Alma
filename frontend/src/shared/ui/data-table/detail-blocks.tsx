@@ -1,6 +1,6 @@
 import { ChevronRight, type LucideIcon } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/shared/lib/cn';
 import { staggerContainer, staggerItem } from '@/shared/lib/motion';
@@ -20,7 +20,7 @@ interface SectionCardProps {
 
 export function SectionCard({ title, extra, children, className }: SectionCardProps): ReactNode {
   return (
-    <section className={cn('rounded-lg border bg-card p-5 shadow-card', className)}>
+    <section className={cn('min-w-0 rounded-lg border bg-card p-4 shadow-card sm:p-5', className)}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">{title}</h2>
         {extra}
@@ -30,7 +30,11 @@ export function SectionCard({ title, extra, children, className }: SectionCardPr
   );
 }
 
-/** DL-сетка §5.1: `dt` — text-muted-foreground, значения — text-sm. */
+/**
+ * DL-сетка §5.1: `dt` — text-muted-foreground, значения — text-sm.
+ * < sm (P1-5): подпись над значением — колонка подписей 160–180 px оставляла
+ * значению на 375 px меньше половины ширины, длинные номера и e-mail вылезали.
+ */
 export function DL({
   children,
   labelWidth = 160,
@@ -39,7 +43,10 @@ export function DL({
   labelWidth?: number;
 }): ReactNode {
   return (
-    <dl className="grid gap-y-2 text-sm" style={{ gridTemplateColumns: `${labelWidth}px 1fr` }}>
+    <dl
+      className="grid grid-cols-1 gap-y-0.5 text-sm sm:grid-cols-[var(--dl-label)_minmax(0,1fr)] sm:gap-y-2"
+      style={{ '--dl-label': `${labelWidth}px` } as CSSProperties}
+    >
       {children}
     </dl>
   );
@@ -48,8 +55,8 @@ export function DL({
 export function DLRow({ label, children }: { label: string; children: ReactNode }): ReactNode {
   return (
     <>
-      <dt className="pr-4 text-muted-foreground">{label}</dt>
-      <dd className="min-w-0">{children}</dd>
+      <dt className="text-xs text-muted-foreground sm:pr-4 sm:text-sm">{label}</dt>
+      <dd className="mb-2 min-w-0 break-words last:mb-0 sm:mb-0">{children}</dd>
     </>
   );
 }

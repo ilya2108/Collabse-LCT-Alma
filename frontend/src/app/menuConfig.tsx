@@ -155,10 +155,35 @@ export const menuConfig: NavEntry[] = [
       },
     ],
   },
+  {
+    // встроенная справка: без права — руководство пользователя доступно всем вошедшим;
+    // руководство администратора (/help/admin) — по ADMIN_GUIDE_PERMISSIONS
+    key: 'help',
+    path: '/help',
+    label: 'Справка',
+  },
 ];
 
 /** Проверка права пользователя — `hasPermission` из AuthContext. */
 export type CanFn = (code: PermissionCode) => boolean;
+
+/**
+ * Права, открывающие руководство администратора: любое право, которое есть только
+ * у администратора (по матрице 4 базовых ролей). Наблюдатель с `admin:audit`
+ * и руководитель с `admin:users` (чтение) его не видят.
+ */
+export const ADMIN_GUIDE_PERMISSIONS: PermissionCode[] = [
+  'admin:roles',
+  'admin:users_write',
+  'admin:settings',
+  'admin:flags',
+  'admin:dictionaries',
+  'admin:integrations',
+];
+
+export function canSeeAdminGuide(can: CanFn): boolean {
+  return ADMIN_GUIDE_PERMISSIONS.some((code) => can(code));
+}
 
 /** Доступен ли пункт: право (если задано) и хотя бы одно из `anyOf` (если задано). */
 export function canSeeNavItem(item: NavItem, can: CanFn): boolean {
@@ -331,6 +356,14 @@ const BREADCRUMB_RULES: BreadcrumbRule[] = [
   {
     pattern: '/admin/audit',
     crumbs: [{ title: 'Администрирование' }, { title: 'Журнал аудита' }],
+  },
+  {
+    pattern: '/help/admin',
+    crumbs: [{ title: 'Справка', href: '/help' }, { title: 'Руководство администратора' }],
+  },
+  {
+    pattern: '/help',
+    crumbs: [{ title: 'Справка' }, { title: 'Руководство пользователя' }],
   },
 ];
 

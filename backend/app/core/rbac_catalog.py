@@ -453,7 +453,12 @@ PERMISSIONS: tuple[PermissionDef, ...] = (
         "Системные настройки и пороги",
         "Пороги зависания, эскалации, режим выдачи файлов",
     ),
-    PermissionDef("admin:dictionaries", "admin", "Справочники", "Справочники системы"),
+    PermissionDef(
+        "admin:dictionaries",
+        "admin",
+        "Справочники",
+        "Справочники системы, в том числе каталог ИТ-направлений",
+    ),
     PermissionDef("admin:flags", "admin", "Фичефлаги", "Включение и выключение функций"),
     PermissionDef(
         "admin:audit",

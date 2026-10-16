@@ -19,6 +19,15 @@ export interface KamActivityParams {
   workflow_type?: WorkflowType;
   kam_id?: string[];
   university_id?: string[];
+  /** ИТ-направления: направление программы заявки, без него — её ИТ-продукта. */
+  direction_id?: string[];
+}
+
+/** Выбранное в фильтре ИТ-направление — подпись чипа и шапки выгрузки. */
+export interface ReportDirectionRef {
+  id: string;
+  code: string;
+  name: string;
 }
 
 /** Собственные действия ответственного КАМа в периоде; total = П + К + Ф + М. */
@@ -160,6 +169,8 @@ export interface KamActivityEnvelopeParams {
   workflow_type: WorkflowType | null;
   kam_id: string[];
   university_id: string[];
+  /** Есть только при фильтре по ИТ-направлениям. */
+  direction_id?: string[];
 }
 
 export interface KamActivityReport {
@@ -355,6 +366,7 @@ function toQuery(params: KamActivityParams): Record<string, QueryValue | QueryVa
     workflow_type: params.workflow_type,
     kam_id: params.kam_id,
     university_id: params.university_id,
+    direction_id: params.direction_id,
   };
 }
 
@@ -452,7 +464,10 @@ export interface InteractionsRow {
   university_short: string | null;
   /** Псевдоним B2C-клиента. */
   client: string | null;
-  /** Появится вместе со справочником ИТ-направлений; до тех пор — null («—»). */
+  /**
+   * ИТ-направление заявки: направление её программы, без него — направления её
+   * ИТ-продукта через запятую; null («—») — не задано ни там, ни там.
+   */
   it_direction: string | null;
   product_id: string | null;
   product: string | null;
@@ -500,6 +515,8 @@ export interface InteractionsReport {
   /** Строк больше 5000 — полный список только в выгрузке. */
   truncated: boolean;
   rows: InteractionsRow[];
+  /** Выбранные ИТ-направления (только при фильтре по ним). */
+  directions?: ReportDirectionRef[];
 }
 
 function toInteractionsQuery(params: InteractionsParams): Record<string, QueryValue | QueryValue[]> {

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Сгенерировано docs/manual/build-manual.ts из frontend/src/pages/help/content — не править вручную -->
+<title>Альма — руководство администратора</title>
+<style>
+  :root { --blue: #1F69FF; --blue-dark: #1450C8; --blue-pale: #EDF3FF; --ink: #1c2333; --muted: #5b6577; --line: #d8e0ee; --card: #f7f9fd; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: var(--ink); font-size: 10.2pt; line-height: 1.5; }
+  @page { size: A4; margin: 20mm 16mm 18mm 16mm;
+    @top-left { content: "Альма"; color: #1F69FF; font: 600 8pt -apple-system, "Segoe UI", Arial, sans-serif; }
+    @top-right { content: "Альма — руководство администратора"; color: #5b6577; font: 8pt -apple-system, "Segoe UI", Arial, sans-serif; }
+    @bottom-right { content: counter(page); color: #1c2333; font: 600 8pt -apple-system, "Segoe UI", Arial, sans-serif; }
+  }
+  @page :first { @top-left { content: none; } @top-right { content: none; } @bottom-right { content: none; } }
+  .wrap { max-width: 178mm; margin: 0 auto; }
+  .cover { min-height: 250mm; display: flex; flex-direction: column; break-after: page; padding-top: 6mm; }
+  .cover-band { height: 2.5mm; width: 34mm; background: var(--blue); border-radius: 2mm; margin-bottom: 10mm; }
+  .cover h1 { font-size: 34pt; letter-spacing: -0.02em; line-height: 1.1; margin: 0; color: var(--blue); }
+  .cover .subtitle { font-size: 15pt; color: var(--muted); margin-top: 3mm; }
+  .cover .meta { margin-top: 7mm; font-size: 10pt; color: var(--muted); display: flex; gap: 8mm; flex-wrap: wrap; }
+  .cover .meta b { color: var(--ink); }
+  .cover figure { margin: 12mm 0 0; }
+  .cover figure img { width: 100%; border: 0.4mm solid var(--line); border-radius: 3mm; }
+  .cover .note { margin-top: 8mm; }
+  .cover .cover-foot { margin-top: auto; display: flex; justify-content: space-between; font-size: 9pt; color: var(--muted); border-top: 0.4mm solid var(--line); padding-top: 3mm; }
+  .toc { break-after: page; }
+  .toc h2 { color: var(--blue); font-size: 17pt; margin: 0 0 4mm; }
+  .toc ol { list-style: none; margin: 0; padding: 0; }
+  .toc li { display: flex; gap: 3mm; padding: 1.6mm 0; border-bottom: 0.3mm dotted #c3cde0; }
+  .toc .n { color: var(--blue); font-weight: 700; min-width: 7mm; }
+  .toc a { color: var(--ink); text-decoration: none; font-weight: 600; }
+  .toc .s { color: var(--muted); font-size: 9pt; display: block; font-weight: 400; }
+  section.sec { margin-bottom: 8mm; }
+  h2.section { color: var(--blue); font-size: 16pt; font-weight: 700; margin: 0 0 3.5mm; display: flex; align-items: center; gap: 3mm; break-after: avoid; }
+  h2.section .num { background: var(--blue); color: #fff; border-radius: 2mm; font-size: 10.5pt; padding: 0.8mm 2.6mm; }
+  h3 { color: var(--blue-dark); font-size: 10.5pt; margin: 3mm 0 1.2mm; break-after: avoid; }
+  p { margin: 0 0 2.6mm; text-align: justify; hyphens: auto; }
+  p.lead { color: #303a4f; }
+  ol.steps { margin: 1.5mm 0 3mm 5.5mm; padding: 0; }
+  ol.steps li { margin-bottom: 1.5mm; padding-left: 1mm; }
+  ol.steps li::marker { color: var(--blue); font-weight: 700; }
+  ul.dots { margin: 1.5mm 0 3mm 0; list-style: none; padding: 0; }
+  ul.dots li { margin-bottom: 1.4mm; padding-left: 5mm; position: relative; }
+  ul.dots li::before { content: ""; position: absolute; left: 0.6mm; top: 2.1mm; width: 1.7mm; height: 1.7mm; border-radius: 50%; background: var(--blue); }
+  b { font-weight: 600; }
+  a { color: var(--blue-dark); }
+  code { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 8.8pt; background: var(--blue-pale); border-radius: 1mm; padding: 0.2mm 1.2mm; color: var(--blue-dark); }
+  pre.cmd { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 8.4pt; line-height: 1.55; background: #10182b; color: #dce7ff; border-radius: 2mm; padding: 3.5mm 4mm; margin: 2mm 0 3mm; white-space: pre-wrap; word-break: break-all; break-inside: avoid; }
+  figure.shot { margin: 3mm 0 2mm; break-inside: avoid; }
+  figure.shot img { display: block; width: 100%; border: 0.35mm solid var(--line); border-radius: 2mm; }
+  figure.shot figcaption { font-size: 8.3pt; color: var(--muted); margin-top: 1.6mm; text-align: center; }
+  .shot-row { display: flex; gap: 6mm; justify-content: center; margin: 3mm 0 2mm; break-inside: avoid; }
+  .shot-row figure.shot { margin: 0; width: 52mm; }
+  .callout { background: var(--blue-pale); border-left: 1.2mm solid var(--blue); border-radius: 0 2mm 2mm 0; padding: 2.6mm 3.5mm; margin: 2.5mm 0; font-size: 9.4pt; break-inside: avoid; }
+  .callout.warn { background: #fff7ec; border-left-color: #e8912d; }
+  .panel { border: 0.35mm solid var(--line); border-radius: 2.5mm; background: var(--card); padding: 3mm 4mm; margin: 2.5mm 0; break-inside: avoid; }
+  .panel h3 { margin-top: 0; }
+  .panel p:last-child { margin-bottom: 0; }
+  table.tbl { width: 100%; border-collapse: collapse; margin: 2.5mm 0 3mm; font-size: 9.2pt; break-inside: auto; }
+  table.tbl th { background: var(--blue); color: #fff; text-align: left; font-weight: 600; padding: 2mm 2.8mm; font-size: 8.8pt; }
+  table.tbl td { border-bottom: 0.3mm solid var(--line); padding: 1.8mm 2.8mm; vertical-align: top; }
+  table.tbl tr { break-inside: avoid; }
+  table.tbl tr:nth-child(even) td { background: #f6f9ff; }
+  .flow { display: flex; align-items: stretch; gap: 2.5mm; margin: 3mm 0; break-inside: avoid; }
+  .flow .fstep { flex: 1; background: #fff; border: 0.4mm solid var(--line); border-top: 1mm solid var(--blue); border-radius: 2mm; padding: 2.6mm 2.8mm; font-size: 8.8pt; line-height: 1.4; }
+  .flow .fstep b { display: block; color: var(--blue-dark); margin-bottom: 0.8mm; font-size: 9.2pt; }
+  @media screen { body { padding: 12mm 0; background: #eef1f6; } .wrap { background: #fff; padding: 16mm; box-shadow: 0 2mm 8mm rgba(0,0,0,.08); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="cover">
+  <div class="cover-band"></div>
+  <h1>Альма</h1>
+  <div class="subtitle">Руководство администратора: Администрирование и обслуживание CRM «Альма»</div>
+  <div class="meta">
+    <span>Версия <b>1.0</b></span>
+    <span>Актуально на <b>16.10.2026</b></span>
+    <span>В приложении: <b>меню «Справка» → «Администратору»</b></span>
+  </div>
+  
+  <div class="callout note">Этот документ собран из встроенной справки «Альмы» (раздел «Справка» в меню приложения) и совпадает с ней по тексту.</div>
+  <div class="cover-foot"><span>Команда Collabse · ЛЦТ 2026</span><span>Альма — руководство администратора</span></div>
+</div>
+
+<div class="toc">
+  <h2>Оглавление</h2>
+  <ol><li><span class="n">1</span><span><a href="#sec-overview">Зона ответственности администратора</a><span class="s">Что настраивается в «Альме», а что — на стенде</span></span></li><li><span class="n">2</span><span><a href="#sec-users">Пользователи</a><span class="s">Роли назначаются в «Альме», Keycloak отвечает только за вход</span></span></li><li><span class="n">3</span><span><a href="#sec-portfolio">Передача портфеля КАМа</a><span class="s">Уход или отпуск КАМа: заявки и вузы — другому одним действием</span></span></li><li><span class="n">4</span><span><a href="#sec-roles">Роли и права</a><span class="s">Каталог прав, область данных, системные и свои роли</span></span></li><li><span class="n">5</span><span><a href="#sec-approvals">Согласование изменений процессов</a><span class="s">Дифф, влияние на заявки, публикация или возврат</span></span></li><li><span class="n">6</span><span><a href="#sec-settings">Пороги «зависания» и эскалации</a><span class="s">Когда заявка считается зависшей и кто об этом узнаёт</span></span></li><li><span class="n">7</span><span><a href="#sec-dictionaries">Справочники и фичефлаги</a><span class="s">Предзагрузка справочников и переключатели функций</span></span></li><li><span class="n">8</span><span><a href="#sec-integrations">Интеграции LMS и CMS</a><span class="s">Журнал событий, повторы доставки, очередь ошибок</span></span></li><li><span class="n">9</span><span><a href="#sec-audit">Журнал аудита</a><span class="s">Кто, что и когда сделал</span></span></li><li><span class="n">10</span><span><a href="#sec-deploy">Развёртывание и обслуживание стенда</a><span class="s">Состав, команды make, секреты, расписания</span></span></li><li><span class="n">11</span><span><a href="#sec-keycloak">Вход и консоль Keycloak</a><span class="s">Где управлять учётными записями и паролями</span></span></li><li><span class="n">12</span><span><a href="#sec-errors">Коды ошибок</a><span class="s">Формат ответа API и что означают коды</span></span></li><li><span class="n">13</span><span><a href="#sec-api">API и Swagger</a><span class="s">Документация методов и повтор запросов без дублей</span></span></li></ol>
+</div>
+
+<section class="sec" id="sec-overview">
+  <h2 class="section"><span class="num">1</span>Зона ответственности администратора</h2>
+  <p class="lead">Администратор управляет доступом (пользователи, роли и права), согласует изменения процессов, ведёт справочники и фичефлаги, следит за интеграциями и журналом аудита. Всё это — в группе меню <b>«Администрирование»</b>. Обслуживание стенда (развёртывание, секреты, сброс демо-данных, Keycloak) описано в конце руководства.</p>
+<table class="tbl"><thead><tr><th>Раздел</th><th>Право</th><th>Для чего</th></tr></thead><tbody><tr><td><b>Пользователи</b></td><td><code>admin:users</code>, <code>admin:users_write</code></td><td>Список, роли, руководители для эскалаций, синхронизация с Keycloak, передача портфеля</td></tr><tr><td><b>Роли и права</b></td><td><code>admin:roles</code></td><td>Наборы прав, область B2B/B2C, «только свои», уровни конструктора</td></tr><tr><td><b>Справочники</b></td><td><code>admin:dictionaries</code></td><td>Справочники системы и их загрузка из файлов</td></tr><tr><td><b>Фичефлаги</b></td><td><code>admin:flags</code></td><td>Включение и выключение функций у всех клиентов сразу</td></tr><tr><td><b>Согласования</b></td><td><code>workflow:approve</code></td><td>Пакеты изменений схем процессов</td></tr><tr><td><b>Интеграции</b></td><td><code>admin:audit</code>, <code>admin:integrations</code></td><td>Журнал обмена с LMS и CMS, повтор доставки</td></tr><tr><td><b>Аудит</b></td><td><code>admin:audit</code></td><td>Сквозной журнал действий</td></tr></tbody></table>
+</section>
+
+<section class="sec" id="sec-users">
+  <h2 class="section"><span class="num">2</span>Пользователи</h2>
+  <p>Учётные записи живут в Keycloak, а роли — в «Альме». Новый пользователь получает роли из Keycloak один раз, при первом входе; дальше роли меняются только здесь и действуют сразу, без перезахода. Пользователь без ролей войти в CRM не может — на экране входа он увидит «Нет доступа к CRM».</p>
+<ol class="steps"><li><b>Роли пользователя.</b> В строке пользователя откройте выбор ролей, отметьте нужные и сохраните. Пользователь сразу получит новые права и сообщение «Ваши права обновлены администратором».</li><li><b>Руководитель для эскалаций.</b> Кнопка «Руководитель…» задаёт, кто получит эскалацию, когда заявка подчинённого висит дольше полутора порогов.</li><li><b>Синхронизация из Keycloak.</b> Переносит новых пользователей и обновляет ФИО и e-mail; роли не трогает.</li></ol>
+</section>
+
+<section class="sec" id="sec-portfolio">
+  <h2 class="section"><span class="num">3</span>Передача портфеля КАМа</h2>
+  <p>Когда КАМ уходит или уезжает в отпуск, его открытые заявки и закреплённые вузы можно передать другому КАМу. Действие <b>«Передать портфель…»</b> в строке пользователя доступно с правом распределять чужие заявки (<code>requests:assign_any</code>); вузы передаются, если есть право назначать КАМов вузов (<code>universities:assign</code>).</p>
+<ol class="steps"><li>Выберите, кому передать портфель. Система посчитает и покажет, сколько заявок и вузов будет передано.</li><li>Отметьте «Вместе с закреплёнными вузами», если КАМ вуза тоже должен смениться.</li><li>Подтвердите. После передачи появится отчёт о результате; каждое переназначение записано в журнал аудита.</li></ol>
+<div class="callout warn">История остаётся за тем, кто действовал: переходы и комментарии ушедшего КАМа в таймлайне заявок сохраняются с его именем.</div>
+</section>
+
+<section class="sec" id="sec-roles">
+  <h2 class="section"><span class="num">4</span>Роли и права</h2>
+  <p class="lead">Роль — это набор прав из каталога и <b>область</b>: в каких процессах права действуют (B2B, B2C) и видны ли все записи или только свои. Права, отмеченные как действующие в процессе, работают только в процессах роли. Изменения применяются у пользователей сразу.</p>
+<table class="tbl"><thead><tr><th>Системная роль</th><th>Набор по умолчанию</th></tr></thead><tbody><tr><td>Администратор</td><td>Все права. Права и область не редактируются — это защищает систему от потери управления.</td></tr><tr><td>Руководитель КАМов</td><td>Все заявки и справочники, распределение заявок и КАМов вузов, отчёты по всем, правка схемы процесса через согласование.</td></tr><tr><td>КАМ</td><td>Свой портфель заявок и вузов; видит все заявки, правит свои; отчёт — по себе.</td></tr><tr><td>Наблюдатель</td><td>Только чтение: заявки, справочники, отчёты по всем КАМам, аудит; ПДн маскированы.</td></tr></tbody></table>
+<ol class="steps"><li><b>Новая роль.</b> «Роли и права → Новая роль»: название, описание, процессы и область записей, затем права по группам. Зависимые права добавляются с пояснением: например, назначение ролей требует права видеть список пользователей.</li><li><b>Уровень конструктора</b> в каждом процессе: просмотр, правка с согласованием или правка и публикация.</li><li><b>Пользователи с ролью</b> — список на карточке роли. Роль, назначенную пользователям, сначала снимают с них, потом удаляют.</li><li><b>Матрица прав</b> — вкладка со сравнением ролей по всем правам; на телефоне — списком по ролям.</li><li>Системные роли можно вернуть к набору по умолчанию; демо-роли «КАМ B2B» и «КАМ B2C» — примеры ролей с одной областью.</li></ol>
+<div class="callout"><b>Как интерфейс подстраивается под права.</b> Нет права на раздел — пункта нет в меню, прямая ссылка ведёт на «Нет доступа». Есть право смотреть, но нет права менять — данные видны, кнопки изменения скрыты. Если у пользователя нет ни одного права на изменения, в шапке виден значок «Режим просмотра». Сервер проверяет те же права независимо от интерфейса.</div>
+</section>
+
+<section class="sec" id="sec-approvals">
+  <h2 class="section"><span class="num">5</span>Согласование изменений процессов</h2>
+  <p>Пакеты изменений из конструктора с уровнем «Правка с согласованием» попадают в <b>«Согласования»</b>. По каждому пакету видны автор, дифф схемы и влияние на заявки: сколько заявок будет перенесено и куда.</p>
+<ul class="dots"><li><b>Согласовать и опубликовать</b> — схема меняется у всех, доски перестраиваются без перезагрузки, перенос заявок выполняется одной транзакцией.</li><li><b>Вернуть автору</b> — с комментарием; черновик остаётся у автора.</li><li>Пока идёт перенос заявок, повторная публикация в тот же процесс получит ответ «процесс занят» (<code>409 workflow_busy</code>) — подождите и повторите.</li></ul>
+</section>
+
+<section class="sec" id="sec-settings">
+  <h2 class="section"><span class="num">6</span>Пороги «зависания» и эскалации</h2>
+  <ul class="dots"><li>Глобальный порог задаётся в «Нотификациях», блок «Правила и пороги «зависания»» (право <code>admin:settings</code>): через сколько дней без смены этапа заявка зависла и включена ли эскалация руководителю при 1,5× порога.</li><li>Порог отдельного этапа задаётся в конструкторе процесса и переопределяет глобальный.</li><li>Проверка зависших запускается по расписанию раз в час (CronJob <code>stuck-check</code>).</li><li>Правила адресации уведомлений на роли настраиваются через API: <code>/api/v1/notifications/rules</code> (права <code>notification_rules:read</code> и <code>notification_rules:write</code>).</li></ul>
+</section>
+
+<section class="sec" id="sec-dictionaries">
+  <h2 class="section"><span class="num">7</span>Справочники и фичефлаги</h2>
+  <ul class="dots"><li><b>Справочники</b> — разовая предзагрузка из открытых источников и файлов: продукты, федеральные проекты, типы взаимодействий, реестр вузов. Загрузка идёт через мастер импорта с маппингом и проверкой строк (право <code>import:dictionaries</code>).</li><li><b>ИТ-направления</b> — справочник в базе: «Администрирование → Справочники → ИТ-направления». Код и название уникальны без учёта регистра; удаление — это деактивация, и она запрещена, пока на направлении есть активная программа. Направления привязываются к продуктам (несколько) и программам (одно); читают справочник все пользователи, правят — с правом <code>admin:dictionaries</code>.</li><li><b>Фичефлаги</b> переключаются мгновенно у всех клиентов: PDF-выгрузка дашборда, расчётное ранжирование программ, LLM-функции (в закрытом контуре выключены). Переключение пишется в аудит.</li></ul>
+</section>
+
+<section class="sec" id="sec-integrations">
+  <h2 class="section"><span class="num">8</span>Интеграции LMS и CMS</h2>
+  <p>Обмен с LMS (обучение) и CMS (сайт-витрина) идёт на едином конверте событий через outbox в PostgreSQL. Входящие вебхуки подписываются HMAC (заголовок <code>X-Webhook-Signature</code>). Неудачная доставка повторяется с паузами 1 мин, 5 мин, 30 мин, 2 ч и 6 ч, после этого событие уходит в очередь ошибок (DLQ).</p>
+<ul class="dots"><li>На странице <b>«Интеграции»</b> — карточки LMS и CMS с состоянием и журнал событий со статусами: в очереди, повтор, доставлено, обработано, ошибка (DLQ), пропущено.</li><li>Тело любого события открывается в JSON. Событие из DLQ можно отправить повторно вручную (право <code>admin:integrations</code>); повтор пишется в аудит.</li></ul>
+</section>
+
+<section class="sec" id="sec-audit">
+  <h2 class="section"><span class="num">9</span>Журнал аудита</h2>
+  <p>Журнал аудита хранит значимые действия с автором, временем и изменёнными полями. Фильтры: период, действие, тип объекта.</p>
+<ul class="dots"><li>Заявки: создание, переходы, назначения, изменения полей, файлы, удаление и переоткрытие.</li><li>Доступ: смена ролей пользователя, создание и правка ролей, передача портфеля, смена руководителя, смена КАМа вуза.</li><li>Процессы: запрос, публикация и отклонение пакетов изменений.</li><li>Данные: раскрытие ПДн студентов, выгрузки, применение импорта, сброс демо-стенда, фичефлаги и системные настройки.</li></ul>
+</section>
+
+<section class="sec" id="sec-deploy">
+  <h2 class="section"><span class="num">10</span>Развёртывание и обслуживание стенда</h2>
+  <p>Стенд — Kubernetes (k3s/k3d или minikube) с манифестами kustomize в <code>deploy/k8s</code>: backend (FastAPI), frontend (nginx), PostgreSQL 16, KeyDB, MinIO, Keycloak, сервис уведомлений с Telegram-ботом, заглушки LMS и CMS. Локально тот же состав поднимается docker compose.</p>
+<table class="tbl"><thead><tr><th>Команда</th><th>Что делает</th></tr></thead><tbody><tr><td><code>make k8s-up</code></td><td>Кластер k3d, сборка и импорт образов, секреты, применение манифестов</td></tr><tr><td><code>make k8s-secrets</code></td><td>Генерирует секреты overlay (в git не попадают)</td></tr><tr><td><code>make seed</code></td><td>Перезапускает сид демо-данных (идемпотентен)</td></tr><tr><td><code>make demo-reset ANCHOR=ГГГГ-ММ-ДД</code></td><td>Сброс стенда к эталону: пересев от даты показа, роли — к исходным; пользователи, привязки Telegram и аудит сохраняются</td></tr><tr><td><code>make vm-deploy</code>, <code>make vm-demo-reset</code></td><td>То же для VPS-стенда</td></tr><tr><td><code>make dev</code></td><td>Локальный стек docker compose; фронт — <code>npm run dev</code></td></tr><tr><td><code>make logs</code></td><td>Логи backend в кластере</td></tr></tbody></table>
+<table class="tbl"><thead><tr><th>Расписание (CronJob)</th><th>Когда</th><th>Что делает</th></tr></thead><tbody><tr><td><code>stuck-check</code></td><td>каждый час</td><td>Отмечает зависшие заявки и шлёт эскалации</td></tr><tr><td><code>idempotency-purge</code></td><td>каждый час</td><td>Чистит просроченные ключи <code>Idempotency-Key</code></td></tr><tr><td><code>purge-deleted</code></td><td>ночью</td><td>Удаляет записи, помеченные на удаление</td></tr><tr><td><code>demo-reset</code></td><td>только вручную</td><td>Шаблон задания сброса демо-стенда</td></tr></tbody></table>
+<div class="callout warn"><b>Резервные копии.</b> В демо-стенд резервное копирование базы не входит. В контуре заказчика настройте регулярный <code>pg_dump</code> или снапшоты тома PostgreSQL и проверьте восстановление: ключи шифрования ПДн хранятся в секретах Kubernetes и нужны для чтения резервной копии.</div>
+</section>
+
+<section class="sec" id="sec-keycloak">
+  <h2 class="section"><span class="num">11</span>Вход и консоль Keycloak</h2>
+  <p>Вход в «Альму» — через Keycloak (realm <code>crm</code>). Для повседневной работы консоль не нужна: роли назначаются в «Альме». Консоль нужна, чтобы завести учётную запись, сбросить пароль или разблокировать пользователя.</p>
+<ol class="steps"><li>Откройте консоль <code>https://id.&lt;домен стенда&gt;/admin/master/console/</code> и войдите как <code>admin</code> (realm master).</li><li>Пароль администратора Keycloak хранится в секрете Kubernetes <code>crm-keycloak-admin</code> и извлекается командой на сервере стенда.</li><li>Чтобы управлять пользователями CRM, переключите realm на <code>crm</code> в левом верхнем меню.</li></ol>
+<pre class="cmd">kubectl get secret crm-keycloak-admin -n crm \
+  -o go-template='{{.data.password}}' | base64 -d</pre>
+<div class="callout warn">Пользователи CRM живут в realm <code>crm</code>, администратор Keycloak — в realm <code>master</code>. Вход в консоль master под учёткой CRM (и наоборот) заканчивается ошибкой «Invalid username or password» — это ожидаемо.</div>
+<ul class="dots"><li>Сброс пароля: realm crm → Users → пользователь → Credentials → Reset password.</li><li>Разблокировка: realm crm → Users → пользователь → Details → Enabled.</li><li>Активные сессии: realm crm → Sessions.</li></ul>
+</section>
+
+<section class="sec" id="sec-errors">
+  <h2 class="section"><span class="num">12</span>Коды ошибок</h2>
+  <p>Ошибка API приходит в одном формате: машинный <code>code</code>, русское <code>message</code>, уточнения <code>details</code> по полям и <code>trace_id</code>. Пользователь видит <code>trace_id</code> как «Код обращения» — по нему запрос находится в логах backend (заголовок <code>X-Request-Id</code>).</p>
+<table class="tbl"><thead><tr><th>HTTP</th><th>code</th><th>Когда</th></tr></thead><tbody><tr><td>400</td><td><code>validation_error</code></td><td>Неверные данные; в <code>details</code> — поле и причина (например, <code>comment_required</code>, <code>file_type_not_allowed</code>)</td></tr><tr><td>400</td><td><code>import_bad_format</code></td><td>Файл импорта не читается</td></tr><tr><td>401</td><td><code>unauthorized</code></td><td>Нет или истёк токен входа</td></tr><tr><td>403</td><td><code>forbidden</code></td><td>Не хватает права</td></tr><tr><td>404</td><td><code>not_found</code></td><td>Объекта нет или он вне вашей области</td></tr><tr><td>409</td><td><code>conflict</code>, <code>stale_version</code></td><td>Данные изменил кто-то другой — обновите экран</td></tr><tr><td>409</td><td><code>workflow_busy</code></td><td>В процессе идёт перенос заявок</td></tr><tr><td>409</td><td><code>idempotency_in_progress</code></td><td>Тот же запрос ещё выполняется</td></tr><tr><td>422</td><td><code>idempotency_key_reused</code></td><td>Ключ идемпотентности использован с другим телом запроса</td></tr><tr><td>413</td><td><code>file_too_large</code></td><td>Файл больше лимита</td></tr><tr><td>502</td><td><code>integration_unavailable</code></td><td>Внешняя система не ответила</td></tr><tr><td>503</td><td><code>service_unavailable</code></td><td>Сервис временно недоступен</td></tr><tr><td>500</td><td><code>internal_error</code></td><td>Внутренняя ошибка — передайте «Код обращения» разработчикам</td></tr></tbody></table>
+</section>
+
+<section class="sec" id="sec-api">
+  <h2 class="section"><span class="num">13</span>API и Swagger</h2>
+  <ul class="dots"><li>Документация API (Swagger UI): <code>/api/v1/docs</code>. Доступ к методам — по тому же токену Keycloak и тем же правам, что в интерфейсе.</li><li>Изменяющие запросы принимают заголовок <code>Idempotency-Key</code>: повтор того же действия возвращает сохранённый ответ с заголовком <code>Idempotent-Replayed: true</code>, а не создаёт дубль.</li><li>Входящие интеграции (LMS, CMS) — вебхуки с подписью HMAC; исходящие события — через outbox с повторами.</li></ul>
+</section>
+</div>
+</body>
+</html>

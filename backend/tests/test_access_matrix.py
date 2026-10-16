@@ -204,6 +204,13 @@ NEW_ENDPOINT_ROLES: dict[tuple[str, str], frozenset[str]] = {
     # волна 4: передача портфеля КАМа (заявки — requests:assign_any, вузы —
     # universities:assign внутри обработчика)
     ("POST", "/requests/transfer-portfolio"): AH,
+    # P1-1: справочник ИТ-направлений — читают все (фильтры отчётов, карточки программ и
+    # продуктов), правит admin:dictionaries
+    ("GET", "/it-directions"): ALL,
+    ("GET", "/it-directions/{direction_id}"): ALL,
+    ("POST", "/it-directions"): ADMIN,
+    ("PATCH", "/it-directions/{direction_id}"): ADMIN,
+    ("DELETE", "/it-directions/{direction_id}"): ADMIN,
 }
 
 _API_PREFIX = "/api/v1"

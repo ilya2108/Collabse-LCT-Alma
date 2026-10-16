@@ -95,13 +95,16 @@ function ColumnCombobox({
           role="combobox"
           aria-expanded={open}
           aria-label={label}
-          className={cn('w-[260px] justify-between font-normal', !current && 'text-muted-foreground')}
+          className={cn(
+            'w-full justify-between font-normal sm:w-[260px]',
+            !current && 'text-muted-foreground',
+          )}
         >
           <span className="truncate">{current ? `«${current.name}»` : 'Колонка файла…'}</span>
           <ChevronsUpDown className="size-4 shrink-0 opacity-50" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[320px] p-0" align="start">
+      <PopoverContent className="w-[min(320px,calc(100vw-2rem))] p-0" align="start">
         <Command>
           <CommandInput placeholder="Найти колонку…" />
           <CommandList>
@@ -303,7 +306,7 @@ export function MappingStep({
                   : 'border-border bg-card',
               )}
             >
-              <div className="flex w-[220px] shrink-0 flex-wrap items-center gap-1.5">
+              <div className="flex w-[220px] max-w-[calc(100%-1.75rem)] shrink-0 flex-wrap items-center gap-1.5">
                 <span className="text-sm font-medium">
                   {field.label}
                   {field.required ? (
@@ -345,7 +348,7 @@ export function MappingStep({
                     setEntry(field.field, { transform: value === '__none__' ? undefined : value })
                   }
                 >
-                  <SelectTrigger className="w-[190px]" size="sm" aria-label="Преобразование значения">
+                  <SelectTrigger className="w-full sm:w-[190px]" size="sm" aria-label="Преобразование значения">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -362,7 +365,7 @@ export function MappingStep({
                   value={entry.lookup ?? lookupOptions[0].value}
                   onValueChange={(value) => setEntry(field.field, { lookup: value })}
                 >
-                  <SelectTrigger className="w-[220px]" size="sm" aria-label="Правило поиска в справочнике">
+                  <SelectTrigger className="w-full sm:w-[220px]" size="sm" aria-label="Правило поиска в справочнике">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

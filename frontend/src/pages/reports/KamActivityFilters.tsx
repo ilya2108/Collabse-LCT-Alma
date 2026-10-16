@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
+import { listAllItDirections } from '@/shared/api/endpoints/itDirections';
 import { listKamOptions, type InteractionsStageOption } from '@/shared/api/endpoints/kamActivity';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { listPrograms } from '@/shared/api/endpoints/programs';
@@ -15,8 +16,8 @@ import { PRESETS, type KamActivityFilters as Filters, type PeriodPreset } from '
 /**
  * Панель фильтров отчёта (ux.md §6.4): пресеты периода, процесс B2B/B2C/Все
  * (только доступные роли процессы), КАМ (для права «все КАМы»), вуз с серверным
- * поиском и «Сбросить». На вкладке «Взаимодействия за период» — ещё ИТ-продукт,
- * программа и статус (этап на конец периода). На мобильных пресеты прокручиваются
+ * поиском, ИТ-направление и «Сбросить». На вкладке «Взаимодействия за период» — ещё
+ * ИТ-продукт, программа и статус (этап на конец периода). На мобильных пресеты прокручиваются
  * внутри своей полосы — без горизонтальной прокрутки страницы.
  */
 
@@ -27,6 +28,7 @@ export type FiltersPatch = Partial<{
   wf: WorkflowType | null;
   kam: string[];
   university: string[];
+  direction: string[];
   product: string[];
   program: string[];
   status: string[];
@@ -80,6 +82,11 @@ export function KamActivityFilters({
     queryKey: ['universities-select', debouncedUniversity],
     queryFn: ({ signal }) => searchUniversities(debouncedUniversity, signal),
     staleTime: 30_000,
+  });
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    staleTime: 5 * 60_000,
   });
   const kamsQuery = useQuery({
     queryKey: ['users-select', 'permission', 'requests:kam'],
@@ -143,6 +150,17 @@ export function KamActivityFilters({
           onSearch={setUniversitySearch}
           loading={universitiesQuery.isLoading}
           emptyText="Вузы не найдены"
+        />
+        <MultiFilter
+          placeholder="ИТ-направление"
+          options={(directionsQuery.data?.items ?? []).map((direction) => ({
+            value: direction.id,
+            label: direction.is_active ? direction.name : `${direction.name} (неактивно)`,
+          }))}
+          value={filters.direction}
+          onChange={(value) => onChange({ direction: value })}
+          loading={directionsQuery.isLoading}
+          emptyText="Направления не найдены"
         />
         {interactionFilters ? (
           <>

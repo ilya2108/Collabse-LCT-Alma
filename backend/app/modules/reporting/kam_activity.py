@@ -26,7 +26,11 @@
 - зависла — этап нетерминальный и на этапе дольше порога (этап → воронка → глобальный);
 - выиграно / отказ — этап остановки терминальный и вход в него в периоде;
 - охват — закреплённые вузы с ≥1 взаимодействием в периоде / все закреплённые;
-- мягко удалённый этап показывается под историческим названием с пометкой «(удалён)».
+- мягко удалённый этап показывается под историческим названием с пометкой «(удалён)»;
+- фильтр «ИТ-направление» (`direction_id`) — заявки, чьё направление (направление
+  программы, без него — направления ИТ-продукта, `crm.directions.direction_match`) входит
+  в выбранные; мероприятия — по направлению их программы; закреплённые вузы — те, где есть
+  заявки выбранных направлений; студенты — по направлению программы или продукта.
 
 Зона видимости — область отчётов RBAC `report_scope(viewer)` (`DealScope`: процессы ролей
 с `reports:read`, «по всем КАМам» только с `reports:all`); единственная точка проверки —
@@ -64,6 +68,7 @@ from app.models.service import FileObject
 from app.models.talent import Activity, ActivitySchedule, Student, StudentStatusHistory
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
+from app.modules.crm.directions import direction_match, direction_refs
 from app.modules.reporting.service import (
     FUNNEL_COLORS,
     FUNNEL_LABELS,
@@ -125,22 +130,28 @@ class KamActivityParams:
     workflow_type: str | None = None  # 'b2b' | 'b2c' | None
     kam_ids: tuple[uuid.UUID, ...] = ()
     university_ids: tuple[uuid.UUID, ...] = ()
+    direction_ids: tuple[uuid.UUID, ...] = ()  # ИТ-направления (каталог it_direction)
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "from": self.date_from.isoformat() if self.date_from else None,
             "to": self.date_to.isoformat() if self.date_to else None,
             "workflow_type": self.workflow_type,
             "kam_id": sorted(str(item) for item in self.kam_ids),
             "university_id": sorted(str(item) for item in self.university_ids),
         }
+        if self.direction_ids:
+            # фильтр появился позже остальных: без значения ключ кэша и эхо не меняются
+            result["direction_id"] = sorted(str(item) for item in self.direction_ids)
+        return result
 
     @classmethod
     def from_filters(cls, filters: Mapping[str, Any]) -> KamActivityParams:
         """Фильтры выгрузки (`POST /export/jobs`): строка или список → tuple[UUID].
 
         Принимает ключи query-контракта (`from`, `to`, `workflow_type`, `kam_id`,
-        `university_id`) и URL-состояния страницы (`wf`, `kam`, `university`).
+        `university_id`, `direction_id`) и URL-состояния страницы (`wf`, `kam`,
+        `university`, `direction`).
         """
         errors: list[dict[str, Any]] = []
 
@@ -200,6 +211,7 @@ class KamActivityParams:
             workflow_type=workflow_type,
             kam_ids=_uuids("kam_id", "kam"),
             university_ids=_uuids("university_id", "university"),
+            direction_ids=_uuids("direction_id", "direction"),
         )
         if errors:
             raise validation_error("Ошибка валидации данных", details=errors)
@@ -259,7 +271,11 @@ def resolve_params(params: KamActivityParams, *, today: date) -> KamActivityPara
                 "message": "Начало периода не может быть позже сегодняшнего дня",
             }
         )
-    for name, values in (("kam_id", params.kam_ids), ("university_id", params.university_ids)):
+    for name, values in (
+        ("kam_id", params.kam_ids),
+        ("university_id", params.university_ids),
+        ("direction_id", params.direction_ids),
+    ):
         if len(set(values)) > MAX_FILTER_IDS:
             errors.append(
                 {
@@ -284,6 +300,7 @@ def resolve_params(params: KamActivityParams, *, today: date) -> KamActivityPara
         date_to=date_to,
         kam_ids=_dedup(params.kam_ids),
         university_ids=_dedup(params.university_ids),
+        direction_ids=_dedup(params.direction_ids),
     )
 
 
@@ -339,10 +356,11 @@ def _visible_workflows(params: KamActivityParams, scope: DealScope) -> tuple[str
 
 
 def _is_wide(params: KamActivityParams, scope: DealScope) -> bool:
-    """Без фильтров по людям/вузам и без ограничения «только свои»."""
+    """Без фильтров по людям/вузам/ИТ-направлениям и без ограничения «только свои»."""
     return (
         not params.kam_ids
         and not params.university_ids
+        and not params.direction_ids
         and all(own is None for _wf, own in scope.rules)
     )
 
@@ -426,6 +444,8 @@ def _apply_deal_filters(
         stmt = stmt.where(Deal.responsible_user_id.in_(params.kam_ids))
     if params.university_ids:
         stmt = stmt.where(Deal.university_id.in_(params.university_ids))
+    if params.direction_ids:
+        stmt = stmt.where(direction_match(Deal.program_id, Deal.product_id, params.direction_ids))
     if scope is not None:
         stmt = scope.apply(stmt)
     return stmt
@@ -759,6 +779,9 @@ def activity_stats_stmt(
         stmt = stmt.where(Activity.responsible_user_id.in_(params.kam_ids))
     if params.university_ids:
         stmt = stmt.where(Activity.university_id.in_(params.university_ids))
+    if params.direction_ids:
+        # у мероприятия нет своего продукта — направление его программы (или её продукта)
+        stmt = stmt.where(direction_match(Activity.program_id, None, params.direction_ids))
     if own is not None:
         stmt = stmt.where(Activity.responsible_user_id == own)
     return stmt
@@ -788,7 +811,10 @@ async def fetch_activity_stats(
 async def fetch_assigned_universities(
     session: AsyncSession, params: KamActivityParams, scope: DealScope
 ) -> list[UniversityRef]:
-    """Закреплённые вузы — знаменатель охвата (D5). Закрепление не историческое."""
+    """Закреплённые вузы — знаменатель охвата (D5). Закрепление не историческое.
+
+    С фильтром ИТ-направлений — только вузы, где есть заявки этих направлений (вуз без
+    них к выбранному направлению не относится и в охват не входит)."""
     visible, own = _b2b_rule(params, scope)
     if not visible:
         return []
@@ -803,6 +829,16 @@ async def fetch_assigned_universities(
         stmt = stmt.where(University.kam_user_id.in_(params.kam_ids))
     if params.university_ids:
         stmt = stmt.where(University.id.in_(params.university_ids))
+    if params.direction_ids:
+        stmt = stmt.where(
+            University.id.in_(
+                select(Deal.university_id).where(
+                    Deal.university_id.is_not(None),
+                    Deal.status != "archived",
+                    direction_match(Deal.program_id, Deal.product_id, params.direction_ids),
+                )
+            )
+        )
     if own is not None:
         stmt = stmt.where(University.kam_user_id == own)
     return [
@@ -833,8 +869,9 @@ async def fetch_people(
     if wanted:
         conditions.append(AppUser.id.in_(wanted))
     kam_roles = kam_role_codes(params, scope)
-    if not params.kam_ids and not params.university_ids and kam_roles:
-        # КАМ без активности тоже строка отчёта; при фильтре по вузам — только участники
+    if not params.kam_ids and not params.university_ids and not params.direction_ids and kam_roles:
+        # КАМ без активности тоже строка отчёта; при фильтре по вузам или направлениям —
+        # только участники
         kam_condition = and_(AppUser.is_active.is_(True), AppUser.roles.overlap(list(kam_roles)))
         own = scope.own_user_id
         if own is not None:
@@ -1673,6 +1710,10 @@ def dynamics_stmt(
             activities = activities.where(Activity.responsible_user_id.in_(params.kam_ids))
         if params.university_ids:
             activities = activities.where(Activity.university_id.in_(params.university_ids))
+        if params.direction_ids:
+            activities = activities.where(
+                direction_match(Activity.program_id, None, params.direction_ids)
+            )
         if activities_own is not None:
             activities = activities.where(Activity.responsible_user_id == activities_own)
         parts.append(activities)
@@ -2084,7 +2125,22 @@ def _talent_condition(
     university_ids: set[uuid.UUID],
     counterparty_ids: set[uuid.UUID],
 ) -> sa.ColumnElement[bool] | None:
-    """Студенты вузов отчёта (B2B) и B2C-клиентов отчёта; без фильтров — все."""
+    """Студенты вузов отчёта (B2B) и B2C-клиентов отчёта; без фильтров — все. С фильтром
+    ИТ-направлений — ещё и по направлению программы или продукта студента."""
+    condition = _talent_scope_condition(params, scope, university_ids, counterparty_ids)
+    if condition is None or not params.direction_ids:
+        return condition
+    return and_(
+        condition, direction_match(Student.program_id, Student.product_id, params.direction_ids)
+    )
+
+
+def _talent_scope_condition(
+    params: KamActivityParams,
+    scope: DealScope,
+    university_ids: set[uuid.UUID],
+    counterparty_ids: set[uuid.UUID],
+) -> sa.ColumnElement[bool] | None:
     workflows = _visible_workflows(params, scope)
     wide = _is_wide(params, scope)
     if wide and set(workflows) == set(WORKFLOW_TYPES):
@@ -2423,11 +2479,14 @@ async def kam_activity_detail(
     tree = assemble_tree(
         rows, activities, assigned, people, bounds, include_requests=include_requests
     )
-    return {
+    body = {
         "period": bounds.as_json(),
         "scope": _scope_payload(scope),
         **public_tree(tree),
     }
+    if params.direction_ids:
+        body["directions"] = await direction_refs(session, params.direction_ids)
+    return body
 
 
 async def kam_activity_summary(
@@ -2521,6 +2580,8 @@ async def kam_activity_summary(
     }
     body["highlights"] = build_highlights(body)
     body["risks"] = build_risks(body)
+    if params.direction_ids:
+        body["directions"] = await direction_refs(session, params.direction_ids)
     return body
 
 
