@@ -100,11 +100,6 @@ def _scope_or_all(scope: DealScope | None) -> DealScope:
     return scope if scope is not None else DealScope.unrestricted()
 
 
-def scope_kam_id(viewer: AppUser) -> uuid.UUID | None:
-    """Совместимость (удаляется в волне 3): id зрителя, если он видит только свои заявки."""
-    return report_scope(viewer).own_user_id
-
-
 def _envelope(code: str, params: ReportParams, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "report": code,

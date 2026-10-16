@@ -44,7 +44,6 @@ from app.modules.workflow.graph import (
 from app.modules.workflow.schemas import (
     DEFAULT_TRANSITION_ROLES,
     MAX_ALLOWED_ROLES,
-    TRANSITION_ROLES,
     Operation,
 )
 
@@ -306,9 +305,8 @@ def _add_transition(roles: list[str], name: str = "Сразу в перегов�
     }
 
 
-def test_default_transition_roles_alias() -> None:
+def test_default_transition_roles() -> None:
     assert DEFAULT_TRANSITION_ROLES == ("admin", "head_kam", "kam")
-    assert TRANSITION_ROLES == DEFAULT_TRANSITION_ROLES  # совместимость до волны 3
 
 
 def test_pydantic_accepts_any_role_code_format() -> None:

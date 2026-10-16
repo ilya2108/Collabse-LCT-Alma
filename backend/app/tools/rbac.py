@@ -3,7 +3,7 @@
     python -m app.tools.rbac grant-admin <username>   # назначить роль admin
     python -m app.tools.rbac list-admins              # кто может управлять ролями
 
-В контуре — через `kubectl exec deploy/crm-backend -- python -m app.tools.rbac …`.
+В контуре — через `kubectl -n crm exec deploy/backend -- python -m app.tools.rbac …`.
 Перед назначением каталог прав и системные роли сверяются с кодом (на случай ручной
 порчи таблиц). Назначение пишется в аудит `user.roles_changed` с `after.source = "cli"`
 и публикует SSE `access.changed` — реплики сбрасывают кэш каталога ролей.

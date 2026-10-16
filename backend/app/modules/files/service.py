@@ -34,8 +34,8 @@ MAX_IMPORT_BYTES = 20 * 1024 * 1024  # файлы импорта
 # файлы, приватные для автора (с правом files:others — все): исходники/отчёты импорта
 # и выгрузки
 _OWNER_ONLY_ENTITY_TYPES = frozenset({"import_session", "report"})
-# без права files:business (наблюдатель) скачивание закрыто: договоры (§12.1 «без
-# скачивания файлов»), студенты (Р-19), заявки и вложения комментариев
+# без права files:business (наблюдатель) скачивание закрыто (api-contract.md §12.2):
+# договоры, студенты (Р-19), заявки и вложения комментариев
 _BUSINESS_ENTITY_TYPES = frozenset({"contract", "student", "deal", "deal_comment"})
 _DEAL_ENTITY_TYPES = frozenset({"deal", "deal_comment"})
 

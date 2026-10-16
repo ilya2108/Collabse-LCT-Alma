@@ -47,7 +47,7 @@ patches:
   - path: patches/app-config-vm.yaml # KEYCLOAK_ISSUER → https://id.crm...nip.io
   - path: patches/frontend-env-vm.yaml # config.js: KEYCLOAK_URL → https://id.crm...nip.io
   - path: patches/backend-resources.yaml # requests под скромную VM
-  - path: patches/hpa-vm.yaml # 1 реплика backend, HPA max 2
+  - path: patches/hpa-vm.yaml # 1 реплика backend, HPA max 4
   - path: patches/postgres-resources.yaml
   - target: {group: apps, version: v1, kind: StatefulSet, name: postgres}
     path: patches/storageclass.yaml # local-path-provisioner (встроен в k3s)

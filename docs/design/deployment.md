@@ -1,6 +1,8 @@
 # Инфраструктура и деплой — CRM для работы с вузами (ЛЦТ 2026)
 
 > Документ проектного уровня: по нему пишется весь код инфраструктуры без дополнительных вопросов.
+> Сверен с манифестами `deploy/` и `Makefile`: три overlay (`minikube`, `k3d`, `vm`), компонент
+> `prod-hardening`, три CronJob, прод-контур — §4.4.
 > Источник требований — `PLAN.md` (решения кейсодержателя, Q&A 16.09.2026).
 > Смежные документы: `docs/design/OVERVIEW.md` (сводная архитектура, модули backend),
 > `docs/design/data-model.md` (БД), `docs/design/api-contract.md` (контракты LMS/CMS/notification).
@@ -9,12 +11,13 @@
 
 ## 0. TL;DR
 
-- **Kubernetes — витрина решения.** Один kustomize `base` + два overlay (`minikube`, `k3d`). Жюри видит: Deployments c HPA и probes, StatefulSet'ы с PVC, Jobs (миграции/сиды/бакеты), CronJob для «зависших» заявок, Ingress, NetworkPolicy как иллюстрацию закрытого контура.
+- **Kubernetes — витрина решения.** Один kustomize `base` + три overlay: `minikube` и `k3d` — локальный стенд, `vm` — публичный демо-стенд на голом k3s с TLS (§4.3). В кластере: Deployments c HPA и probes, StatefulSet'ы с PVC, Jobs (миграции/сиды/бакеты), три CronJob (зависшие заявки, физическое удаление по 152-ФЗ, очистка ключей идемпотентности), Ingress, NetworkPolicy как иллюстрация закрытого контура.
 - **Модульный монолит + 3 сервиса-сателлита** (notification, lms-stub, cms-stub) — осознанный выбор, допустимый по PLAN.md §2 («допустимы монолит или микросервисы»); обоснование в §1.
 - **152-ФЗ:** ключ шифрования ПДн живёт только в k8s Secret (`crm-pii`), генерируется при установке, в git не попадает.
 - **Закрытый контур:** default-deny NetworkPolicy, точка-точка backend↔stubs/БД; notification-gateway — единственный pod с egress в интернет, в проде выносится в DMZ (диаграмма в §3.11).
 - **300+ параллельных пользователей:** HPA backend 2→6 реплик + расчёт ёмкости и k6-сценарий (§8) — прямой ответ кейсодержателю.
-- Локальная разработка — `docker-compose.dev.yml` (`make dev`), стенд — `make k8s-up` (k3d) / `make k8s-up-minikube`.
+- Локальная разработка — `docker-compose.dev.yml` (`make dev`), стенд — `make k8s-up` (k3d) / `make k8s-up-minikube`, публичный демо-стенд — `make vm-install` + `make vm-deploy`.
+- **nip.io и Let's Encrypt — только для демо-стенда.** В проде — корпоративный DNS, ingress-контроллер контура заказчика и сертификат внутреннего CA; меняется один overlay, код и `base` — нет (§4.4).
 
 ### Фиксированные порты
 
@@ -46,9 +49,9 @@ PLAN.md §2 допускает оба варианта: «монолит с feat
 Где границы сервисов настоящие — там они и проведены:
 
 - **notification-service** — другой контур безопасности (единственный egress в интернет → DMZ), другой runtime-паттерн (long-polling aiogram, долгоживущее соединение), независимый цикл падений: лежащий Telegram не должен трогать CRM.
-- **lms-stub / cms-stub** — по определению имитируют *внешние* системы; отдельные процессы делают проверку двусторонности честной (эксперт видит, что данные реально пришли по сети в другую систему).
+- **lms-stub / cms-stub** — по определению имитируют *внешние* системы; отдельные процессы делают проверку двусторонности честной (проверяющий видит, что данные реально пришли по сети в другую систему).
 
-Почему при монолите всё равно Kubernetes: жюри хочет увидеть кубер; и k8s даёт нам не «микросервисность», а операционные примитивы, которые прямо отвечают требованиям — HPA (300+ пользователей), CronJob (зависшие заявки), NetworkPolicy (закрытый контур), Jobs (миграции/сиды), probes и самовосстановление.
+Почему при монолите всё равно Kubernetes: k8s даёт нам не «микросервисность», а операционные примитивы, которые прямо отвечают требованиям — HPA (300+ пользователей), CronJob (зависшие заявки, очистки), NetworkPolicy (закрытый контур), Jobs (миграции/сиды), probes и самовосстановление. И тот же манифест без изменений разворачивается в контуре заказчика (§4.4).
 
 ---
 
@@ -91,7 +94,8 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--worker
 Замечания:
 - `curl` в runtime-слое нужен намеренно: этот же образ используется Job'ами и удобен для отладки probes;
 - команды `alembic upgrade head` и `python -m app.seed` запускаются **из этого же образа** (Jobs §3.8) — один артефакт, никаких расхождений версий кода и миграций;
-- 2 воркера uvicorn на под: масштабируемся подами (HPA), а не воркерами — так метрика CPU на под предсказуема.
+- 2 воркера uvicorn на под: масштабируемся подами (HPA), а не воркерами — так метрика CPU на под предсказуема;
+- PDF-отчёты (дашборд, «Активность КАМов») строит `fpdf2` — чистый Python, зависимость зафиксирована в `uv.lock`; шрифты DejaVu (кириллица, ▲▼, ₽) лежат в пакете `app/modules/reporting/fonts/`. Системные библиотеки (pango/cairo, как для weasyprint) и шрифты ОС в образе не нужны.
 
 ### 2.2 frontend — `frontend/Dockerfile`
 
@@ -141,7 +145,7 @@ server {
 }
 ```
 
-`index.html` подключает `<script src="/config.js"></script>` до бандла; файл монтируется из ConfigMap `frontend-env` (§3.7). Так один и тот же образ работает в compose, minikube и k3d без пересборки — реальный «12-factor» аргумент на защите.
+`index.html` подключает `<script src="/config.js"></script>` до бандла; файл монтируется из ConfigMap `frontend-env` (§3.7). Так один и тот же образ работает в compose, minikube и k3d без пересборки (на VPS — та же сборка под linux/amd64, отличается только `config.js`) — реальный «12-factor».
 
 `frontend/.dockerignore` и `backend/.dockerignore` обязательны (`node_modules`, `dist`, `.venv`, `__pycache__`, `.git`).
 
@@ -158,7 +162,7 @@ aiogram запускается как background-task внутри того же
 
 ### 2.4 lms-stub и cms-stub — `services/lms-stub/Dockerfile`, `services/cms-stub/Dockerfile`
 
-Тот же шаблон; `EXPOSE 8020` / `EXPOSE 8030`, `CMD` с соответствующим портом. У заглушек есть мини-UI (одна HTML-страница «журнал полученных вызовов») — это то, что эксперт открывает для проверки двусторонности.
+Тот же шаблон; `EXPOSE 8020` / `EXPOSE 8030`, `CMD` с соответствующим портом. У заглушек есть мини-UI (одна HTML-страница «журнал полученных вызовов») — это то, что проверяющий открывает для проверки двусторонности.
 
 ---
 
@@ -205,7 +209,9 @@ deploy/k8s/
 │   │   ├── seed-demo-job.yaml
 │   │   └── minio-init-job.yaml
 │   ├── cronjobs/
-│   │   └── stuck-check-cronjob.yaml
+│   │   ├── stuck-check-cronjob.yaml        # зависшие заявки, ежечасно
+│   │   ├── purge-deleted-cronjob.yaml      # физическое удаление soft-deleted (152-ФЗ), ночью
+│   │   └── idempotency-purge-cronjob.yaml  # просроченные ключи Idempotency-Key, ежечасно
 │   ├── ingress/
 │   │   └── ingress.yaml
 │   └── networkpolicy/
@@ -215,16 +221,27 @@ deploy/k8s/
 │       ├── 30-backend.yaml
 │       ├── 31-data-layer.yaml
 │       ├── 32-keycloak.yaml
+│       ├── 35-jobs-stubs.yaml          # Jobs/CronJob и заглушки под default-deny
 │       └── 40-notification-dmz.yaml
-└── overlays/
-    ├── minikube/
-    │   ├── kustomization.yaml
-    │   ├── secrets.env.example         # шаблон; secrets.env — в .gitignore
-    │   └── patches/ ...
-    └── k3d/
-        ├── kustomization.yaml
-        ├── secrets.env.example
-        └── patches/ ...
+├── components/
+│   └── prod-hardening/                 # сужение доверия при передаче стенда наружу (§4.4)
+├── overlays/
+│   ├── minikube/
+│   │   ├── kustomization.yaml
+│   │   ├── secrets/*.env.example       # шаблоны; secrets/*.env — в .gitignore
+│   │   └── patches/ ...
+│   ├── k3d/
+│   │   ├── kustomization.yaml
+│   │   ├── secrets/*.env.example
+│   │   └── patches/ ...                # traefik, *.localhost, local-path
+│   └── vm/                             # публичный демо-стенд на k3s (§4.3)
+│       ├── kustomization.yaml
+│       ├── secrets/*.env.example       # секреты генерируются на самой VM
+│       ├── resources/                  # redirect http→https, NetworkPolicy ACME-солвера
+│       └── patches/ ...                # хосты nip.io + tls, Keycloak/iss, ресурсы, HPA
+└── vm-addons/                          # ставится до overlay vm (deploy/scripts/vm-deploy.sh)
+    ├── cert-manager.yaml               # cert-manager v1.21.2
+    └── cluster-issuer.yaml             # ClusterIssuer letsencrypt-prod (http01 через traefik)
 ```
 
 `base/kustomization.yaml`:
@@ -262,6 +279,8 @@ resources:
   - jobs/seed-demo-job.yaml
   - jobs/minio-init-job.yaml
   - cronjobs/stuck-check-cronjob.yaml
+  - cronjobs/purge-deleted-cronjob.yaml
+  - cronjobs/idempotency-purge-cronjob.yaml
   - ingress/ingress.yaml
   - networkpolicy/00-default-deny.yaml
   - networkpolicy/10-allow-dns.yaml
@@ -269,6 +288,7 @@ resources:
   - networkpolicy/30-backend.yaml
   - networkpolicy/31-data-layer.yaml
   - networkpolicy/32-keycloak.yaml
+  - networkpolicy/35-jobs-stubs.yaml
   - networkpolicy/40-notification-dmz.yaml
 labels:
   - includeSelectors: false
@@ -289,7 +309,7 @@ labels:
 ```mermaid
 flowchart TB
     subgraph host["Хост разработчика / стенда"]
-        HOSTS["/etc/hosts: crm.local, id.crm.local,\nlms.crm.local, cms.crm.local, minio.crm.local -> IP кластера"]
+        HOSTS["k3d: *.crm.localhost -> 127.0.0.1 без /etc/hosts\nminikube и curl: *.crm.local через /etc/hosts\nVPS: *.168-113-158-10.nip.io"]
     end
     subgraph cluster["Kubernetes-кластер, namespace crm"]
         ING["Ingress (nginx / traefik)"]
@@ -311,7 +331,7 @@ flowchart TB
             KD[("Deployment keydb, emptyDir")]
         end
         JOBS["Jobs: db-migrate, minio-init, seed-demo"]
-        CRON["CronJob stuck-check (hourly)"]
+        CRON["CronJob: stuck-check, idempotency-purge (hourly),\npurge-deleted (daily)"]
     end
     HOSTS --> ING
     ING --> FE
@@ -332,7 +352,7 @@ flowchart TB
     KC --> PG
     JOBS --> PG
     JOBS --> MC
-    CRON -->|"POST /api/v1/internal/jobs/check-stuck-requests"| BE
+    CRON -->|"POST /api/v1/internal/jobs/*\nX-Internal-Token"| BE
 ```
 
 ### 3.3 Deployments приложений
@@ -493,7 +513,7 @@ CREATE DATABASE keycloak;
 
 #### minio — StatefulSet (реплика 1, PVC 5Gi)
 
-- образ `minio/minio:latest` (пин конкретного релиза на неделе сдачи), args: `["server", "/data", "--console-address", ":9001"]`;
+- образ `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` (пин релиза), args: `["server", "/data", "--console-address", ":9001"]`;
 - env из Secret `crm-s3`: `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`;
 - `MINIO_BROWSER_REDIRECT_URL=http://minio.crm.local` — чтобы Console корректно работала за Ingress;
 - PVC `5Gi` через `volumeClaimTemplates`, mountPath `/data`;
@@ -502,8 +522,8 @@ CREATE DATABASE keycloak;
 
 #### keydb — Deployment (кэш, состояние не критично)
 
-- образ `eqalpha/keydb:latest` (пин на неделе сдачи), args: `["keydb-server", "--appendonly", "no", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]`;
-- том `emptyDir` — это осознанно: KeyDB у нас только кэш (карточки, страницы, дашборды, one-time коды бота с TTL) — потеря содержимого не ломает систему, всё восстановимо из PG. Поэтому Deployment, а не StatefulSet — и это аргумент на защите, а не упрощение.
+- образ `eqalpha/keydb` v6.3.4, закреплённый по digest (`@sha256:…`), args: `["keydb-server", "--appendonly", "no", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]`;
+- том `emptyDir` — это осознанно: KeyDB у нас только кэш (карточки, страницы, дашборды, one-time коды бота с TTL) — потеря содержимого не ломает систему, всё восстановимо из PG. Поэтому Deployment, а не StatefulSet — это осознанное решение, а не упрощение. По той же причине KeyDB не годится в шину интеграций: события живут только в outbox PostgreSQL.
 
 #### keycloak — Deployment (реплика 1; состояние — в PostgreSQL)
 
@@ -572,7 +592,7 @@ spec:
 - `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` разрешает обращения по внутреннему имени;
 - backend конфигурируется **двумя** URL: `KEYCLOAK_INTERNAL_URL=http://keycloak:8080` (откуда качать JWKS) и `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm` (что ожидать в `iss`).
 
-**Импорт realm** — не Job, а штатный `start --import-realm`: файл `crm-realm.json` (ConfigMap `keycloak-realm`) содержит realm `crm`, клиентов `crm-frontend` (public, PKCE S256, redirect `http://crm.local/*`, webOrigins `http://crm.local`), `crm-notification` (confidential, service accounts, роль `svc_notification` — Telegram-бот), `crm-integration` (confidential, роль `svc_integration` — bearer-альтернатива HMAC для webhook'ов, по умолчанию не используется), `crm-loadtest` (confidential, Direct Access Grants — только для нагрузочного), канонические роли (`admin`, `head_kam`, `kam`, `observer` + сервисные `svc_notification`, `svc_integration` — список зафиксирован в `OVERVIEW.md`) и **преднастроенных пользователей по ролям с паролями** (`admin@demo`, `head@demo`, `kam1@demo`, `kam2@demo`, `observer@demo`) — их логины/пароли публикуются в README для экспертов (требование PLAN.md §2). При изменении realm-JSON достаточно `kubectl rollout restart deployment/keycloak`: import идемпотентен (существующий realm не перезатирается, стратегия `IGNORE_EXISTING`).
+**Импорт realm** — не Job, а штатный `start --import-realm` через обёртку `import-realm.sh` (подставляет client secrets из env в плейсхолдеры `${env.*}`, §5): файл `realm-crm.json` (ConfigMap `keycloak-realm`) содержит realm `crm`, клиентов `crm-frontend` (public, PKCE S256, redirect `http://crm.localhost/*`, `http://crm.local/*`, `http://localhost:5173/*`, `http://localhost/*` и хост VPS `https://crm.<IP>.nip.io/*`; в проде здесь хост корпоративного DNS, §4.4), `crm-notification` (confidential, service accounts, роль `svc_notification` — Telegram-бот), `crm-integration` (confidential, роль `svc_integration` — bearer-альтернатива HMAC для webhook'ов, по умолчанию не используется), `crm-loadtest` (confidential, Direct Access Grants — только для нагрузочного), канонические роли (`admin`, `head_kam`, `kam`, `observer` + сервисные `svc_notification`, `svc_integration` — список зафиксирован в `OVERVIEW.md`) и **преднастроенных пользователей по ролям с паролями** (`admin@demo`, `head@demo`, `kam1@demo`, `kam2@demo`, `observer@demo`) — их логины/пароли публикуются в README (требование PLAN.md §2). Роли из realm — только стартовое назначение при первом входе; дальше роли людей хранятся в БД Альмы. При изменении realm-JSON достаточно `kubectl rollout restart deployment/keycloak`: import идемпотентен (существующий realm не перезатирается, стратегия `IGNORE_EXISTING`).
 
 ### 3.5 Services
 
@@ -592,7 +612,15 @@ spec:
 
 ### 3.6 Ingress
 
-Один манифест, пять хостов. `ingressClassName` задаётся в overlay (nginx / traefik), в base — `nginx`.
+Один манифест, две группы по пять хостов. `ingressClassName` в base — `nginx` (addon minikube), overlay k3d и vm патчат его на `traefik` (встроен в k3s).
+
+| Хост (k3d, канон) | Алиас (minikube, curl) | Куда |
+|---|---|---|
+| `crm.localhost` | `crm.local` | `/api` → backend:8000, `/` → frontend:80 |
+| `id.crm.localhost` | `id.crm.local` | keycloak:8080 (браузерный OIDC-редирект) |
+| `lms.crm.localhost` | `lms.crm.local` | lms-stub:8020 — UI журнала обмена |
+| `cms.crm.localhost` | `cms.crm.local` | cms-stub:8030 |
+| `minio.crm.localhost` | `minio.crm.local` | minio:9001 (Console) |
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -600,11 +628,13 @@ kind: Ingress
 metadata:
   name: crm
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"   # XLSX-импорт списков
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"     # XLSX/XLS-импорт больших списков
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"     # SSE /api/v1/events/stream
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
 spec:
   ingressClassName: nginx
   rules:
-    - host: crm.local                     # основное приложение
+    - host: crm.localhost                 # основное приложение (канон для k3d, secure context)
       http:
         paths:
           - path: /api
@@ -613,35 +643,20 @@ spec:
           - path: /
             pathType: Prefix
             backend: {service: {name: frontend, port: {number: 80}}}
-    - host: id.crm.local                  # Keycloak (браузерный OIDC-редирект)
+    - host: id.crm.localhost              # Keycloak (браузерный OIDC-редирект)
       http:
         paths:
           - path: /
             pathType: Prefix
             backend: {service: {name: keycloak, port: {number: 8080}}}
-    - host: lms.crm.local                 # UI заглушки: эксперт видит двусторонний обмен
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: {service: {name: lms-stub, port: {number: 8020}}}
-    - host: cms.crm.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: {service: {name: cms-stub, port: {number: 8030}}}
-    - host: minio.crm.local               # Console MinIO — демо хранения файлов (S3)
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: {service: {name: minio, port: {number: 9001}}}
+    # lms.crm.localhost, cms.crm.localhost, minio.crm.localhost — по тому же образцу;
+    # группа *.crm.local повторяет те же правила (алиасы для curl/API и minikube)
 ```
 
-- Фронт и API на **одном хосте** `crm.local` (пути `/` и `/api`) — CORS между ними не нужен вовсе.
-- TLS: для демо — HTTP; включение TLS = добавить self-signed secret и `tls:`-блок в overlay (заготовка `patches/ingress-tls.yaml`, по умолчанию выключена — эксперты не должны бороться с предупреждением браузера).
-- `/etc/hosts` на машине проверяющего: одна строка, её печатает `make hosts` (§6).
+- Фронт и API на **одном хосте** (пути `/` и `/api`) — CORS между ними не нужен вовсе.
+- **Почему `*.localhost`.** Chromium и Edge считают `http://*.localhost` безопасным контекстом (secure context) и резолвят такие имена в 127.0.0.1 без `/etc/hosts`. keycloak-js использует Web Crypto для PKCE, а `window.crypto.subtle` есть только в безопасном контексте — поэтому вход в UI на k3d идёт через `http://crm.localhost`. Хосты `*.crm.local` остаются алиасами для curl/API и minikube (`/etc/hosts`, строку печатает `make hosts`); вход в UI через них невозможен.
+- **TLS по средам.** Локальные overlay — HTTP: стенд работает на 127.0.0.1, и проверяющий не борется с предупреждением браузера о самоподписанном сертификате. Overlay `vm` — HTTPS: Ingress с аннотацией `cert-manager.io/cluster-issuer: letsencrypt-prod`, отдельный `tls`-секрет на каждый хост, принудительный редирект http→https (traefik Middleware `redirect-https`), §4.3. В проде — сертификат внутреннего CA, §4.4.
+- MinIO Console наружу выставляется только на локальном стенде; в overlay `vm` её хоста нет.
 
 ### 3.7 ConfigMaps и Secrets
 
@@ -649,8 +664,8 @@ spec:
 
 | ConfigMap | Ключи | Потребители |
 |---|---|---|
-| `crm-config` | `APP_ENV=k8s`; `KEYCLOAK_INTERNAL_URL=http://keycloak:8080`; `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm`; `KEYCLOAK_REALM=crm`; `KEYDB_URL=redis://keydb:6379/0`; `S3_ENDPOINT=http://minio:9000`; `S3_BUCKET_FILES=crm-files`; `S3_BUCKET_IMPORTS=crm-imports`; `S3_BUCKET_EXPORTS=crm-exports`; `LMS_BASE_URL=http://lms-stub:8020`; `CMS_BASE_URL=http://cms-stub:8030`; `NOTIFICATION_BASE_URL=http://notification:8010`; `BACKEND_BASE_URL=http://backend:8000`; `STUCK_DEFAULT_DAYS=14` (сидирует `app_setting['stuck_threshold_days_default']`; фактические пороги per-workflow/per-этап хранятся в БД и настраиваются в админке/конструкторе) | backend, notification, jobs |
-| `frontend-env` | файл `config.js`: `window.__ENV__={KEYCLOAK_URL:"http://id.crm.local",KEYCLOAK_REALM:"crm",KEYCLOAK_CLIENT_ID:"crm-frontend",API_BASE:"/api"}` | frontend (volume) |
+| `crm-config` | `APP_ENV=k8s`; `KEYCLOAK_INTERNAL_URL=http://keycloak:8080`; `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm`; `KEYCLOAK_REALM=crm`; `KEYCLOAK_AUDIENCES=account,crm-frontend,crm-notification,crm-integration,crm-loadtest` (последний — только для демо, его убирает `prod-hardening`, §4.4); `KEYDB_URL=redis://keydb:6379/0`; `S3_ENDPOINT=http://minio:9000`; `S3_BUCKET_FILES=crm-files`; `S3_BUCKET_IMPORTS=crm-imports`; `S3_BUCKET_EXPORTS=crm-exports`; `LMS_BASE_URL=http://lms-stub:8020`; `CMS_BASE_URL=http://cms-stub:8030`; `NOTIFICATION_BASE_URL=http://notification:8010`; `BACKEND_BASE_URL=http://backend:8000`; `STUCK_DEFAULT_DAYS=14` (сидирует `app_setting['stuck_threshold_days_default']`; фактические пороги per-workflow/per-этап хранятся в БД и настраиваются в админке/конструкторе) | backend, notification, jobs |
+| `frontend-env` | файл `config.js` (`KEYCLOAK_URL` патчат overlay k3d и vm): `window.__ENV__={KEYCLOAK_URL:"http://id.crm.local",KEYCLOAK_REALM:"crm",KEYCLOAK_CLIENT_ID:"crm-frontend",API_BASE:"/api"}` | frontend (volume) |
 | `postgres-init` | `01-init.sql` | postgres (initdb) |
 | `keycloak-realm` | `crm-realm.json` | keycloak (import) |
 
@@ -669,7 +684,9 @@ spec:
 Правила:
 - в репозитории лежат только `secrets.env.example` с плейсхолдерами; `make k8s-secrets` генерирует `secrets.env` со случайными значениями;
 - поды получают секреты через `envFrom`/`valueFrom`, никакие секреты не попадают в ConfigMap, аргументы командной строки или образы;
-- матрица «какой под какой Secret видит» выше — минимально необходимая; это же ограничивает blast radius при компрометации пода (аргумент на защите про 152-ФЗ).
+- матрица «какой под какой Secret видит» выше — минимально необходимая; это же ограничивает blast radius при компрометации пода (152-ФЗ).
+
+`KEYCLOAK_ISSUER` и `KC_HOSTNAME` в base указывают на `id.crm.local`; overlay k3d меняет их на `http://id.crm.localhost`, overlay vm — на `https://id.crm.<IP>.nip.io`. Настройки без значения в ConfigMap берутся из кода (`backend/app/core/config.py`) и переопределяются env: ключи идемпотентности — `IDEMPOTENCY_ENABLED` (вкл.), `IDEMPOTENCY_TTL_HOURS` (24), `IDEMPOTENCY_LEASE_SECONDS` (60); TTL кэша каталога ролей в памяти процесса — `RBAC_CATALOG_TTL_SECONDS` (5).
 
 ### 3.8 Jobs: миграции, бакеты, сиды
 
@@ -720,14 +737,19 @@ mc admin policy attach local readwrite --user "$S3_ACCESS_KEY" || true
 
 (initContainer ждёт `http://minio:9000/minio/health/live` через curl-loop; все команды идемпотентны.)
 
-**Job `seed-demo`** — образ `crm/backend:dev`, `command: ["python", "-m", "app.seed"]`. Сид **идемпотентен** (upsert по натуральным ключам) и наполняет демо-стенд под сценарий защиты:
+**Job `seed-demo`** — образ `crm/backend:dev`, `command: ["python", "-m", "app.seed"]`. Сид **идемпотентен** (upsert по натуральным ключам) и наполняет демо-стенд под демо-сценарий:
 
 - workflow B2B и B2C с ветвлениями и возвратами (канонические seed-схемы — `api-contract.md` §5.1, `workflow-engine.md` §4–5);
 - 8–10 вузов, договоры, продукты, заявки на разных этапах;
 - 3–4 заявки с датой последнего перехода «−20 дней» — **готовая фактура для демо CronJob о зависших**;
 - студенты Talent Pool (ФИО+email шифруются тем же кодом, что в проде — сид ходит через сервисный слой, а не raw SQL);
 - пользователи CRM, связанные по `keycloak_sub` с преднастроенными пользователями realm
-  (+ `manager_id`: kam → head_kam для эскалаций).
+  (+ `manager_id`: kam → head_kam для эскалаций);
+- каталог прав (сверка с кодом) и демо-роли «КАМ B2B» / «КАМ B2C» с их кодами в переходах
+  своего процесса (`seed_demo_roles`);
+- история активности для отчёта «Активность КАМов» (`app.tools.seed_activity`): ещё 18 КАМов
+  с разными профилями, 48 закреплённых вузов, заявки с историей переходов, комментарии,
+  файлы, мероприятия и студенты на программах; план детерминирован (фиксированное зерно).
 
 Запускается initContainer-ами `wait-postgres` + `wait-migrations` (как у backend) и после готовности backend не обязателен — пишет напрямую в БД через тот же код приложения.
 
@@ -761,8 +783,12 @@ spec:
               command:
                 - sh
                 - -c
+                # --retry-connrefused: свежему поду Job сетевой контроллер применяет
+                # allow-правила NetworkPolicy с задержкой ~секунды — первый connect
+                # может получить reject, ждём и повторяем
                 - >
                   curl -fsS -X POST
+                  --retry 5 --retry-connrefused --retry-delay 3 --retry-max-time 90
                   -H "X-Internal-Token: $INTERNAL_API_TOKEN"
                   http://backend:8000/api/v1/internal/jobs/check-stuck-requests
               env:
@@ -770,7 +796,16 @@ spec:
                   valueFrom: {secretKeyRef: {name: crm-internal, key: INTERNAL_API_TOKEN}}
 ```
 
-Контракт endpoint-а: `POST /api/v1/internal/jobs/check-stuck-requests` → `200 {"checked": N, "stuck_found": M, "newly_stuck": K, "notifications_sent": …, "escalations_sent": …, "duration_ms": …}` (api-contract.md §11.1); повторный вызов не шлёт дубли (уникальный `notification.dedup_key` + KeyDB-guard). Паритет для docker-compose — `make stuck-check` (тот же curl на localhost:8000). На демо: `kubectl create job stuck-demo --from=cronjob/stuck-check -n crm` — эскалация прилетает в Telegram прямо на глазах у жюри (сид уже подготовил просроченные заявки, §3.8).
+Контракт endpoint-а: `POST /api/v1/internal/jobs/check-stuck-requests` → `200 {"checked": N, "stuck_found": M, "newly_stuck": K, "notifications_sent": …, "escalations_sent": …, "duration_ms": …}` (api-contract.md §11.1); повторный вызов не шлёт дубли (уникальный `notification.dedup_key` + KeyDB-guard). Паритет для docker-compose — `make stuck-check` (тот же curl на localhost:8000). На демо: `kubectl create job stuck-demo --from=cronjob/stuck-check -n crm` (или `make demo`) — эскалация прилетает в Telegram сразу (сид уже подготовил просроченные заявки, §3.8).
+
+**Остальные CronJob** — тот же паттерн «триггер → internal endpoint»: логика в backend, CronJob только дёргает его с `X-Internal-Token`, `concurrencyPolicy: Forbid`, образ `curlimages/curl:8.10.1`, те же `--retry`:
+
+| CronJob | Расписание | Endpoint | Что делает |
+|---|---|---|---|
+| `purge-deleted` | `30 3 * * *` (ночью) | `POST /api/v1/internal/jobs/purge-deleted` | «Право на забвение» (152-ФЗ): физически удаляет soft-deleted записи старше 30 дней вместе с файлами в MinIO (api-contract.md §11.2) |
+| `idempotency-purge` | `15 * * * *` (ежечасно, со сдвигом от stuck-check) | `POST /api/v1/internal/jobs/purge-idempotency-keys` | Удаляет ключи `Idempotency-Key` старше TTL (24 ч) пачками по 5 000 с commit на пачку: сохранённые ответы мутаций содержат ПДн-шифртекст — дольше срока не храним (api-contract.md §1.6). Ответ — `{"purged": N, "duration_ms": …}` |
+
+Паритет для docker-compose — `make idempotency-purge`.
 
 ### 3.10 HPA, ресурсы
 
@@ -849,7 +884,7 @@ flowchart LR
     NT -.-> MAX
 ```
 
-Ключевые тезисы для защиты:
+Ключевые тезисы:
 1. **Default-deny на весь namespace** — любой трафик, не разрешённый явно, запрещён (включая egress в интернет: ядро CRM физически не может выйти наружу).
 2. **Точка-точка**: backend разговаривает только с lms-stub, cms-stub, postgres, minio, keydb, keycloak и notification. Заглушки не видят БД. Frontend (nginx со статикой) вообще ни с кем не разговаривает.
 3. **notification — прообраз DMZ**: единственный под с разрешённым egress в интернет; секрет бота видит только он; в целевой архитектуре переезжает в отдельный сегмент без изменения кода (общение с ядром уже только по HTTP точка-точка).
@@ -908,33 +943,48 @@ spec:
 | `30-backend` | backend | ingress-контроллер; поды `role=job` (CronJob); notification; lms-stub, cms-stub (callbacks) | postgres:5432, minio:9000, keydb:6379, keycloak:8080, lms-stub:8020, cms-stub:8030, notification:8010 |
 | `31-data-layer` | postgres / minio / keydb | postgres ← backend, keycloak, `role=job`; minio ← backend, `role=job`, ingress-контроллер (Console); keydb ← backend | — (egress не нужен) |
 | `32-keycloak` | keycloak | ingress-контроллер; backend; notification; `role=job` | postgres:5432 |
+| `35-jobs-stubs`: `jobs-egress` | поды `role=job` (Jobs и CronJob) | — | postgres:5432 (миграции, сид), minio:9000, keydb:6379, keycloak:8080, backend:8000 (триггеры stuck-check, purge-deleted, idempotency-purge) |
+| `35-jobs-stubs`: `stubs-egress` | lms-stub, cms-stub | — | только backend:8000 (webhook в CRM); БД и интернет заглушкам не видны |
+| `35-jobs-stubs`: `stubs-ingress` | lms-stub, cms-stub | backend на 8020/8030 (outbox-доставка: передача заявки в LMS, публикация программ в CMS) | — |
+
+NetworkPolicy требует разрешения с обеих сторон: egress backend → заглушки (`30-backend`) без `stubs-ingress` отправлял бы outbox-доставку в ретраи и DLQ.
+
+Overlay `vm` добавляет к матрице две точки: `allow-acme-solver` (поды-солверы cert-manager http01 сквозь default-deny) и egress notification до одного IP:порта HTTP-прокси для Telegram Bot API (`patches/netpol-notification-proxy.json`) — DMZ-принцип сохраняется: выход наружу по-прежнему только у notification.
 
 **Enforcement по средам:** k3s (k3d) enforce'ит NetworkPolicy из коробки (встроенный kube-router контроллер); minikube с дефолтным CNI — **нет**, поэтому `make k8s-up-minikube` стартует кластер с `--cni=calico`. Это проверяемо на демо: `kubectl exec` в backend → `curl https://api.telegram.org` падает по timeout, из notification — проходит.
 
 ---
 
-## 4. Overlays: minikube и k3d
+## 4. Overlays: minikube, k3d, vm
 
-Base остаётся полностью рабочим и нейтральным; overlay меняет только окружение-специфичное:
+Base остаётся полностью рабочим и нейтральным; overlay меняет только окружение-специфичное. `minikube` и `k3d` — локальный стенд на ноутбуке, `vm` — публичный демо-стенд на голом k3s. Для передачи стенда наружу любой overlay подключает компонент `components/prod-hardening` (§4.4). `make k8s-validate` рендерит все три overlay и проверяет их kubeconform.
 
-| Аспект | `overlays/minikube` | `overlays/k3d` |
-|---|---|---|
-| Ingress class | `nginx` (addon `ingress`) — патч не нужен, в base уже `nginx` | патч Ingress: `ingressClassName: traefik` (встроен в k3s) |
-| StorageClass в PVC | патч: `storageClassName: standard` (провижинер minikube) | патч: `storageClassName: local-path` (встроенный local-path-provisioner) |
-| Доступ снаружи | Ingress через `minikube ip` (драйвер docker на macOS — через `minikube tunnel`, тогда IP = 127.0.0.1) | LoadBalancer «из коробки»: k3d serverlb пробрасывает 80/443 на localhost (`k3d cluster create -p "80:80@loadbalancer"`) → hosts указывают на 127.0.0.1 — самый простой путь для экспертов |
-| metrics-server (для HPA) | `minikube addons enable metrics-server` | встроен в k3s |
-| NetworkPolicy enforcement | требуется `minikube start --cni=calico` | встроен (kube-router) |
-| Namespace ingress-контроллера в `20-allow-from-ingress` | `ingress-nginx` | `kube-system` (traefik) |
-| Загрузка локальных образов | `minikube image load crm/backend:dev ...` | `k3d image import -c crm crm/backend:dev ...` |
+### 4.1 Сравнение
 
-`overlays/k3d/kustomization.yaml` (minikube — симметрично):
+| Аспект | `overlays/minikube` | `overlays/k3d` | `overlays/vm` (публичный демо-стенд) |
+|---|---|---|---|
+| Ingress class | `nginx` (addon `ingress`) — патч не нужен, в base уже `nginx` | патч: `ingressClassName: traefik` (встроен в k3s) | `traefik` + принудительный редирект http→https |
+| Хосты | `*.crm.local` через `/etc/hosts` (`make hosts`) | `*.crm.localhost` → 127.0.0.1 без `/etc/hosts`; патчи `KC_HOSTNAME`, `KEYCLOAK_ISSUER`, `config.js` → `id.crm.localhost` | `crm`, `id.crm`, `lms.crm`, `cms.crm` `.168-113-158-10.nip.io`; те же три патча → `https://id.crm…nip.io`; MinIO Console наружу не выставлена |
+| TLS | нет | нет | Let's Encrypt через cert-manager (`vm-addons/`), отдельный `tls`-секрет на хост |
+| StorageClass в PVC | `standard` (провижинер minikube) | `local-path` (встроенный local-path-provisioner) | `local-path` (k3s) |
+| Доступ снаружи | Ingress через `minikube ip` (драйвер docker на macOS — через `minikube tunnel`, тогда IP = 127.0.0.1) | k3d serverlb пробрасывает 80/443 на localhost (`k3d cluster create -p "80:80@loadbalancer"`) — самый простой путь для проверяющего | публичный IP VPS, 80/443 |
+| metrics-server (для HPA) | `minikube addons enable metrics-server` | встроен в k3s | встроен в k3s |
+| NetworkPolicy enforcement | требуется `minikube start --cni=calico` | встроен (kube-router) | встроен (kube-router); + `allow-acme-solver`, egress notification до HTTP-прокси Bot API |
+| Namespace ingress-контроллера в `20-allow-from-ingress` | `ingress-nginx` | `kube-system` (traefik) | `kube-system` (traefik) |
+| Ресурсы | как в base | как в base | под скромную VM: backend requests 100m/128Mi, HPA 1→4 реплики; Keycloak requests 512Mi, limit 1Gi |
+| Образы | `minikube image load crm/*:dev` | `k3d image import -c crm crm/*:dev` | `crm/*:vm` под linux/amd64: сборка на машине разработчика, `scp` и `k3s ctr images import` |
+| Секреты | `make k8s-secrets` локально | `make k8s-secrets` локально | генерируются на самой VM (`gen-secrets.sh deploy/k8s/overlays/vm`) и не покидают её |
+
+### 4.2 k3d и minikube
+
+`overlays/k3d/kustomization.yaml` (minikube — симметрично, без патчей хостов):
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+namespace: crm
 resources:
   - ../../base
-namespace: crm
 secretGenerator:
   - name: crm-db
     envs: [secrets/crm-db.env]
@@ -953,9 +1003,16 @@ secretGenerator:
 generatorOptions:
   disableNameSuffixHash: true    # имена секретов зашиты в envFrom подов
 patches:
-  - path: patches/ingress-class.yaml       # ingressClassName: traefik
-  - path: patches/storageclass.yaml        # local-path для PVC postgres/minio
-  - path: patches/netpol-ingress-ns.yaml   # namespaceSelector kube-system
+  - path: patches/ingress-class.yaml           # ingressClassName: traefik
+  - path: patches/keycloak-hostname.yaml       # KC_HOSTNAME=http://id.crm.localhost
+  - path: patches/app-config-localhost.yaml    # KEYCLOAK_ISSUER → id.crm.localhost
+  - path: patches/frontend-env-localhost.yaml  # config.js: KEYCLOAK_URL → id.crm.localhost
+  - target: {group: apps, version: v1, kind: StatefulSet, name: postgres}
+    path: patches/storageclass.yaml            # local-path для PVC
+  - target: {group: apps, version: v1, kind: StatefulSet, name: minio}
+    path: patches/storageclass.yaml
+  - target: {group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-from-ingress}
+    path: patches/netpol-ingress-ns.yaml       # traefik живёт в kube-system
 images:
   - name: crm/backend
     newTag: dev
@@ -969,7 +1026,7 @@ images:
     newTag: dev
 ```
 
-`secrets/*.env` — в `.gitignore`; рядом `secrets/*.env.example` с плейсхолдерами. `make k8s-secrets` копирует example → env и заменяет плейсхолдеры на сгенерированные значения (включая `PII_FERNET_KEYS`/`PII_HMAC_KEY` и подстановку client-secret'ов в генерируемый `crm-realm.json`).
+`secrets/*.env` — в `.gitignore`; рядом `secrets/*.env.example` с плейсхолдерами. `make k8s-secrets` копирует example → env и заменяет плейсхолдеры на сгенерированные значения (включая `PII_FERNET_KEYS`/`PII_HMAC_KEY`); повторный запуск ничего не перетирает — ключ ПДн стабилен между apply.
 
 Рекомендованная команда создания кластера k3d (зашита в Makefile):
 
@@ -985,6 +1042,47 @@ minikube start -p crm --cpus=4 --memory=6g --cni=calico
 minikube -p crm addons enable ingress
 minikube -p crm addons enable metrics-server
 ```
+
+### 4.3 vm — публичный демо-стенд на k3s
+
+Демо-стенд, доступный проверяющим без VPN и `/etc/hosts`: голый k3s на VPS (Ubuntu x86_64), адреса — `https://crm.168-113-158-10.nip.io`, `id.crm…`, `lms.crm…`, `cms.crm…`. nip.io — публичный wildcard-DNS: имя `*.168-113-158-10.nip.io` резолвится в этот IP, поэтому своя DNS-зона стенду не нужна.
+
+Порядок развёртывания:
+1. `make vm-install` — идемпотентный bootstrap VPS: swap 2 ГБ, установка k3s, ожидание `node Ready`.
+2. `make vm-deploy` (`deploy/scripts/vm-deploy.sh`, 7 шагов): сборка образов `linux/amd64` с тегом `:vm` (не пересекается с локальными arm64-образами `:dev`) → доставка и импорт в containerd k3s → `rsync deploy/` → генерация секретов overlay на VPS → cert-manager и ClusterIssuer `letsencrypt-prod` (ClusterIssuer применяется после готовности webhook cert-manager, с ретраями) → `kubectl apply -k deploy/k8s/overlays/vm` и ожидание готовности → smoke публичных URL.
+3. `make vm-smoke` — только smoke: главная, `/api/v1/openapi.json`, OIDC-discovery Keycloak, UI заглушек.
+
+Что меняет overlay `vm` относительно base:
+- Ingress: только хосты nip.io (группы `*.localhost`/`*.crm.local` из base заменены целиком), аннотация `cert-manager.io/cluster-issuer: letsencrypt-prod`, `tls`-секрет на каждый хост, traefik Middleware `redirect-https`;
+- Keycloak: `KC_HOSTNAME=https://id.crm…nip.io` (TLS терминирует traefik, `KC_PROXY_HEADERS=xforwarded`); `crm-config`: `KEYCLOAK_ISSUER`, `CRM_PUBLIC_URL`, `TELEGRAM_BOT_USERNAME`; `config.js`: `KEYCLOAK_URL`; redirect URI и web origins клиента `crm-frontend` в `realm-crm.json` включают хост nip.io;
+- NetworkPolicy: `allow-acme-solver` для http01-челленджей сквозь default-deny; egress notification до HTTP-прокси Bot API;
+- ресурсы и HPA — под скромную VM (§4.1).
+
+**Ограничения демо-стенда.** Он нужен, чтобы систему можно было проверить из интернета, и в таком виде в прод не переносится:
+- nip.io — внешний сервис: разрешение имён зависит от чужого DNS, а IP стенда виден в имени хоста;
+- Let's Encrypt требует, чтобы хосты были доступны из интернета (http01) — в закрытом контуре это невозможно; лимит LE — 5 дубликатов сертификата в неделю на набор хостов;
+- email владельца стенда в ClusterIssuer — для уведомлений LE об истечении;
+- клиент `crm-loadtest` (Direct Access Grants) включён ради k6 и smoke.
+
+### 4.4 Прод-контур: DNS, ingress, сертификаты
+
+nip.io и Let's Encrypt используются **только для демо**. В контуре заказчика:
+
+| Что | Демо-стенд (`vm`) | Прод |
+|---|---|---|
+| DNS | `*.<IP>.nip.io` (публичный wildcard-DNS) | корпоративный DNS: записи вида `crm.<домен>`, `id.crm.<домен>` во внутренней зоне, указывают на ingress-контроллер контура; заглушки LMS/CMS заменяются настоящими системами, их хосты в Ingress не нужны |
+| Ingress | traefik k3s на публичном IP | ingress-контроллер кластера заказчика (nginx / traefik / корпоративный балансировщик перед ним); `ingressClassName` и namespace контроллера в `20-allow-from-ingress` — патчем overlay |
+| TLS | Let's Encrypt, http01 через интернет | сертификат **внутреннего CA** заказчика: либо готовый secret `kubernetes.io/tls` в namespace `crm` (выпускает PKI заказчика), либо cert-manager с `ClusterIssuer` типа `ca` / Vault / ACME внутреннего CA — аннотация на Ingress та же, меняется имя issuer |
+| Доверие к CA | публичные корни в браузерах | корневой сертификат внутреннего CA раздаётся на рабочие места групповыми политиками; поды, которые ходят во внешний HTTPS контура (Keycloak, LMS/CMS), монтируют bundle CA, если обращаются по внешнему имени |
+| Секреты | генерируются на VM, `secretGenerator` из gitignored `*.env` | тот же `secretGenerator` или внешнее хранилище секретов заказчика (Vault, External Secrets) — имена Secret и ключи (§3.7) не меняются |
+| Доступ | открыт из интернета | только из корпоративной сети / VPN; наружу — только notification-gateway в DMZ (§3.11) |
+
+Как разворачивается прод: копия `overlays/vm` (или `overlays/k3d`) в `overlays/prod` с заменой пяти мест — хосты и `tls` в Ingress, `KC_HOSTNAME`, `KEYCLOAK_ISSUER`, `KEYCLOAK_URL` в `config.js`, redirect URI клиента `crm-frontend` в realm. Плюс:
+- `components: [../../components/prod-hardening]` — убирает `crm-loadtest` из `KEYCLOAK_AUDIENCES` (backend перестаёт принимать токены нагрузочного клиента); сам клиент `crm-loadtest` отключается в Keycloak (`clients[crm-loadtest].enabled=false` в `realm-crm.json` + `make realm-sync` на свежей БД либо `kcadm.sh update clients/<uuid> -r crm -s enabled=false` на живом realm) — у него единственного включены Direct Access Grants;
+- StorageClass, ресурсы и HPA — под кластер заказчика; образы — из корпоративного registry вместо импорта архивов;
+- выход notification к Telegram — по правилам DMZ заказчика: напрямую на 443, через HTTP-прокси (`TELEGRAM_PROXY_URL`) или через свой сервер Bot API (`TELEGRAM_API_BASE`); в overlay `vm` секрет `crm-telegram` подключён к notification целиком (`envFrom`), поэтому эти ключи задаются в нём без правки манифестов.
+
+Код backend и frontend, `base` и схема БД при этом не меняются: все адреса приходят из ConfigMap, `config.js` и realm.
 
 ---
 
@@ -1014,6 +1112,8 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
+    # entrypoint-обёртка: KC 26 сам НЕ подставляет ${env.*} в realm при импорте
+    entrypoint: ["/bin/bash", "/realm-src/import-realm.sh"]
     command: ["start-dev", "--import-realm", "--health-enabled=true"]
     environment:
       KC_DB: postgres
@@ -1023,9 +1123,15 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
       KC_HTTP_PORT: "8080"
+      # подстановка ${env.*} в realm-crm.json при импорте
+      NOTIFICATION_CLIENT_SECRET: ${NOTIFICATION_CLIENT_SECRET:-dev-notification-secret}
+      INTEGRATION_CLIENT_SECRET: ${INTEGRATION_CLIENT_SECRET:-dev-integration-secret}
+      LOADTEST_CLIENT_SECRET: ${LOADTEST_CLIENT_SECRET:-dev-loadtest-secret}
+      BACKEND_ADMIN_CLIENT_SECRET: ${BACKEND_ADMIN_CLIENT_SECRET:-dev-backend-admin-secret}
     ports: ["8080:8080", "9001:9000"]   # 8080 — HTTP; mgmt-порт 9000 → хостовой 9001 (9000 хоста занят MinIO API)
     volumes:
-      - ../keycloak/crm-realm.dev.json:/opt/keycloak/data/import/crm-realm.json:ro
+      - ../keycloak/realm-crm.json:/realm-src/realm-crm.json:ro
+      - ../keycloak/import-realm.sh:/realm-src/import-realm.sh:ro
     depends_on:
       postgres: {condition: service_healthy}
     healthcheck:
@@ -1145,74 +1251,45 @@ volumes:
 server: { proxy: { "/api": "http://localhost:8000" } }
 ```
 
-`crm-realm.dev.json` отличается от k8s-версии только redirect/webOrigins (`http://localhost:5173`, `http://localhost:80`) и `KEYCLOAK_URL=http://localhost:8080` в конфиге фронта. Генерируются оба из одного шаблона `deploy/keycloak/crm-realm.template.json` скриптом `deploy/keycloak/render-realm.sh` (подстановка hostnames и client secrets) — realm один, расхождения исключены.
+Realm один на все среды — `deploy/keycloak/realm-crm.json`: в нём сразу перечислены redirect URI всех стендов (`localhost:5173`, `localhost`, `crm.localhost`, `crm.local`, хост VPS), а client secrets записаны плейсхолдерами `${env.*}`. Их подставляет из окружения контейнера обёртка `deploy/keycloak/import-realm.sh` (Keycloak 26 сам этого при импорте не делает) — и в compose, и в k8s; ConfigMap `keycloak-realm` пересобирается из того же файла командой `make realm-sync` — расхождения исключены.
 
 ---
 
 ## 6. Makefile
 
-Цели верхнего уровня (полный файл — в корне репо):
+Цели верхнего уровня (полный файл — в корне репо, `make help` печатает список):
+
+| Группа | Цель | Что делает |
+|---|---|---|
+| Разработка | `dev` | compose-стек (инфра + backend/notification/заглушки) + подсказка про `npm run dev` |
+| | `dev-env` | сгенерировать `deploy/compose/.env`, если его нет (PII-ключи и пр., `deploy/scripts/gen-dotenv.sh`) |
+| | `dev-down` | остановить compose-стек |
+| Образы | `build-images` | собрать `crm/backend`, `crm/frontend`, `crm/notification`, `crm/lms-stub`, `crm/cms-stub` с тегом `:dev` |
+| Kubernetes | `realm-sync` | регенерировать ConfigMap `keycloak-realm` из `deploy/keycloak/realm-crm.json` |
+| | `k8s-secrets` | сгенерировать gitignored-секреты overlay (`OVERLAY=…`); повторный запуск не перетирает |
+| | `k8s-up` | k3d: кластер + импорт образов + `k8s-apply` + подсказка по хостам |
+| | `k8s-up-minikube` | minikube с `--cni=calico`, addons ingress и metrics-server, загрузка образов, `k8s-apply` |
+| | `k8s-apply` | идемпотентный apply: Jobs `db-migrate`, `seed-demo`, `minio-init` пересоздаются, затем `kubectl wait` по контрольным точкам §7 |
+| | `k8s-validate` | рендер overlay k3d, minikube и vm + kubeconform `-strict` |
+| | `k8s-down` | удалить кластер (k3d или minikube) |
+| Публичный VPS | `vm-install` | bootstrap VPS: swap, k3s, ожидание node Ready (идемпотентен) |
+| | `vm-deploy` | amd64-образы → импорт на VPS, `rsync deploy/`, секреты, cert-manager, apply overlay `vm`, smoke (§4.3) |
+| | `vm-smoke` | только smoke-проверки публичных URL |
+| Данные и демо | `seed` | перезапустить Job `seed-demo` (сид идемпотентен) |
+| | `demo` | `seed` + ручной запуск `stuck-check` + список адресов стенда |
+| | `hosts` | строка для `/etc/hosts` — нужна только для алиасов `*.crm.local` (curl/API, minikube) |
+| | `stuck-check` | compose-паритет CronJob: проверка зависших заявок |
+| | `idempotency-purge` | compose-паритет CronJob: очистка просроченных ключей Idempotency-Key |
+| | `demo-idempotency` | демонстрация Idempotency-Key против стенда (`deploy/scripts/demo-idempotency.sh`, нужен `DEMO_PASSWORD`) |
+| Замеры | `bench-migration` | замер массового переноса заявок на одноразовой БД `crm_bench` (`BENCH_DB`, `BENCH_ARGS`): создаёт базу, если её нет, доводит до head и запускает `python -m app.tools.bench_migration`; база с другим именем — отказ (workflow-engine.md §6.8) |
+| | `load-test` | k6: 300→400 VU против стенда (`deploy/load/k6-script.js`; docker-вариант — `deploy/load/README.md`) |
+| Служебное | `logs` | логи backend в кластере |
+| | `clean` | снести compose-стек (с томами) и кластер; сгенерированные секреты `*.env` не трогает |
+
+`k8s-apply` — ядро всех k8s-целей:
 
 ```makefile
-CLUSTER      ?= crm
-NS           ?= crm
-IMAGES        = crm/backend crm/frontend crm/notification crm/lms-stub crm/cms-stub
-K3D_OVERLAY   = deploy/k8s/overlays/k3d
-MINI_OVERLAY  = deploy/k8s/overlays/minikube
-
-.PHONY: dev dev-env dev-down build-images k8s-secrets k8s-up k8s-up-minikube \
-        k8s-apply k8s-down seed demo hosts stuck-check load-test logs
-
-## --- Локальная разработка -------------------------------------------------
-dev: dev-env                     ## compose-стек + подсказка про npm run dev
-	docker compose -f deploy/compose/docker-compose.dev.yml up -d --build
-	@echo "API:      http://localhost:8000/docs"
-	@echo "Keycloak: http://localhost:8080  (admin / см. deploy/compose/.env)"
-	@echo "Фронт:    cd frontend && npm run dev   → http://localhost:5173"
-
-dev-env:                         ## сгенерировать deploy/compose/.env, если его нет
-	@test -f deploy/compose/.env || ( \
-	  cp deploy/compose/.env.example deploy/compose/.env && \
-	  sed -i '' "s|__PII_FERNET_KEY__|$$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')|" deploy/compose/.env && \
-	  sed -i '' "s|__PII_HMAC_KEY__|$$(openssl rand -base64 32)|" deploy/compose/.env && \
-	  echo ".env создан, PII-ключи сгенерированы" )
-
-dev-down:
-	docker compose -f deploy/compose/docker-compose.dev.yml down
-
-## --- Сборка образов ---------------------------------------------------------
-build-images:
-	docker build -t crm/backend:dev backend
-	docker build -t crm/frontend:dev frontend
-	docker build -t crm/notification:dev services/notification
-	docker build -t crm/lms-stub:dev services/lms-stub
-	docker build -t crm/cms-stub:dev services/cms-stub
-
-## --- Kubernetes -------------------------------------------------------------
-k8s-secrets:                     ## сгенерировать secrets/*.env + realm из шаблона
-	./deploy/scripts/gen-secrets.sh $(OVERLAY)
-	./deploy/keycloak/render-realm.sh k8s
-
-k8s-up: OVERLAY=$(K3D_OVERLAY)
-k8s-up: build-images k8s-secrets ## k3d: кластер + образы + манифесты + ожидание
-	k3d cluster list $(CLUSTER) >/dev/null 2>&1 || \
-	  k3d cluster create $(CLUSTER) --servers 1 --agents 1 \
-	    -p "80:80@loadbalancer" -p "443:443@loadbalancer" --wait
-	k3d image import -c $(CLUSTER) $(addsuffix :dev,$(IMAGES))
-	$(MAKE) k8s-apply OVERLAY=$(K3D_OVERLAY)
-	$(MAKE) hosts
-
-k8s-up-minikube: OVERLAY=$(MINI_OVERLAY)
-k8s-up-minikube: build-images k8s-secrets
-	minikube status -p $(CLUSTER) >/dev/null 2>&1 || \
-	  minikube start -p $(CLUSTER) --cpus=4 --memory=6g --cni=calico
-	minikube -p $(CLUSTER) addons enable ingress
-	minikube -p $(CLUSTER) addons enable metrics-server
-	for i in $(IMAGES); do minikube -p $(CLUSTER) image load $$i:dev; done
-	$(MAKE) k8s-apply OVERLAY=$(MINI_OVERLAY)
-	$(MAKE) hosts
-
-k8s-apply:                       ## идемпотентный apply: Jobs пересоздаются
+k8s-apply: ## идемпотентный apply: Jobs пересоздаются (Alembic идемпотентен)
 	kubectl delete job db-migrate seed-demo minio-init -n $(NS) --ignore-not-found
 	kubectl apply -k $(OVERLAY)
 	kubectl -n $(NS) wait --for=condition=ready pod -l app.kubernetes.io/name=postgres --timeout=180s
@@ -1220,44 +1297,13 @@ k8s-apply:                       ## идемпотентный apply: Jobs пе�
 	kubectl -n $(NS) wait --for=condition=complete job/minio-init --timeout=180s
 	kubectl -n $(NS) wait --for=condition=available deploy/keycloak --timeout=600s
 	kubectl -n $(NS) wait --for=condition=available deploy/backend --timeout=300s
-	@echo "Стенд готов: http://crm.local"
-
-k8s-down:
-	k3d cluster delete $(CLUSTER) 2>/dev/null || minikube delete -p $(CLUSTER) || true
-
-## --- Данные и демо ----------------------------------------------------------
-seed:                            ## перезапустить сид демо-данных (идемпотентен)
-	kubectl delete job seed-demo -n $(NS) --ignore-not-found
-	kubectl apply -k $(OVERLAY)
-	kubectl -n $(NS) wait --for=condition=complete job/seed-demo --timeout=300s
-
-demo: seed                       ## подготовить демо: сид + триггер зависших заявок
-	kubectl -n $(NS) delete job stuck-demo --ignore-not-found
-	kubectl -n $(NS) create job stuck-demo --from=cronjob/stuck-check
-	kubectl -n $(NS) wait --for=condition=complete job/stuck-demo --timeout=120s
-	@echo "CRM:    http://crm.local        (пользователи по ролям — README)"
-	@echo "LMS:    http://lms.crm.local    CMS: http://cms.crm.local"
-	@echo "MinIO:  http://minio.crm.local  Keycloak: http://id.crm.local"
-
-hosts:                           ## строка для /etc/hosts
-	@echo "127.0.0.1 crm.local id.crm.local lms.crm.local cms.crm.local minio.crm.local"
-	@echo "(для minikube замените 127.0.0.1 на: minikube -p $(CLUSTER) ip, либо запустите 'minikube tunnel')"
-
-stuck-check:                     ## compose-паритет k8s CronJob: триггер проверки зависших
-	curl -fsS -X POST -H "X-Internal-Token: $${INTERNAL_API_TOKEN:-dev-internal-token}" \
-	  http://localhost:8000/api/v1/internal/jobs/check-stuck-requests
-
-load-test:                       ## k6-прогон против стенда (см. docs/design/deployment.md §8)
-	k6 run tools/load/k6-scenario.js --out json=docs/defense/load-raw.json
-
-logs:
-	kubectl -n $(NS) logs -f deploy/backend
+	@echo "Стенд готов: http://crm.localhost (k3d, без /etc/hosts); minikube — http://crm.local (make hosts)"
 ```
 
 Примечания:
-- `gen-secrets.sh` — создаёт `secrets/*.env` из `*.env.example` (только отсутствующие; повторный запуск ничего не перетирает — ключ ПДн стабилен между apply);
-- на Linux в `dev-env` `sed -i ''` заменяется на `sed -i` (скрипт определяет ОС);
-- отдельного `make k8s-migrate` не нужно: перезапуск миграций = `make k8s-apply` (Jobs пересоздаются всегда, Alembic идемпотентен).
+- `gen-secrets.sh` создаёт `secrets/*.env` из `*.env.example` (только отсутствующие; повторный запуск ничего не перетирает — ключ ПДн стабилен между apply);
+- отдельного `make k8s-migrate` не нужно: перезапуск миграций = `make k8s-apply` (Jobs пересоздаются всегда, Alembic идемпотентен);
+- `bench-migration` и тесты с БД очищают таблицы, поэтому проверяют имя базы: инструмент замера принимает только `crm_test*`, `*_test`, `*_bench` (иначе нужен `--force`), фикстуры `tests/db` — только `crm_test*` и `crm*_test`.
 
 ---
 
@@ -1277,7 +1323,7 @@ flowchart TD
     C --> G["notification: wait-keycloak → бот запущен"]
     A2["frontend, lms-stub, cms-stub — без зависимостей"] --> H["Ingress маршрутизирует, readiness-гейты снимаются"]
     E --> H
-    F --> I["CronJob stuck-check: ежечасный триггер"]
+    F --> I["CronJob: stuck-check и idempotency-purge — ежечасно, purge-deleted — ночью"]
     G --> H
 ```
 
@@ -1285,7 +1331,7 @@ flowchart TD
 
 1. `pod/postgres-0 Ready` → 2. `job/db-migrate Complete` и `job/minio-init Complete` → 3. `deploy/keycloak Available` (до 5 минут: JVM + импорт realm) → 4. `deploy/backend Available` → 5. `job/seed-demo Complete` → стенд готов.
 
-Устойчивость к рестартам: любой под можно убить (`kubectl delete pod`) — самовосстановление без ручных действий; это и есть готовый сценарий «убьём под на глазах жюри»: HPA + второй backend-под не дают ни одной ошибки во фронте.
+Устойчивость к рестартам: любой под можно убить (`kubectl delete pod`) — самовосстановление без ручных действий; это готовый демо-сценарий: HPA + второй backend-под не дают ни одной ошибки во фронте.
 
 ---
 
@@ -1295,11 +1341,11 @@ PLAN.md §2: «свой отчёт нагрузочного тестирован
 
 ### 8.1 Инструмент — k6 (locust — запасной)
 
-**k6**: один бинарь без рантайм-зависимостей, сценарии как код (JS в репо), пороги (`thresholds`) — машинная проверка SLA прямо в прогоне, готовые сводки p95/p99. **locust** оставляем как запасной вариант (если понадобится живой web-UI на защите), но базовый отчёт делаем на k6: его thresholds превращают «отчёт о нагрузочном» в воспроизводимый артефакт CI, а не скриншот.
+**k6**: один бинарь без рантайм-зависимостей, сценарии как код (JS в репо), пороги (`thresholds`) — машинная проверка SLA прямо в прогоне, готовые сводки p95/p99. **locust** оставляем как запасной вариант (если понадобится живой web-UI), но базовый отчёт делаем на k6: его thresholds превращают «отчёт о нагрузочном» в воспроизводимый артефакт CI, а не скриншот.
 
-### 8.2 Сценарий `tools/load/k6-scenario.js`
+### 8.2 Сценарий `deploy/load/k6-script.js`
 
-Профиль моделирует именно **300+ одновременных пользователей** (не RPS): виртуальный пользователь = КАМ с think-time.
+Профиль моделирует именно **300+ одновременных пользователей** (не RPS): виртуальный пользователь = КАМ с think-time. Ниже — ядро сценария; в файле ещё режим `SMOKE=1` (10 VU / 30 с) и аккуратная запись: переход только по рёбрам, которые движок сам объявил доступными, с комментарием и актуальной `version`.
 
 ```js
 import http from "k6/http";
@@ -1374,7 +1420,7 @@ export default function (data) {
 
 Токен получается один раз в `setup()` через выделенный клиент `crm-loadtest` (Direct Access Grants включён **только** у него — боевые клиенты чисты); сид гарантирует существование заявок 1..50 и пользователя `kam1`.
 
-### 8.3 Что измеряем и что показываем жюри
+### 8.3 Что измеряем
 
 | Метрика | Источник | Целевое значение |
 |---|---|---|
@@ -1385,9 +1431,9 @@ export default function (data) {
 | CPU/Mem подов | `kubectl top pods -n crm` (metrics-server) | внутри limits |
 | Соединения PG | `pg_stat_activity` | < 80% max_connections |
 
-Артефакты: `docs/defense/load-report.md` (методика, графики из `k6 --out json` + скрипт-конвертер, вывод HPA) — готовый «отчёт нагрузочного тестирования» по требованию кейсодержателя.
+Артефакты: `docs/evidence/load-report.md` (методика, результаты прогона, вывод HPA; сырые данные `make load-test` пишет в `docs/defense/load-raw.json` и `load-summary.json`) — «отчёт нагрузочного тестирования» по требованию кейсодержателя. Замер массового переноса заявок при изменении схемы — отдельно, `docs/evidence/migration-benchmark.md` (workflow-engine.md §6.8).
 
-### 8.4 Расчёт ёмкости (план масштабирования — озвучивается на защите)
+### 8.4 Расчёт ёмкости (план масштабирования)
 
 - 300 одновременных пользователей × think-time 10–15 с × ~2 запроса на действие ⇒ **~40–60 RPS** пиково.
 - Backend IO-bound (async SQLAlchemy, кэш KeyDB на горячих чтениях): один uvicorn-воркер держит 150–200 RPS на этом профиле; под (2 воркера) ≈ 300 RPS.
@@ -1406,18 +1452,19 @@ export default function (data) {
 
 | Решение кейсодержателя | Где закрыто |
 |---|---|
-| Keycloak в своей инфраструктуре, RBAC, пользователи по ролям в README | §3.4 keycloak (self-hosted, import realm с пользователями), §3.6 (id.crm.local) |
+| Keycloak в своей инфраструктуре, RBAC, пользователи по ролям в README | §3.4 keycloak (self-hosted, import realm с пользователями), §3.6 (`id.crm.localhost`); роли и права — в БД Альмы, Keycloak — только вход (ux.md §3.1); каталог прав засевает миграция Alembic, поэтому отдельного шага деплоя не нужно |
 | Закрытый контур; безопасность библиотек | §3.11 NetworkPolicy default-deny + диаграмма; пины версий образов; `uv.lock`/`npm ci` — фиксация зависимостей, аудит `pip-audit`/`npm audit` в CI (см. OVERVIEW.md) |
 | 152-ФЗ: шифрование/псевдонимизация ПДн студентов | §3.7 Secret `crm-pii` (ключ только у backend, генерация при установке, ротация `rekey`); сама схема шифрования — data-model.md |
 | PostgreSQL + MinIO (кейсодержатель одобрил) | §3.4 StatefulSet-ы с PVC; бакеты §3.8 |
 | KeyDB как кэш | §3.4 keydb (Deployment, LRU 192mb, без персистентности — осознанно) |
-| Монолит или микросервисы; «для микросервисов простого compose мало — нужен minikube/k3s» | §1 обоснование; мы даём **и** minikube, **и** k3d(k3s) overlay §4 — перекрываем требование в обе стороны |
+| Монолит или микросервисы; «для микросервисов простого compose мало — нужен minikube/k3s» | §1 обоснование; мы даём **и** minikube, **и** k3d(k3s), **и** публичный стенд на k3s — overlay §4 |
 | Нагрузочное + план масштабирования 300+ | §8 целиком: k6, HPA §3.10, расчёт ёмкости §8.4 |
 | Telegram-бот; notification-gateway в DMZ (закрытый контур) | §3.11 (единственный egress + Mermaid-диаграмма DMZ), §3.3 notification, Secret `crm-telegram` только у него |
 | «Зависшие» заявки, настраиваемый порог, эскалация | §3.9 CronJob (триггер) + `STUCK_DEFAULT_DAYS` в ConfigMap + каскад порогов в БД; демо-фактура в сиде §3.8 |
-| Двусторонние интеграции LMS/CMS на заглушках, проверяемые | §1 (stubs — отдельные процессы), §3.6 (lms/cms.crm.local — UI журнала вызовов для экспертов), NetworkPolicy точка-точка §3.11 |
+| Изменение схемы «на лету», работа не встаёт | backend: пакетный перенос, ограниченное ожидание локов, сводные уведомления (workflow-engine.md §6.3–6.8); замер — `make bench-migration` (§6) |
+| Двусторонние интеграции LMS/CMS на заглушках, проверяемые | §1 (stubs — отдельные процессы), §3.6 (`lms`/`cms.crm.localhost`, на VPS — `lms`/`cms.crm…nip.io` — UI журнала вызовов), NetworkPolicy точка-точка §3.11 (`stubs-ingress`/`stubs-egress`) |
 | Обогащение из открытых источников — только разовая предзагрузка, без runtime-интернета | §3.11: у ядра нет egress наружу по сети — не только по коду |
-| Решение развёрнуто и рабочее; доступ экспертам; README с пользователями | §6 `make demo`, §3.6 hosts, realm-пользователи §3.4; публичный README без приватных VPN-конфигов |
+| Решение развёрнуто и рабочее; доступ проверяющим; README с пользователями | публичный демо-стенд §4.3 (`make vm-deploy`, HTTPS без VPN и `/etc/hosts`), локально — §6 `make k8s-up` + `make demo`; realm-пользователи §3.4; публичный README без приватных VPN-конфигов; перенос в контур заказчика — §4.4 |
 | Обоснование стека при отходе от Kotlin/Python/Node/React | стек — Python/React (внутри списка); инфраструктурные выборы обоснованы по месту (§1, §3.4, §8.1) |
 | Мобильная версия не нужна, адаптивная вёрстка | не деплой-вопрос; Ingress ничего мобильно-специфичного не требует |
 | Импорт XLSX/XLS больших списков | §3.6 `proxy-body-size: 50m`; `/tmp` в подах backend §3.3 |
@@ -1426,8 +1473,9 @@ export default function (data) {
 
 ## 10. Открытые вопросы / риски
 
-1. **Контур организаторов (заявка до ~25.09).** Если дадут ВМ/облако — целевой путь: k3d на одной ВМ (`make k8s-up`), hosts заменяется реальным DNS или nip.io (`crm.<ip>.nip.io` — патч одного overlay-файла). Если дадут managed k8s — тот же base, третий overlay (storage class и ingress class провайдера, images через registry).
-2. **Telegram в контуре организаторов**: если egress наружу закрыт совсем — notification переключается в режим console/webhook-заглушки (пустой `TELEGRAM_BOT_TOKEN` уже поддержан, §5), демо бота — с ноутбука команды через k3d.
-3. **`crm.local` и minikube на macOS**: драйвер docker требует `minikube tunnel`; k3d-путь для экспертов основной именно поэтому (127.0.0.1 из коробки).
-4. **Пины образов** `minio/minio`, `eqalpha/keydb` зафиксировать на неделе сдачи (сейчас `latest` в тексте — заменить конкретными тегами при первом же коммите манифестов).
-5. ~~Итоговый список ролей realm~~ — **решено**: `admin`, `head_kam`, `kam`, `observer` + сервисные `svc_notification`, `svc_integration` (зафиксировано в OVERVIEW.md); realm-шаблон правится в одном месте (`crm-realm.template.json`).
+1. ~~Контур для публичного стенда~~ — **решено**: overlay `vm` на голом k3s публичного VPS, хосты nip.io, TLS Let's Encrypt (§4.3). Это демо-конфигурация; для контура заказчика — корпоративный DNS, его ingress-контроллер и сертификат внутреннего CA (§4.4). Managed k8s — тот же base, свой overlay (storage class и ingress class провайдера, images через registry).
+2. **Telegram из закрытого контура**: если egress наружу закрыт совсем — notification переключается в режим console/webhook-заглушки (пустой `TELEGRAM_BOT_TOKEN` уже поддержан, §5). Если Bot API недоступен напрямую — через HTTP-прокси (`TELEGRAM_PROXY_URL`) или свой сервер Bot API (`TELEGRAM_API_BASE`) с точечным egress notification только до него — так сделано на VPS (§4.3).
+3. **`crm.local` и minikube на macOS**: драйвер docker требует `minikube tunnel`; локальный k3d-путь основной именно поэтому (127.0.0.1 из коробки), а вход в UI — через `*.localhost` (secure context для PKCE, §3.6).
+4. ~~Пины образов~~ — **решено**: `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`, `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z`, `eqalpha/keydb` v6.3.4 по digest, `curlimages/curl:8.10.1`, `postgres:16-alpine`, `quay.io/keycloak/keycloak:26.0`.
+5. ~~Итоговый список ролей realm~~ — **решено**: в realm — `admin`, `head_kam`, `kam`, `observer` (стартовое назначение при первом входе) + сервисные `svc_notification`, `svc_integration`; дальше роли людей живут в БД Альмы и настраиваются в интерфейсе. Realm правится в одном месте — `deploy/keycloak/realm-crm.json`, ConfigMap пересобирает `make realm-sync`.
+6. **Аварийный доступ к ролям.** Если в Альме не осталось пользователя с правом управления ролями (интерфейс и сервер это предотвращают, но БД могли править руками) — `kubectl exec deploy/backend -- python -m app.tools.rbac grant-admin <username>`, действие пишется в аудит.

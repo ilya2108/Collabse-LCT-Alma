@@ -270,29 +270,6 @@ def require_permission(code: str):
     return dependency
 
 
-def check_roles(user_roles: list[str] | tuple[str, ...], allowed: tuple[str, ...]) -> bool:
-    """Совместимость (удаляется в волне 3): чистая проверка пересечения ролей."""
-    return bool(set(user_roles) & set(allowed))
-
-
-def require_roles(*allowed: str):
-    """Совместимость (удаляется в волне 3): доступ только ролям из списка; иначе 403.
-
-    Новый код — `require_permission`. Атрибут `required_roles` нужен тесту матрицы
-    доступа для маршрутов, ещё не переведённых на права.
-    """
-
-    async def dependency(
-        user: Annotated[AppUser, Depends(get_current_user)],
-    ) -> AppUser:
-        if not check_roles(user.roles, allowed):
-            raise forbidden()
-        return user
-
-    dependency.required_roles = tuple(allowed)  # type: ignore[attr-defined]
-    return dependency
-
-
 def require_service_role(role: str):
     """Зависимость для сервисных клиентов (бот/интеграции): токен без зеркала app_user."""
 

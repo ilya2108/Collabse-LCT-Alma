@@ -1,6 +1,6 @@
 """Регрессия F2: доступ 4 базовых ролей к КАЖДОМУ эндпоинту не изменился.
 
-`LEGACY_ENDPOINT_ROLES` — снимок прежней матрицы `require_roles` (колонка «Роли сейчас»
+`LEGACY_ENDPOINT_ROLES` — снимок прежней матрицы доступа по ролям (колонка «Роли сейчас»
 таблицы §4.4 спецификации F2), по строке на эндпоинт, пути без `/api/v1`. Тест обходит
 все маршруты приложения (включая ленивые include FastAPI ≥ 0.141), собирает права из
 зависимостей (`require_permission(...).required_permission`) и сверяет доступ каждой
@@ -202,10 +202,6 @@ NEW_ENDPOINT_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("DELETE", "/requests/{request_id}/files/{file_id}"): AHK,
 }
 
-# маршруты, ещё закрытые прежним require_roles (волна 2 перевела workflow/router.py на
-# права — множество пусто; новые исключения не допускаются)
-PENDING_ROLE_ROUTES: frozenset[tuple[str, str]] = frozenset()
-
 _API_PREFIX = "/api/v1"
 
 
@@ -224,31 +220,27 @@ class RouteAccess:
         self.method = method
         self.path = path
         self.permissions: set[str] = set()
-        self.roles: list[frozenset[str]] = []
+        # зависимости, проверяющие роли напрямую (атрибут `required_roles` прежней
+        # зависимости по ролям, удалённой вместе с шимами): доступ задают только права
+        self.role_dependencies: set[str] = set()
         self.authenticated = False
-        self.dependency_names: set[str] = set()
         self._collect(dependant)
 
     def _collect(self, dependant: Dependant) -> None:
         for dependency in dependant.dependencies:
             call: Any = dependency.call
             name = getattr(call, "__name__", "")
-            self.dependency_names.add(name)
             if hasattr(call, "required_permission"):
                 self.permissions.add(call.required_permission)
             if hasattr(call, "required_roles"):
-                self.roles.append(frozenset(call.required_roles))
+                self.role_dependencies.add(name or repr(call))
             if name == "get_current_user":
                 self.authenticated = True
             self._collect(dependency)
 
     def allows(self, role: str) -> bool:
         access = compute_access([role], static_catalog())
-        return (
-            self.authenticated
-            and all(access.has(permission) for permission in self.permissions)
-            and all(role in allowed for allowed in self.roles)
-        )
+        return self.authenticated and all(access.has(permission) for permission in self.permissions)
 
 
 def _iter_routes() -> Iterator[RouteAccess]:
@@ -303,12 +295,11 @@ def test_base_roles_access_unchanged(route: RouteAccess) -> None:
 
 
 @pytest.mark.parametrize("route", ROUTES, ids=_ids)
-def test_no_legacy_role_dependencies(route: RouteAccess) -> None:
-    """(c) require_roles не используется (кроме маршрутов волны 2)."""
-    if (route.method, route.path) in PENDING_ROLE_ROUTES:
-        return
-    assert not route.roles, "зависимость require_roles — используйте require_permission"
-    assert "require_roles" not in route.dependency_names
+def test_no_role_dependencies(route: RouteAccess) -> None:
+    """(c) доступ к маршрутам задают только права: проверок ролей в зависимостях нет."""
+    assert not route.role_dependencies, (
+        "проверка ролей в зависимости — используйте require_permission"
+    )
 
 
 @pytest.mark.parametrize("route", ROUTES, ids=_ids)
@@ -339,7 +330,7 @@ def _access(role: str):  # noqa: ANN202
     return compute_access([role], static_catalog())
 
 
-def _legacy_check_roles(roles: list[str], allowed: tuple[str, ...]) -> bool:
+def _legacy_has_any_role(roles: list[str], allowed: tuple[str, ...]) -> bool:
     return bool(set(roles) & set(allowed))
 
 
@@ -347,7 +338,7 @@ def _legacy_check_roles(roles: list[str], allowed: tuple[str, ...]) -> bool:
 @pytest.mark.parametrize("pipeline", WORKFLOW_TYPES)
 def test_assign_other_on_create(role: str, pipeline: str) -> None:
     # create_request: назначить ответственным другого — прежде admin/head_kam
-    legacy = _legacy_check_roles([role], (A, H))
+    legacy = _legacy_has_any_role([role], (A, H))
     assert _access(role).has("requests:assign_any", pipeline) is legacy
 
 
@@ -356,7 +347,7 @@ def test_assign_other_on_create(role: str, pipeline: str) -> None:
 @pytest.mark.parametrize("to_self", [True, False])
 def test_assign_free_request(actor: str, current: str, to_self: bool) -> None:
     def legacy(actor_roles: list[str], current_roles: list[str], to_self: bool) -> bool:
-        if _legacy_check_roles(actor_roles, (A, H)):
+        if _legacy_has_any_role(actor_roles, (A, H)):
             return True
         if not to_self:
             return False
@@ -383,7 +374,7 @@ def test_delete_foreign_comment(role: str, pipeline: str) -> None:
 def test_write_foreign_university_or_contract(role: str, own: bool | None) -> None:
     user = _user(role)
     owner = None if own is None else (user.id if own else uuid.uuid4())
-    legacy_allowed = _legacy_check_roles([role], (A, H)) or owner is None or owner == user.id
+    legacy_allowed = _legacy_has_any_role([role], (A, H)) or owner is None or owner == user.id
     try:
         ensure_can_write_owned(user, owner)
         allowed = True
@@ -400,10 +391,10 @@ _FILE_TYPES = ("contract", "student", "deal", "deal_comment", "import_session", 
 @pytest.mark.parametrize("own", [True, False])
 def test_file_download(role: str, entity_type: str, own: bool) -> None:
     def legacy(roles: list[str], entity_type: str, own: bool) -> bool:
-        is_admin = _legacy_check_roles(roles, (A,))
+        is_admin = _legacy_has_any_role(roles, (A,))
         if entity_type in ("import_session", "report"):
             return is_admin or own
-        observer_only = "observer" in roles and not _legacy_check_roles(roles, (A, H, K))
+        observer_only = "observer" in roles and not _legacy_has_any_role(roles, (A, H, K))
         return not (
             observer_only and entity_type in ("contract", "student", "deal", "deal_comment")
         )

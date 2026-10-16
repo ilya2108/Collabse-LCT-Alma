@@ -313,7 +313,7 @@ class TestDealScope:
         [("admin", False), ("head_kam", False), ("kam", True), ("observer", False)],
     )
     def test_report_scope_matches_legacy(self, role: str, own: bool) -> None:
-        # прежний scope_kam_id: «широкие» роли a/h/o — все, kam — только свои
+        # прежняя область отчётов по ролям: «широкие» роли a/h/o — все, kam — только свои
         scope = compute_access([role], static_catalog()).deal_scope(
             "reports:read", self.uid, wide_permission="reports:all"
         )

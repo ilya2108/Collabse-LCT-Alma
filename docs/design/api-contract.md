@@ -28,21 +28,31 @@ notification-service, lms-stub, cms-stub без дополнительных в�
 
 - **Люди**: OIDC Authorization Code + PKCE через Keycloak (realm `crm`, public client `crm-frontend`).
   Каждый запрос к API — заголовок `Authorization: Bearer <access_token>` (JWT).
-  Backend валидирует подпись по JWKS realm'а (кэш ключей в KeyDB, TTL 10 мин), проверяет `iss`, `aud`, `exp`.
-- **Роли** читаются из `realm_access.roles` токена. Ролевая модель (см. §12):
-  - `admin` — администратор системы;
-  - `head_kam` — руководитель КАМов;
-  - `kam` — key account manager;
-  - `observer` — наблюдатель/аудитор (read-only, ПДн маскируются).
-  - Сервисные роли (только для confidential-клиентов, не для людей): `svc_notification`
-    (клиент `crm-notification`, client credentials — используется Telegram-ботом),
-    `svc_integration` (клиент `crm-integration` — для заглушек LMS/CMS при вызове webhook-эндпоинтов,
-    если вместо HMAC используется bearer; см. §13.6).
-- **CronJob** (проверка зависших заявок) аутентифицируется статическим токеном
-  `X-Internal-Token` из K8s Secret (см. §11.1) — без Keycloak, чтобы CronJob оставался
-  однострочным `curl`.
-- 401 — токен отсутствует/просрочен/невалиден. 403 — токен валиден, но роль не даёт доступ
-  (или объект вне зоны видимости пользователя, см. §12.2).
+  Backend валидирует подпись по JWKS realm'а (кэш ключей в памяти процесса, TTL 10 мин,
+  форс-обновление на неизвестный `kid`), проверяет `iss`, `aud`, `exp`.
+- **Keycloak отвечает только за вход; роли и права — в БД CRM** (§12). Назначения хранятся
+  в `app_user.roles`, роли — в `app_role`, их права — в `app_role_permission`. Роли из
+  `realm_access.roles` токена используются один раз: при создании записи пользователя
+  (первый вход) системные роли из токена становятся стартовым назначением. Дальше роли
+  назначает администратор в CRM (`PUT /admin/users/{id}/roles`, §10.5); изменение действует
+  со следующего запроса, без перелогина.
+- **Роли людей** (§12.4):
+  - системные — `admin` (администратор, права не редактируются), `head_kam` (руководитель
+    КАМов), `kam` (key account manager), `observer` (наблюдатель, read-only, ПДн маскируются);
+  - свои роли — создаёт администратор без программиста (§10.5): набор прав из каталога,
+    процессы B2B/B2C и область записей (все / только свои).
+- **Сервисные роли** (только confidential-клиенты Keycloak, записи `app_user` не создаётся):
+  `svc_notification` (клиент `crm-notification`, client credentials — Telegram-бот),
+  `svc_integration` (клиент `crm-integration` — заглушки LMS/CMS при вызове webhook-эндпоинтов,
+  если вместо HMAC используется bearer; см. §13.6). Сервисный токен без ролей людей к
+  интерфейсу CRM не допускается (403).
+- **CronJob** аутентифицируется статическим токеном `X-Internal-Token` из K8s Secret
+  (см. §11.1) — без Keycloak, чтобы CronJob оставался однострочным `curl`.
+- 401 — токен отсутствует/просрочен/невалиден. 403 — нет права (в `message` — название права),
+  учётная запись деактивирована или без ролей CRM, процесс B2B/B2C недоступен роли
+  (коллекции: доска, создание заявки, отчёт «Активность КАМов»). 404 — объект вне области роли
+  (заявка чужого процесса или чужая при области «только свои», её история, комментарии и
+  файлы): существование не раскрывается (§12.2).
 
 ### 1.3. Формат данных
 
@@ -76,23 +86,32 @@ notification-service, lms-stub, cms-stub без дополнительных в�
 
 | HTTP | `code` | Когда |
 |---|---|---|
-| 400 | `validation_error` | Ошибка валидации тела/параметров (Pydantic) |
+| 400 | `validation_error` | Ошибка валидации тела/параметров (Pydantic); в `details[].code` — уточнение (`permission_dependency`, `period_too_long`, `workflow_not_allowed` …) |
 | 400 | `import_bad_format` | Файл импорта не распознан (не XLSX/XLS/CSV/JSON) |
 | 400 | `import_encoding_error` | Не удалось определить кодировку (после перебора, §8.2) |
-| 400 | `workflow_invalid_schema` | Схема workflow после операции невалидна (нет initial, недостижимый статус) |
+| 400 | `workflow_invalid_schema` | Схема workflow после операции невалидна (нет initial, недостижимый статус, роль перехода не может выполнять переходы) |
+| 400 | `idempotency_key_invalid` | Заголовок `Idempotency-Key` не по формату (§1.6) |
 | 401 | `unauthorized` | Нет/просрочен токен |
-| 403 | `forbidden` | Роль/зона видимости не позволяет |
-| 403 | `workflow_change_requires_approval` | Попытка применить rename/delete статуса без апрува |
-| 404 | `not_found` | Объект не найден (или вне зоны видимости — не раскрываем существование) |
-| 409 | `conflict` | Нарушение уникальности (дубль ИНН вуза и т.п.) |
+| 403 | `forbidden` | Нет права, процесс B2B/B2C недоступен роли, действие над чужой заявкой без права (§12) |
+| 404 | `not_found` | Объект не найден или вне области роли — существование не раскрываем (§12.2) |
+| 409 | `conflict` | Нарушение уникальности (дубль ИНН вуза и т.п.), пакет изменений уже обработан |
 | 409 | `stale_version` | Optimistic lock: version устарел |
 | 409 | `workflow_invalid_transition` | Переход не разрешён схемой workflow |
-| 409 | `idempotency_conflict` | Повтор `Idempotency-Key` с другим телом запроса |
-| 413 | `file_too_large` | Файл > лимита (импорт: 20 МБ; вложения: 50 МБ) |
-| 422 | `unprocessable` | Семантическая ошибка (например, target-статус миграции = удаляемый) |
-| 429 | `rate_limited` | Превышение лимита (KeyDB token bucket; заголовок `Retry-After`) |
+| 409 | `workflow_busy` | Схема процесса сейчас применяется: лок воронки не получен за отведённое время (переход — 10 с, применение пакета и удаление роли — 30 с). Операция не выполнена, повтор безопасен; заголовок `Retry-After: 2` (§5.4) |
+| 409 | `idempotency_in_progress` | Запрос с этим `Idempotency-Key` ещё выполняется; `Retry-After: 1` (§1.6) |
+| 409 | `idempotency_replay_unavailable` | Операция по ключу уже выполнена, но сохранённый ответ недоступен — перечитать данные (§1.6) |
+| 409 | `role_exists`, `role_in_use`, `role_locked`, `role_system` | Роли: код/название заняты; роль назначена или указана в переходах; роль `admin` не редактируется; системную роль нельзя удалить (§10.5) |
+| 409 | `access_lockout` | Изменение лишает актора права `admin:roles` или не оставляет ни одного активного пользователя с ним (§10.5) |
+| 413 | `file_too_large` | Файл > лимита (импорт: 20 МБ; вложения: 50 МБ); тело запроса с `Idempotency-Key` > 60 МБ |
+| 422 | `unprocessable` | Семантическая ошибка (например, target-статус миграции = удаляемый; PDF реестра) |
+| 422 | `idempotency_key_reused` | `Idempotency-Key` уже использован для другого запроса (§1.6) |
+| 429 | `rate_limited` | Превышение лимита (заголовок `Retry-After`) |
 | 500 | `internal_error` | Необработанная ошибка (детали только в логах) |
-| 502 | `integration_unavailable` | Синхронный вызов LMS/CMS/notification не удался после ретраев |
+| 502 | `integration_unavailable` | Синхронный вызов внешней системы (MinIO, Keycloak Admin API) не удался |
+| 503 | `service_unavailable` | Хранилище ключей идемпотентности недоступно — мутация с ключом не выполнена; `Retry-After: 2` (§1.6) |
+
+Заголовок `Retry-After` (секунды) приходит вместе с `409 workflow_busy`, `409 idempotency_in_progress`
+и `503 service_unavailable`; клиент повторяет запрос с тем же `Idempotency-Key` (§1.6).
 
 ### 1.5. Пагинация, сортировка, фильтрация
 
@@ -118,19 +137,108 @@ GET /api/v1/requests?limit=25&offset=50&sort=-created_at&status_id=<uuid>&search
 }
 ```
 
-### 1.6. Идемпотентность мутаций
+### 1.6. Идемпотентность мутаций (`Idempotency-Key`)
 
-`POST`-эндпоинты создания (заявки, переходы, импорт-apply, экспорт-job) принимают заголовок
-`Idempotency-Key: <uuid>` (опционален для UI, обязателен для интеграций и бота).
-Ключ хранится в KeyDB (`crm:v1:idem:{key}` → hash тела + сериализованный ответ, TTL 24 ч):
-повтор с тем же телом → повтор сохранённого ответа (200/201 c заголовком `Idempotency-Replayed: true`);
-повтор с другим телом → `409 idempotency_conflict`.
+Сквозной механизм для всех мутаций API по черновику IETF
+`draft-ietf-httpapi-idempotency-key-header`. Реализация — ASGI-middleware
+`backend/app/core/idempotency.py` (внутри `RequestIdMiddleware`), хранилище —
+`backend/app/core/idempotency_store.py`.
 
-> **Roadmap.** Generic-механизм `Idempotency-Key` (произвольный POST) в текущей
-> реализации не включён: идемпотентность обеспечивается точечно — `version` в
-> переходах заявок, дедупликация импорта, `notification_id`/`dedup_key` в
-> нотификациях и внутренних job. Заголовок принимается, но replay-хранилище
-> KeyDB — вехой после MVP.
+**Где действует.** `POST`/`PUT`/`PATCH`/`DELETE` под `/api/v1/` с заголовком `Idempotency-Key`.
+Без заголовка поведение обычное. Исключены вебхуки `/integrations/lms/webhook` и
+`/integrations/cms/webhook`: у них своя идемпотентность по `event_id` и HMAC (§13.5).
+Запрос без валидной аутентификации middleware пропускает — приложение само отвечает `401`.
+
+**Ключ.** Ровно один заголовок; 1–255 печатных ASCII-символов без пробелов (одна пара внешних
+кавычек снимается); рекомендуется UUID v4. Иначе — `400 idempotency_key_invalid`.
+
+**Область ключа — принципал:** `sub:<keycloak sub>` (проверенный JWT) или `internal`
+(`X-Internal-Token`). Один и тот же ключ двух пользователей — два разных ключа: чужой ответ
+по ключу не получить.
+
+**Отпечаток запроса** — sha256 от метода, пути, query, media-type (без параметров) и дайджеста
+тела. JSON до 1 МиБ канонизируется: порядок ключей не влияет. В `multipart/form-data` граница
+(`boundary`) заменяется постоянным маркером — браузер генерирует новую на каждый ретрай
+`FormData`, и легитимный повтор загрузки файла иначе получил бы `422`.
+
+| Ситуация | Ответ |
+|---|---|
+| Первый запрос с ключом | Выполняется; ответ 2xx сохраняется (статус, заголовки, тело) на 24 ч |
+| Повтор с тем же отпечатком после успеха | Сохранённые статус, заголовки и тело + заголовок `Idempotent-Replayed: true`; обработчик не вызывается |
+| Повтор, пока первый запрос выполняется | `409 idempotency_in_progress`, `Retry-After: 1` |
+| Тот же ключ, другой запрос (метод, путь, query или тело) | `422 idempotency_key_reused` |
+| Успех сохранён без тела (ответ > 1 МиБ, не UTF-8, файл) или тело не расшифровывается | `409 idempotency_replay_unavailable` — операция выполнена, перечитать данные |
+| Первый запрос завершился 4xx/5xx или исключением | Ключ освобождается — повтор выполняется заново |
+| Тело запроса > 60 МБ | `413 file_too_large` |
+| Хранилище ключей недоступно | `503 service_unavailable`, `Retry-After: 2` — fail-closed: без хранилища мутация с ключом не выполняется |
+
+**Хранилище — таблица PostgreSQL `idempotency_key`** (data-model.md §9.6), UNIQUE
+`(principal, idem_key)`. Не KeyDB: KeyDB у нас эфемерный (падение кэша не роняет CRM), а гарантия
+«не выполнить дважды» должна переживать рестарт и быть общей для всех реплик. Тело ответа
+хранится Fernet-шифртекстом (ответы мутаций содержат ПДн), тело запроса — только хеш.
+Не сохраняются и не проигрываются `date`, `server`, `content-length`, `transfer-encoding`,
+`connection`, `keep-alive`, `set-cookie` и `X-Request-Id` — повтор получает свой `trace_id`.
+
+**TTL и очистка.** Ключ живёт 24 ч (`IDEMPOTENCY_TTL_HOURS`, 1–168); просроченная запись при
+повторе перезаписывается как новая. Физически просроченные ключи удаляет CronJob
+`idempotency-purge` ежечасно (`POST /internal/jobs/purge-idempotency-keys`, §11.2) — пачками
+по 5 000 строк.
+
+**Протокол — три фазы;** операции хранилища — отдельные короткие транзакции, соединение
+во время работы обработчика не удерживается:
+1. заявка на ключ — `INSERT … ON CONFLICT` и COMMIT до бизнес-транзакции: запись `processing`
+   с арендой `locked_until` = now + 60 с (`IDEMPOTENCY_LEASE_SECONDS`);
+2. выполнение обработчика под арендой: продление каждые 15 с (аренда / 4), завершить или
+   освободить ключ может только владелец (`lock_token`). Если владелец упал и аренда истекла,
+   следующий повтор перехватывает ключ и выполняет запрос;
+3. завершение — ответ фиксируется COMMIT'ом до отправки клиенту последнего чанка тела.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Клиент
+    participant MW as IdempotencyMiddleware
+    participant PG as PostgreSQL (idempotency_key)
+    participant H as Обработчик
+    C->>MW: POST … Idempotency-Key: K
+    MW->>PG: INSERT (principal, K, отпечаток) ON CONFLICT DO NOTHING
+    alt ключ новый
+        PG-->>MW: processing, аренда 60 с
+        MW->>H: запрос (тело из буфера)
+        H-->>MW: 2xx
+        MW->>PG: completed + ответ (Fernet)
+        MW-->>C: 2xx
+    else повтор после успеха
+        PG-->>MW: completed, тот же отпечаток
+        MW-->>C: сохранённый ответ + Idempotent-Replayed: true
+    else первый ещё выполняется
+        MW-->>C: 409 idempotency_in_progress, Retry-After: 1
+    else другой запрос с тем же ключом
+        MW-->>C: 422 idempotency_key_reused
+    end
+```
+
+**Гарантия и окно.** Протокол не атомарен с бизнес-транзакцией: обработчики коммитят сами.
+Если процесс упадёт между COMMIT операции и сохранением ответа (миллисекунды), повтор
+выполнится заново. Такой повтор отсекают доменные защиты: `version` (`409 stale_version`),
+машина состояний импорта (повторный `apply` возвращает сохранённый результат, §6.4),
+UNIQUE-ограничения, `dedup_key` уведомлений, `event_id` интеграций.
+
+**Отступления от черновика IETF:** тело ошибки — единый конверт §1.4 вместо RFC 9457;
+заголовок повтора — `Idempotent-Replayed: true` (как у Stripe).
+
+**OpenAPI.** У каждой мутации под `/api/v1/` (кроме вебхуков) в Swagger (`/api/v1/docs`) есть
+header-параметр `Idempotency-Key` и описания ответов `409`/`422`.
+
+**Клиент** (`frontend/src/shared/api/idempotency.ts`). Ключ получает каждая мутация
+автоматически по правилу «одно действие пользователя — один ключ»: ключ выводится из
+отпечатка запроса (метод, URL, тело с отсортированными ключами) и живёт до окончательного
+ответа, не дольше 10 мин. Двойной клик, ретрай после таймаута и «Повторить» после обрыва
+связи получают сохранённый ответ, а не дубль. Автоповторы с тем же ключом:
+- сетевая ошибка и `502`/`503`/`504` — до 3 попыток (паузы около 0,5 и 1,5 с или по `Retry-After`);
+- `409 idempotency_in_progress` и `409 workflow_busy` — ожидание по `Retry-After`, суммарно
+  не дольше 10 с;
+- `422 idempotency_key_reused` — один повтор с новым ключом.
 
 ### 1.7. Health-пробы (без аутентификации)
 
@@ -147,9 +255,12 @@ GET /api/v1/requests?limit=25&offset=50&sort=-created_at&status_id=<uuid>&search
 
 ### 2.1. `GET /auth/me`
 
-Роли: любой аутентифицированный. Источник данных для отрисовки UI по ролевой модели
-(кор-требование «отображение интерфейса строго по ролям»): фронт скрывает разделы по
-`permissions`, backend всё равно проверяет на каждом запросе.
+Доступ: любой пользователь с хотя бы одной ролью CRM (без ролей — `403`, администратор видит
+такого пользователя в списке и назначает роль). Источник данных для отрисовки UI по ролевой
+модели (кор-требование «отображение интерфейса строго по ролям»): фронт скрывает разделы и
+кнопки по правам, backend всё равно проверяет каждый запрос.
+
+Пример — системная роль `kam` с набором прав по умолчанию:
 
 ```json
 {
@@ -158,33 +269,65 @@ GET /api/v1/requests?limit=25&offset=50&sort=-created_at&status_id=<uuid>&search
   "full_name": "Иванов Пётр Сергеевич",
   "email": "ivanov@corp.local",
   "roles": ["kam"],
+  "role_details": [{"code": "kam", "name": "КАМ", "is_system": true}],
   "manager_id": "u-uuid-head",
   "permissions": [
-    "requests:read", "requests:write", "requests:transition",
-    "universities:read", "universities:write",
-    "contracts:read", "contracts:write",
-    "programs:read", "programs:priority",
-    "students:read", "students:write",
-    "reports:read", "import:run", "export:run",
-    "workflow:read", "comments:write", "notifications:self"
+    "activities:participants", "activities:read", "clients:pii", "comments:write",
+    "contracts:read", "contracts:write", "export:run", "files:business", "import:run",
+    "notifications:self", "products:read", "programs:priority", "programs:read",
+    "programs:write", "reports:read", "requests:assign", "requests:files", "requests:kam",
+    "requests:read", "requests:transition", "requests:write", "students:files",
+    "students:read", "students:reveal", "students:write", "universities:read",
+    "universities:write", "workflow:read"
   ],
+  "access": {
+    "workflow_types": ["b2b", "b2c"],
+    "records": {"b2b": "all", "b2c": "all"},
+    "by_workflow": {
+      "b2b": ["comments:write", "reports:read", "requests:assign", "requests:files", "requests:kam",
+              "requests:read", "requests:transition", "requests:write", "workflow:read"],
+      "b2c": ["comments:write", "reports:read", "requests:assign", "requests:files", "requests:kam",
+              "requests:read", "requests:transition", "requests:write", "workflow:read"]
+    },
+    "transition_roles": {"b2b": ["kam"], "b2c": ["kam"]},
+    "scoped_permissions": [
+      "comments:delete_any", "comments:write", "reports:all", "reports:read", "requests:assign",
+      "requests:assign_any", "requests:delete", "requests:files", "requests:kam", "requests:read",
+      "requests:reopen", "requests:transition", "requests:write", "requests:write_any",
+      "workflow:approve", "workflow:change", "workflow:history", "workflow:read"
+    ],
+    "catalog_version": 1
+  },
   "telegram": {"linked": true, "tg_username": "ivanov_p", "linked_at": "2026-09-20T10:00:00Z"}
 }
 ```
 
-`permissions` вычисляются на backend из ролей по матрице §12 (единственный источник истины —
-модуль `backend/app/modules/auth/permissions.py`, фронт ничего не хардкодит).
+| Поле | Смысл |
+|---|---|
+| `roles`, `role_details` | Роли пользователя, известные каталогу (системные и свои), с названиями |
+| `permissions` | Объединение прав всех ролей. Для права с областью — «есть хотя бы в одном процессе» |
+| `access.workflow_types` | Процессы, где пользователь видит заявки (`requests:read`) |
+| `access.records` | Область записей по процессу: `all` — все заявки, `own` — только где он ответственный |
+| `access.by_workflow` | Права с областью, действующие в каждом процессе (объединение по процессу, §12.3) |
+| `access.transition_roles` | Роли пользователя, которыми он выполняет переходы в процессе — фронт сверяет их с `allowed_roles` перехода |
+| `access.scoped_permissions` | Коды прав с областью: для них фронт проверяет право в процессе конкретной заявки |
+| `access.catalog_version` | Номер загрузки каталога ролей в процессе backend |
+
+Права вычисляются на backend из ролей пользователя в БД и каталога ролей (`backend/app/core/access.py`,
+каталог прав — `backend/app/core/rbac_catalog.py`); фронт ничего не хардкодит. При изменении
+ролей и прав приходит SSE `access.changed` (`{role_codes, user_ids}`); если событие касается
+текущего пользователя, фронт перечитывает `/auth/me` и перестраивает меню без перелогина.
 
 ### 2.2. Служебные UI-эндпоинты (SSE, пресеты, поиск, фичефлаги)
 
 | Метод/путь | Описание | Роли |
 |---|---|---|
-| `GET /events/stream` | **SSE**-канал realtime-обновлений UI. События: `workflow.changed` (схема опубликована → доски перечитывают колонки), `request.transitioned`, `request.comment_added` (в data — `request_id`), `telegram.linked` (закрывает модалку привязки), `flags.updated`, `notification.created` (колокольчик). Формат кадра: `event: <topic>\ndata: <json>`. Fan-out между репликами backend — KeyDB pub/sub `crm:v1:events`. Фолбэк фронта — поллинг | все (JWT) |
+| `GET /events/stream` | **SSE**-канал realtime-обновлений UI. События: `workflow.changed` (схема опубликована → доски перечитывают колонки), `request.transitioned`, `request.comment_added` (в data — `request_id`), `telegram.linked` (закрывает модалку привязки), `flags.updated`, `notification.created` (колокольчик), `access.changed` (роли или права изменились: `{role_codes, user_ids}` → фронт перечитывает `/auth/me`, реплики сбрасывают кэш каталога ролей). Формат кадра: `event: <topic>\ndata: <json>`. Fan-out между репликами backend — KeyDB pub/sub `crm:v1:events`. Фолбэк фронта — поллинг | все (JWT) |
 | `GET /ui/presets?screen=` | Сохранённые пресеты таблиц/фильтров текущего пользователя | все |
 | `POST /ui/presets` / `PATCH /ui/presets/{id}` / `DELETE /ui/presets/{id}` | CRUD пресета | все (только свои) |
-| `GET /search?q=` | Глобальный поиск (Cmd+K): вузы, заявки, студенты (по `display_name`), договоры; ответ — группы `{universities:[], requests:[], students:[], contracts:[]}` до 5 записей в группе | все |
-| `GET /flags` | Активные фичефлаги (`{"auto_ranking": false, "report_pdf": false, …}`) | все |
-| `GET /admin/feature-flags` / `PATCH /admin/feature-flags/{name}` | Управление флагами (`{"enabled": true}`); изменение публикует SSE `flags.updated` | admin |
+| `GET /search?q=` | Глобальный поиск (Cmd+K): вузы, заявки, студенты (по `display_name`), договоры; ответ — группы `{universities:[], requests:[], students:[], contracts:[]}` до 5 записей в группе. Группа отдаётся только при праве чтения сущности, заявки — в области роли (§12.2) | все |
+| `GET /flags` | Активные фичефлаги (`{"auto_ranking": false, "report_pdf": true, …}`) | все |
+| `GET /admin/feature-flags` / `PATCH /admin/feature-flags/{name}` | Управление флагами (`{"enabled": true}`); изменение публикует SSE `flags.updated` | `admin:flags` |
 
 Контракт пресета (тело POST / ответа; `screen` также используется для шаблонов маппинга импорта —
 `screen: "import:students"`):
@@ -304,6 +447,11 @@ CHECK в БД).
 отдаёт `302 Location: <presigned MinIO URL, TTL 10 мин>` (или проксирует поток, если MinIO не
 опубликован наружу — режим `FILE_DELIVERY=proxy|presigned`, по умолчанию `proxy`, т.к. закрытый контур).
 
+RBAC скачивания (§12.2): файл заявки или вложение её комментария вне области роли — `404`,
+как и сама заявка; файлы договоров, студентов, заявок и комментариев — только с правом
+`files:business` (иначе `403`); исходники и отчёты импорта, результаты выгрузок — автору
+или с правом `files:others`.
+
 ### 3.3. Продукты (`/products`)
 
 Продукт — направление/услуга компании (ДПО, корпоративное обучение, олимпиады…).
@@ -367,6 +515,10 @@ workflow (§5).
 
 ### 4.1. Эндпоинты
 
+Колонка «Роли» — системные роли с набором прав по умолчанию. Проверка в коде — по правам и
+области роли (эндпоинт → право — §12.1): заявка вне области роли — `404`, процесс вне области
+для доски и создания — `403`.
+
 | Метод/путь | Описание | Роли (write) |
 |---|---|---|
 | `GET /requests` | Список. Фильтры: `workflow_type`, `status_id` (multi), `assignee_id`, `university_id`, `product_id`, `program_id`, `stuck` (bool, см. §11), `created_from`, `created_to`, `source` (`manual/import/cms`), `search` (название/клиент) | все |
@@ -374,12 +526,13 @@ workflow (§5).
 | `POST /requests` | Создать (статус = initial статус схемы; менять статус при создании нельзя) | admin, head_kam, kam |
 | `GET /requests/{id}` | Карточка: поля + текущий статус + доступные переходы + последние комментарии | все |
 | `PATCH /requests/{id}` | Изменить поля (не статус!) | admin, head_kam, kam-ответственный |
-| `POST /requests/{id}/assign` | `{"assignee_id":"u-uuid"}` — смена ответственного | admin, head_kam; kam — только взять неназначенную на себя |
+| `POST /requests/{id}/assign` | `{"assignee_id":"u-uuid"}` — смена ответственного; новый ответственный обязан видеть процесс заявки (иначе `400`, `details[].code = workflow_not_allowed`) | admin, head_kam (`requests:assign_any`); kam — только взять «свободную» заявку на себя: её ответственный не ведёт портфель как КАМ (нет `requests:kam` в процессе) |
 | `GET /requests/{id}/transitions` | Доступные переходы для текущего пользователя (вкл. возвраты) | все |
 | `POST /requests/{id}/transitions` | Выполнить переход (§4.3) | admin, head_kam, kam-ответственный |
 | `GET /requests/{id}/history` | История: переходы, смены ответственного, изменения полей | все |
 | `GET /requests/{id}/comments` / `POST …` / `DELETE …/{comment_id}` | Комментарии (§4.4) | см. §4.4 |
-| `POST /requests/{id}/reopen` | Переоткрыть из терминального статуса: `{"to_status_id": "…", "comment": "…"}` (comment обязателен; запись истории `kind: transition`, `reason: reopen`) | **только admin** |
+| `GET /requests/{id}/files` / `POST …` / `DELETE …/{file_id}` | Файлы заявки (§4.5) | см. §4.5 |
+| `POST /requests/{id}/reopen` | Переоткрыть из терминального статуса: `{"to_status_id": "…", "comment": "…"}` (comment обязателен; запись истории `kind: transition`, `reason: reopen`) | **только admin** (`requests:reopen`) |
 | `DELETE /requests/{id}` | Мягкое удаление | admin |
 
 ### 4.2. Тело заявки
@@ -416,7 +569,8 @@ workflow (§5).
 справочника, `client` — сериализация контрагента:
 `{"full_name": "…", "email": "…", "phone": "…", "company_name": null, "inn": null}`.
 ПДн клиента-физлица шифруются на уровне хранения так же, как студенты (см. §9.4);
-для роли `observer` поля `client.full_name/email/phone` отдаются маскированными.
+без права `clients:pii` (по умолчанию его нет у `observer`) поля `client.full_name/email/phone`
+отдаются маскированными.
 
 ### 4.3. Переход по статусу (вкл. возвраты)
 
@@ -431,9 +585,15 @@ Idempotency-Key: 9d1f…
 ```
 
 Правила:
-- Переход валиден, только если в схеме workflow есть транзиция `current → to_status_id`
-  и роль пользователя входит в её `allowed_roles`. Иначе `409 workflow_invalid_transition`
-  с `details[0].message` = список допустимых переходов.
+- Переход валиден, только если в живой схеме workflow есть транзиция `current → to_status_id`.
+  Иначе `409 workflow_invalid_transition` с `details[0].message` = список допустимых переходов.
+- Права (§12.2): `requests:transition` в процессе заявки; чужая заявка — ещё
+  `requests:write_any`; непустой `allowed_roles` транзиции должен содержать роль пользователя,
+  которая может выполнять переходы в этом процессе (`access.transition_roles`, §2.1), пустой —
+  достаточно доступа к заявке. Иначе `403 forbidden`.
+- Переход берёт shared-лок воронки: пока применяется пакет изменений схемы (§5.4), переход
+  ждёт не дольше 10 с, затем `409 workflow_busy` с `Retry-After: 2` — переход не выполнен,
+  повтор безопасен.
 - **Возвраты** — обычные транзиции с `kind: "return"` (в БД — флаг `is_return`; бюрократия:
   «вернуть на доработку»). Для `kind: "return"` и любых транзиций с `requires_comment: true`
   (например, «Отказ») поле `comment` обязательно (`400 validation_error`, если пусто).
@@ -465,9 +625,25 @@ Idempotency-Key: 9d1f…
 ### 4.4. Комментарии
 
 `POST /requests/{id}/comments` — `{"text": "…"}` → `201` c объектом комментария
-(`id, text, author{id,full_name}, created_at`). Писать могут admin, head_kam, kam
-(любой видящий заявку, кроме observer). Удаление — автор или admin, мягкое
+(`id, text, author{id,full_name}, created_at`). Писать может любой видящий заявку с правом
+`comments:write` в её процессе (по умолчанию admin, head_kam, kam; observer — нет). Удаление —
+автор или право `comments:delete_any` (по умолчанию admin), мягкое
 (`deleted_at`, текст в выдаче заменяется на `"(удалено)"`).
+
+### 4.5. Файлы заявки
+
+| Метод/путь | Описание | Право (§12.1) |
+|---|---|---|
+| `GET /requests/{id}/files` | Вложения заявки `{"items": [файл §3.2], "total": N}` по возрастанию даты | `requests:read`; заявка вне области — `404` |
+| `POST /requests/{id}/files` | `multipart/form-data`, поле `file`, до 50 МБ (`413 file_too_large`); `201` — файл §3.2 | `requests:files` в процессе заявки, иначе `403` |
+| `DELETE /requests/{id}/files/{file_id}` | Мягкое удаление (`deleted_at`); объект MinIO удаляет `purge-deleted` (§11.2); `204` | `requests:files` в процессе заявки и (автор файла или `requests:write_any` в процессе), иначе `403` |
+
+По умолчанию `requests:files` есть у admin, head_kam и kam; удалить чужой файл могут admin и
+head_kam (`requests:write_any`). Файлы лежат в бакете `crm-files` (`entity_type='deal'`,
+ключ `deal/{request_id}/{file_id}/{имя}`); скачивание — общий `GET /files/{file_id}/download`
+(§3.2). Загрузка и удаление пишут аудит (`request.file_uploaded`, `request.file_deleted`);
+загрузка обновляет `last_activity_at` заявки и считается взаимодействием КАМа в отчёте
+«Активность КАМов» (§7.2.1).
 
 ---
 
@@ -530,16 +706,19 @@ completed` + `rejected` + возврат `payment_pending → proposal`; сид�
 
 ### 5.2. Эндпоинты workflow
 
-| Метод/путь | Описание | Роли |
+| Метод/путь | Описание | Право в процессе воронки (по умолчанию) |
 |---|---|---|
-| `GET /workflows` | `[{id, type, name, statuses_count, active_requests, updated_at}]` | все |
-| `GET /workflows/{id}` | Полная схема (§5.1) — для конструктора React Flow и канбана | все |
-| `POST /workflows/{id}/impact-preview` | Предпросмотр влияния операций до отправки (§5.3) | admin, head_kam |
-| `POST /workflows/{id}/changes` | Создать изменение схемы (пакет операций) | admin, head_kam |
-| `GET /workflows/{id}/changes` | Список изменений; фильтр `status=pending/applied/rejected` | admin, head_kam; observer — read |
-| `GET /workflows/changes/{change_id}` | Карточка изменения + impact | admin, head_kam, observer |
-| `POST /workflows/changes/{change_id}/approve` | Апрув → применение + миграция (§5.4) | **только admin** |
-| `POST /workflows/changes/{change_id}/reject` | `{"reason":"…"}` | **только admin** |
+| `GET /workflows` | `[{id, type, name, statuses_count, active_requests, updated_at}]` — только процессы, схема которых видна пользователю | вход |
+| `GET /workflows/{id}` | Полная схема (§5.1) — для конструктора React Flow и канбана; схема чужого процесса — `404` | `workflow:read` или `requests:read` (все) |
+| `POST /workflows/{id}/impact-preview` | Предпросмотр влияния операций до отправки (§5.3) | `workflow:change` (admin, head_kam) |
+| `POST /workflows/{id}/changes` | Создать изменение схемы (пакет операций) | `workflow:change` (admin, head_kam) |
+| `GET /workflows/{id}/changes` | Список изменений; фильтр `status=pending/applied/rejected/failed` | `workflow:history` (admin, head_kam, observer) |
+| `GET /workflows/changes/{change_id}` | Карточка изменения + impact + `migration_report` применённого пакета | `workflow:history` (admin, head_kam, observer) |
+| `POST /workflows/changes/{change_id}/approve` | Апрув → применение + перенос заявок (§5.4) | `workflow:approve` (**только admin**) |
+| `POST /workflows/changes/{change_id}/reject` | `{"reason":"…"}` | `workflow:approve` (**только admin**) |
+
+Право проверяется в процессе воронки (`b2b`/`b2c`), а не «хоть в одном»: право есть, но не
+в этом процессе — `403`; пакет процесса, схема которого пользователю не видна, — `404`.
 
 ### 5.3. Операции изменения схемы
 
@@ -563,11 +742,19 @@ completed` + `rejected` + возврат `payment_pending → proposal`; сид�
 
 | Операция | Класс | Поведение |
 |---|---|---|
-| `add_status`, `add_transition` | безопасная | admin — применяется сразу (`status: "applied"`); head_kam — уходит на апрув |
-| `rename_status`, `delete_status` | **опасная** | всегда `status: "pending"`, применение только через `approve` админом. Если сам admin отправил только опасные операции — всё равно создаётся pending-change, и админ подтверждает его отдельным `approve` (двухшаговое подтверждение) |
-| `update_transition`, `delete_transition`, `update_status` (цвет/SLA/position) | нейтральная | admin — сразу; head_kam — на апрув |
+| `add_status`, `add_transition` | безопасная | автор с `workflow:approve` в процессе (admin) — применяется сразу (`status: "applied"`); без этого права (head_kam) — уходит на апрув |
+| `rename_status`, `delete_status` | **опасная** | всегда `status: "pending"`, применение только через `approve`. Если автор сам может согласовывать (admin) — всё равно создаётся pending-change, и он подтверждает его отдельным `approve` (двухшаговое подтверждение) |
+| `update_transition`, `delete_transition`, `update_status` (цвет/SLA/position) | нейтральная | как безопасная: с `workflow:approve` — сразу; без — на апрув |
 
-Пакет с хотя бы одной опасной операцией целиком уходит в `pending`.
+Пакет с хотя бы одной опасной операцией целиком уходит в `pending`. Безопасный пакет,
+применяемый сразу, проходит тот же путь, что и `approve` (§5.4); если воронка занята
+(`409 workflow_busy`), пакет не создаётся — повтор запроса безопасен.
+
+Роли в `allowed_roles` — коды каталога ролей, включая свои роли (§10.5). Роль, которую пакет
+**добавляет** в переход, обязана существовать и иметь `requests:transition` в процессе воронки;
+у остальных переходов целевой схемы роль должна просто существовать в каталоге. Иначе —
+`400 workflow_invalid_schema`. Окончательная проверка — под эксклюзивным локом воронки,
+свежим чтением ролей (гонка с удалением роли исключена, §10.5).
 Опасные операции обязаны нести `confirm_name` — точное текущее название статуса, введённое
 пользователем посимвольно («защита от дурака», сверка на бэке; несовпадение → `422 unprocessable`).
 `delete_status` **обязан** указать `migrate_to_status_id`; UI по умолчанию подставляет
@@ -592,22 +779,52 @@ completed` + `rejected` + возврат `payment_pending → proposal`; сид�
 }
 ```
 
+Карточка пакета (`GET /workflows/changes/{change_id}`, элементы списка) — те же поля плюс
+`decided_by`, `decision_comment`, `decided_at`, `applied_at`; у применённого пакета —
+`migration_report` (§5.4): отчёт переноса хранится в самом пакете. Пакет, применённый сразу
+при создании, возвращается со `status: "applied"` и `migration_report`.
+
 `POST /workflows/{id}/impact-preview` принимает тот же массив `operations` и возвращает только блок `impact` —
 конструктор показывает «будет перенесено 14 заявок» до сохранения.
 
 ### 5.4. Апрув и миграция заявок
 
-`POST /workflows/changes/{change_id}/approve` (admin) — атомарно в одной транзакции БД:
+`POST /workflows/changes/{change_id}/approve` (`workflow:approve` в процессе воронки) —
+атомарно, одной транзакцией БД:
 
-1. Повторная валидация схемы с учётом текущего состояния (схема могла измениться после
-   создания change → при конфликте `409 conflict`, автор пересоздаёт).
-2. Применение операций к схеме.
-3. **Миграция заявок**: все заявки в удалённом статусе `UPDATE ... SET status_id = migrate_to_status_id`,
-   каждой пишется запись истории `kind: "migrated"` с комментарием
-   `"Статус 'Первичный контакт' удалён администратором, заявка перенесена в 'Новая'"`.
-   Переименование миграции не требует (id статуса сохраняется). Работа не останавливается:
-   заявки продолжают жить по новой схеме сразу после commit'а.
-4. Инвалидация кэша схемы в KeyDB (`wf:{id}`), событие `workflow.changed` в notification-service.
+1. Строка пакета `FOR UPDATE`: второй `approve` того же пакета ждёт и получает
+   `409 conflict` «Пакет уже обработан».
+2. **Эксклюзивный advisory-лок воронки** (ключ `hashtextextended('wf:' || workflow_id, 0)`,
+   у каждой воронки свой — правка B2B не задевает B2C). Лок дожидается переходов, начатых в
+   этой воронке (они держат shared-лок), и ставит новые в очередь до COMMIT. Ожидание —
+   не дольше 30 с; дольше — `409 workflow_busy` с `Retry-After: 2`, пакет остаётся `pending`
+   (он не виноват), повтор безопасен.
+3. Повторная валидация под локом против живой схемы (схема могла измениться после создания
+   пакета; роли переходов — свежим чтением каталога, §5.3). Ошибка — `400 workflow_invalid_schema`
+   или `422 unprocessable`: транзакция откатывается целиком, заявки не тронуты, пакет
+   помечается `failed` (автор пересоздаёт).
+4. Применение операций к схеме.
+5. **Перенос заявок — пакетно:** один SQL-оператор на удаляемый этап (CTE
+   `UPDATE deal … RETURNING` сразу кормит `INSERT INTO deal_stage_history … SELECT`); число
+   обращений к БД не зависит от числа заявок. Каждой заявке — запись истории `kind: "migrated"`
+   с комментарием `«Статус «Первичный контакт» удалён администратором, заявка перенесена в «Новая»»`.
+   `stage_entered_at` не меняется: перестройка схемы не «омолаживает» заявку. Переименование
+   переноса не требует (id статуса сохраняется). Работа не останавливается: заявки живут
+   по новой схеме сразу после COMMIT.
+6. **Уведомления — сводкой:** вместо уведомления на каждую заявку каждый получатель, который
+   раньше получил бы хотя бы одно, получает ровно одно уведомление `request.transitioned`
+   (`payload.count` — сколько заявок его касается). Работают те же правила уведомлений и
+   личные настройки. SSE `request.transitioned` и передача в LMS при переносе не выполняются.
+7. Пакет — `applied`, отчёт переноса сохраняется в пакете (`impact.migration_report`), одна
+   запись аудита `workflow.change_applied` на пакет (поштучный след — строки истории).
+8. После COMMIT: сброс кэша схемы `crm:v1:wf:{id}`, SSE `workflow.changed`
+   (`{workflow_id, change_id, migrated_requests}`) — доски перечитывают колонки.
+
+**Что видят остальные пользователи.** Чтение (доски, карточки, отчёты) не блокируется
+никогда: до COMMIT видна старая схема, после — новая. Переход заявки этой воронки
+(`POST /requests/{id}/transitions`, `reopen`) во время применения ждёт не дольше 10 с, затем
+проходит или получает `409` («заявка изменена», «переход не разрешён», `workflow_busy`),
+и доска перечитывается.
 
 Ответ:
 
@@ -619,10 +836,26 @@ completed` + `rejected` + возврат `payment_pending → proposal`; сид�
   "applied_at": "…",
   "migration_report": {
     "migrated_requests": 14,
-    "by_status": [{"from": "Первичный контакт", "to": "Новая", "count": 14}]
+    "by_status": [{"from": "Первичный контакт", "to": "Новая", "count": 14}],
+    "digest_notifications": 3,
+    "timings": {"lock_wait_ms": …, "apply_ms": …, "migrate_ms": …, "lock_held_ms": …}
   }
 }
 ```
+
+| Поле `migration_report` | Смысл |
+|---|---|
+| `migrated_requests`, `by_status` | Сколько заявок перенесено и откуда куда |
+| `digest_notifications` | Сводных уведомлений (одно на получателя и канал) |
+| `timings.lock_wait_ms` | Ожидание эксклюзивного лока воронки (хвост переходов) |
+| `timings.apply_ms` | От захвата лока до COMMIT: схема, перенос, история, сводки, аудит |
+| `timings.migrate_ms` | Из них — пакетный перенос заявок |
+| `timings.lock_held_ms` | Сколько лок удерживался (только в ответе `approve`) |
+
+Замер на PostgreSQL 16 (медиана трёх прогонов, `docs/evidence/migration-benchmark.md`):
+перенос 10 000 заявок держит лок воронки 0,59 с, 50 000 — 2,91 с; прежний поштучный перенос
+в той же среде — 25,1 с и 130,4 с. Уведомлений в замере (20 КАМов, одно правило с одним
+каналом) — 20 сводок вместо одного на каждую перенесённую заявку.
 
 ```mermaid
 sequenceDiagram
@@ -637,9 +870,9 @@ sequenceDiagram
     BE-->>HK: 201 {status: "pending"}
     BE->>NS: событие workflow.change_requested → admin
     ADM->>BE: POST /workflows/changes/{id}/approve
-    Note over BE: транзакция: валидация → применение →<br/>миграция 14 заявок + история "migrated"
+    Note over BE: эксклюзивный лок воронки → валидация →<br/>применение → пакетный перенос 14 заявок + история "migrated"
     BE-->>ADM: 200 {status: "applied", migration_report}
-    BE->>NS: workflow.changed → все затронутые ответственные
+    BE->>NS: request.transitioned — одна сводка каждому получателю
 ```
 
 ---
@@ -658,11 +891,12 @@ sequenceDiagram
 | `GET /import/sessions/{id}` | Текущее состояние сессии (для восстановления диалога) |
 | `PUT /import/sessions/{id}/mapping` | Сохранить маппинг колонок и опции |
 | `POST /import/sessions/{id}/validate` | Прогнать валидацию без записи |
-| `POST /import/sessions/{id}/apply` | Применить (идемпотентно по `Idempotency-Key`) |
+| `POST /import/sessions/{id}/apply` | Применить. Повтор безопасен: `Idempotency-Key` (§1.6) и машина состояний сессии — повтор после `completed` возвращает сохранённый результат |
 | `DELETE /import/sessions/{id}` | Отменить сессию |
-| `GET /import/sessions` | Мои сессии (admin видит все): фильтр `state` |
+| `GET /import/sessions` | Мои сессии (с правом `files:others` — все): фильтр `state` |
 
-Роли: admin, head_kam, kam (permission `import:run`); `entity_type=dictionary:*` — только admin (§10.1).
+Права: `import:run` (admin, head_kam, kam); `entity_type=dictionary:*` — `import:dictionaries`
+(admin, §10.1). Чужие сессии импорта видны только с `files:others`.
 
 `entity_type`: `universities | university_contacts | contracts | programs | requests_b2b |
 requests_b2c | students | dictionary:<name>`.
@@ -828,15 +1062,24 @@ sequenceDiagram
 }
 ```
 
-- `format`: `xlsx | csv | json`. Для CSV: `options.encoding` — `utf-8` (с BOM, чтобы Excel
+- `format`: `xlsx | csv | json | pdf`. Для CSV: `options.encoding` — `utf-8` (с BOM, чтобы Excel
   не ломал кириллицу) или `cp1251`; разделитель по умолчанию `;` (русский Excel).
-  Это ответ на «устойчивость к кодировкам при выгрузке».
+  Это ответ на «устойчивость к кодировкам при выгрузке». PDF — только для отчётов
+  (`report:<code>`); для реестров — `422`. Табличная PDF-выгрузка отчёта дашборда закрыта
+  фичефлагом `report_pdf` (по умолчанию включён); PDF отчёта «Активность КАМов» флагом не
+  закрыт.
 - `entity_type`: `requests | universities | contracts | programs | students | report:<code>`
-  (агрегаты из §7.2 тоже выгружаются файлом).
+  (агрегаты из §7.2 тоже выгружаются файлом). `report:kam-activity` — отдельный рендер
+  (§7.2.1): XLSX — книга из пяти листов, PDF — отчёт для заказчика, CSV/JSON — лист «Заявки».
 - `columns` — опционально; поддерживают dot-нотацию по связям; без них — полный дефолтный набор.
-- ≤ 10 000 строк — синхронный ответ `201 {"status":"done","file":{…}}`; больше — `202
-  {"status":"running"}` + поллинг. RBAC: выгружается ровно то, что пользователь видит в
-  списках (те же фильтры видимости §12.2); `students` для observer — маскированные ПДн.
+- Выгрузка синхронная: `201 {"status":"done","file":{…}}`, предохранитель — 50 000 строк.
+  Статус для поллинга UI — `GET /export/jobs/{id}` (KeyDB `crm:v1:export:{id}`, 30 мин,
+  деградация — чтение из PG).
+- Права (§12.1): `export:run` и право чтения сущности (`requests:read`, `universities:read`,
+  `contracts:read`, `programs:read`, `students:read`; отчёты — `reports:read`), иначе `403`.
+  Выгружается ровно то, что пользователь видит в списках: заявки и отчёты — в области роли
+  (§12.2); `students` — ПДн всегда маскированы. Статус и скачивание результата — автору или
+  с правом `files:others`.
 
 ### 7.2. Отчёты для дашбордов (JSON-агрегаты)
 
@@ -855,6 +1098,14 @@ sequenceDiagram
 | `GET /reports/talent-pool-funnel` | Воронка студентов: кандидат→обучается→выпускник→talent pool | `university_id`, `federal_project` |
 | `GET /reports/dynamics` | Динамика создания/закрытия заявок по неделям | `workflow_type`, `from`, `to` |
 | `GET /reports/dashboard` | Агрегат всех виджетов дашборда одним запросом (KPI + funnel + dynamics + kam-workload + programs-demand + talent-pool-funnel) | все фильтры панели дашборда |
+| `GET /reports/kam-activity` | Активность КАМов, детализация: КАМ → вузы → заявки за период (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]` |
+| `GET /reports/kam-activity/summary` | Активность КАМов, сводка для заказчика: KPI с дельтами к прошлому периоду, конверсия по этапам, где застревают (§7.2.1) | те же |
+
+KPI «Завершено за период» дашборда считается по истории: заявки `won`/`lost`, чей последний
+вход в терминальный этап попал в период (не по `deal.updated_at`, который меняется любой
+правкой карточки). Та же семантика, что «Выиграно / Отказ» в §7.2.1 — цифры дашборда и
+отчёта сходятся. КАМы в `kam-workload` и в фильтре КАМа — пользователи с ролью, у которой
+есть право `requests:kam` в процессе (в том числе свои роли).
 
 Единый формат ответа отчёта:
 
@@ -874,8 +1125,133 @@ sequenceDiagram
 `rows: [{…}]` + `columns: [{key,label}]`). Ответы кэшируются в KeyDB 60 секунд
 (ключ `crm:v1:dash:{code}:{hash(params+visibility_scope)}`, data-model.md §10).
 
-Роли: `reports:read` — все, включая observer; `kam` видит агрегаты только по своей зоне
-видимости, `head_kam/admin/observer` — по всем.
+Права: `reports:read` (все системные роли, включая observer). Область отчётов (§12.2) — процессы
+ролей с `reports:read`; «по всем КАМам» — при `reports:all` и области записей `all` в процессе
+(admin, head_kam, observer), иначе только заявки, где пользователь ответственный (kam). Любой
+запрос по заявкам проходит через фильтр области, ключ кэша включает область
+(`b2b:*|b2c:<uuid>`).
+
+#### 7.2.1. Отчёт «Активность КАМов»
+
+Отвечает на вопрос: какой КАМ за какой период с какими вузами взаимодействовал и на каких
+этапах с ними остановился. Два представления одного набора данных:
+
+| Метод/путь | `report` | Для кого и что |
+|---|---|---|
+| `GET /reports/kam-activity` | `kam-activity` | Детализация для руководителя КАМов: дерево КАМ → вузы → заявки, этап остановки, дни на этапе, взаимодействия, закреплённые вузы без контакта |
+| `GET /reports/kam-activity/summary` | `kam-activity-summary` | Сводка для заказчика: KPI с дельтами к прошлому периоду той же длины, конверсия по этапам, где застревают, динамика взаимодействий, разрез по КАМам, студенты на программах из пула талантов, текстовые выводы |
+
+Параметры (у обоих эндпоинтов одинаковые):
+
+| Параметр | По умолчанию | Ограничения |
+|---|---|---|
+| `from` (ГГГГ-ММ-ДД, МСК) | `to` − 29 дней | не позже сегодняшнего дня |
+| `to` (включительно) | сегодня (МСК) | `from` ≤ `to`; период не длиннее 731 дня |
+| `workflow_type` (`b2b` / `b2c`) | оба процесса области | процесс вне области роли — `403` |
+| `kam_id` (повторяемый) | все КАМы области | не больше 50; при области «только свои» — только свой id |
+| `university_id` (повторяемый) | все вузы | не больше 50 |
+
+Ошибки: `400 validation_error` с `details[].code` — `period_inverted`, `period_too_long`,
+`period_in_future`, `too_many_values`, `invalid_value`; `403 forbidden` — «Процесс B2C недоступен
+вашей роли», «КАМ видит отчёт только по своим заявкам», «Отчёты недоступны вашей роли».
+
+Определения метрик — одни и те же в API, UI («Как считается»), XLSX и PDF:
+- период — `[from 00:00 МСК; to+1 00:00 МСК)`; `period.as_of` («данные на») = min(конец периода, сейчас);
+- **этап остановки** — этап заявки на момент `as_of`, восстановленный по `deal_stage_history`:
+  для прошлого периода это этап на его конец, а не сегодняшний; `days_on_stage` — от входа
+  в этап до `as_of`;
+- **взаимодействие** — собственное действие ответственного КАМа в периоде: ручной переход
+  (`transitions`, из них возвраты — `returns`), комментарий (`comments`), файл заявки (`files`),
+  мероприятие с вузом — слот расписания в периоде (`activities`);
+  `total = transitions + comments + files + activities`. Системные записи (перенос при
+  изменении схемы, LMS, импорт) и действия других пользователей в заявке КАМа не считаются;
+- заявка числится за текущим ответственным — как во всех отчётах и в области видимости;
+- **зависла** — этап нетерминальный и заявка на нём дольше порога (этап → воронка → общая настройка);
+- **выиграно / отказ** — этап остановки терминальный и вход в него — в периоде; конверсия =
+  выиграно / (выиграно + отказ), %;
+- **охват** — закреплённые за КАМом вузы с ≥ 1 взаимодействием в периоде / все закреплённые, %;
+- мягко удалённый этап показывается под историческим названием с пометкой «(удалён)»;
+- сводка сравнивает с периодом той же длины непосредственно перед текущим
+  (`previous_period`); дельта процентов — в п.п.
+
+Область: та же, что у всех отчётов (§7.2), но проверяется явно — `403` вместо тихо пустого
+ответа. При области «только свои» без `kam_id` подставляется сам пользователь. Мероприятия
+и закреплённые вузы (сущности B2B) учитываются, только если процесс `b2b` в области. Строки
+отчёта — пользователи с ролью, у которой есть `requests:kam` в процессе, включая КАМов без
+активности в периоде (если не заданы фильтры по людям и вузам). Блок `scope` ответа —
+`{own_only, own_user_id, workflow_types}`.
+
+Детализация (сокращено):
+
+```json
+{
+  "report": "kam-activity",
+  "generated_at": "…",
+  "params": {"from": "2026-09-17", "to": "2026-10-16", "workflow_type": null, "kam_id": [], "university_id": []},
+  "period": {"from": "2026-09-17", "to": "2026-10-16", "as_of": "…", "days": 30},
+  "scope": {"own_only": false, "own_user_id": null, "workflow_types": ["b2b", "b2c"]},
+  "totals": {"kams": …, "universities_touched": …, "coverage_pct": …, "requests_count": …, "new_requests": …, "won": …, "lost": …, "conversion": …, "stuck": …, "interactions": {…}},
+  "rows": [
+    {
+      "kam_id": "u-uuid", "kam": "Иванов Пётр Сергеевич", "is_active": true, "roles": ["kam"],
+      "universities_assigned": …, "assigned_touched": …, "coverage_pct": …,
+      "requests_count": …, "won": …, "lost": …, "conversion": …, "stuck": …,
+      "interactions": {"transitions": 3, "returns": 1, "comments": 2, "files": 1, "activities": 1, "total": 7},
+      "last_contact_at": "…",
+      "stages": [{"id": "st-3", "code": "negotiation", "name": "Переговоры", "is_terminal": false, "outcome": null, "workflow_type": "b2b", "count": 1}],
+      "universities": [
+        {
+          "university_id": "un-uuid", "name": "Московский физико-технический институт", "short_name": "МФТИ",
+          "assigned": true, "requests_count": 1, "stuck": 1, "requests_truncated": false,
+          "requests": [
+            {
+              "request_id": "rq-uuid", "title": "МФТИ — ДПО Data Science, поток весна-2027",
+              "workflow_type": "b2b", "status": "open",
+              "stage": {"id": "st-3", "code": "negotiation", "name": "Переговоры", "is_terminal": false, "deleted": false, "workflow_type": "b2b"},
+              "stage_since": "…", "days_on_stage": 16, "threshold_days": 14, "is_stuck": true,
+              "interactions": {…}, "last_contact_at": "…"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- B2C-заявки КАМа собраны в узле `university_id: null` — «B2C-клиенты (без вуза)»; в заявке
+  поле `client` — псевдоним «Фамилия И.О.», ПДн не раскрываются.
+- Предохранитель: если в выборке больше 5 000 заявок, узлы вузов приходят без списка заявок
+  (`requests_truncated: true`) — догрузить запросом с `kam_id` и `university_id`. Выгрузка
+  отдаёт все заявки.
+
+Сводка — те же `params`, `period` (плюс `granularity` динамики: `day` до 31 дня, `week` до
+184 дней, `month` дольше), `previous_period`, `scope` и:
+
+| Ключ | Содержимое |
+|---|---|
+| `kpi` | По каждому показателю `{value, prev, delta}`: `coverage_pct`, `universities_touched`, `universities_assigned`, `assigned_touched`, `requests_count`, `new_requests`, `new_amount`, `won`, `lost`, `conversion`, `interactions`, `stuck`, `talent_pool_added` |
+| `highlights` | До 5 детерминированных фраз-выводов (без ИИ), тот же текст в PDF |
+| `stages` | `{b2b: [...], b2c: [...]}` — по этапу: `reached` (дошло по истории), `share_of_first_pct`, `step_conversion_pct`, `on_stage_at_end`, `stuck`, `avg_days`, `threshold_days` |
+| `dynamics` | Серии `transitions`, `comments`, `files`, `activities`, `new_requests` по шагу `granularity` |
+| `by_kam` | Разрез по КАМам с `interactions` и `interactions_prev` |
+| `top_stuck` | До 10 зависших заявок, дольше всех стоящих на этапе; `overdue_days` — сколько дней сверх порога |
+| `untouched_assigned` | Закреплённые вузы без взаимодействий в периоде |
+| `talent` | Студенты на программах из пула талантов: статусы на конец периода и переходы за период, до 10 программ — только агрегаты, без ПДн |
+
+Кэш — KeyDB `crm:v1:dash:kam-activity:{sha1}` и `crm:v1:dash:kam-activity-summary:{sha1}`
+(хеш параметров и области), TTL 60 с; недоступный KeyDB — чтение из PG.
+
+**Выгрузка.** `POST /export/jobs` (§7.1) с `entity_type: "report:kam-activity"`; в `filters` —
+те же параметры (`from`, `to`, `workflow_type`, `kam_id`, `university_id`; принимаются и ключи
+состояния страницы `wf`, `kam`, `university`). Область и `403` — как у API, `columns` не
+применяется, имя файла — `kam-activity_<from>-<to>.<ext>`.
+
+| `format` | Файл |
+|---|---|
+| `xlsx` | Книга из пяти листов «Сводка / КАМы / Вузы / Заявки / Динамика»: жирная шапка с заливкой, закреплённая первая строка, автофильтр, настоящие даты, нативная диаграмма «Взаимодействия по КАМам»; значения, начинающиеся с `=`, пишутся текстом |
+| `pdf` | Отчёт для заказчика (fpdf2): стр. 1 — KPI с дельтами, выводы, конверсия по этапам; стр. 2 — разрез по КАМам, где застревают, студенты на программах; дальше — детализация по КАМам. Образ без fpdf2 — `422` |
+| `csv`, `json` | Плоский лист «Заявки» общими писателями выгрузки |
 
 ---
 
@@ -957,6 +1333,8 @@ B2C-заявка контрагента `counterparty_id`.
 | `GET /notifications/channels` | Справочник каналов и их состояния | все |
 | `GET /notifications` | In-app лента уведомлений; фильтр `unread=true` | все |
 | `POST /notifications/read` | `{"ids": ["…"]}` или `{"all": true}` | все |
+| `GET /notifications/rules` | Правила адресации событий: событие → получатель (`responsible`, `manager_of_responsible`, `role`, `user`, `tg_username`, `email`) → канал (`telegram`, `email`, `max`) | `notification_rules:read` (admin, head_kam) |
+| `POST /notifications/rules` / `PATCH …/{rule_id}` / `DELETE …/{rule_id}` | CRUD правила. Получатели правила `role` — активные пользователи с ролью, которые видят заявку события (процесс и область записей, §12.2) | `notification_rules:write` (admin) |
 
 `GET /notifications/settings` → `PUT` тем же телом:
 
@@ -1114,7 +1492,8 @@ KAM; ступень 2 (1.5×порога) — его `manager_id` (руково�
 ### 10.1. Справочники через диалог (JSON/таблицы)
 
 Требование кейсодержателя: разовая предзагрузка данных «через диалоговое окно в админке
-(JSON / таблицы)». Два пути, оба **только admin**:
+(JSON / таблицы)». Два пути, оба **только admin** (права `admin:dictionaries` и
+`import:dictionaries`):
 
 1. **JSON напрямую** — `POST /admin/dictionaries/{name}/import` с телом
    `{"items": [ {…}, {…} ], "update_strategy": "upsert"}` → `200 {"created": 120, "updated": 15, "failed": 0, "errors": []}`.
@@ -1133,18 +1512,21 @@ KAM; ступень 2 (1.5×порога) — его `manager_id` (руково�
 
 ### 10.2. Пользователи
 
-Источник пользователей — Keycloak (realm import с преднастроенными пользователями). Backend
-синхронизирует профиль в PG при первом входе (по `sub`). Админка:
+Источник учётных записей — Keycloak (realm import с преднастроенными пользователями): он
+отвечает только за вход. Backend создаёт зеркало `app_user` при первом входе (по `sub`),
+роли токена становятся стартовым назначением; дальше роли назначаются в CRM (§10.5).
+Пользователь без ролей CRM виден в списке (`no_roles: true`) и до назначения роли получает `403`.
 
-| Метод/путь | Описание | Роли |
+| Метод/путь | Описание | Право (по умолчанию) |
 |---|---|---|
-| `GET /admin/users` | Список из PG-реплики (`id, username, full_name, email, roles, manager_id, telegram_linked, last_login_at`); фильтр `role` | admin, head_kam (read) |
-| `PATCH /admin/users/{id}` | Только `{"manager_id": "u-uuid"}` — иерархия для эскалаций. Роли меняются в Keycloak, не через CRM API | admin |
-| `POST /admin/users/sync` | Принудительная синхронизация списка из Keycloak Admin API | admin |
+| `GET /admin/users` | Список из PG-зеркала: `id, username, full_name, email, roles, role_names, no_roles, manager_id, telegram_linked, tg_username, is_active, last_login_at, version`. Фильтры: `role` (код роли), `permission` (у кого есть право через роли, например `requests:kam` — выбор КАМа; неизвестный код — `400`), `no_roles=true`, `search` | `admin:users` (admin, head_kam) |
+| `PATCH /admin/users/{id}` | `{"manager_id": "u-uuid", "version": N}` — руководитель для эскалаций | `admin:users_write` (admin) |
+| `PUT /admin/users/{id}/roles` | Назначить роли в CRM (§10.5) | `admin:roles` (admin) |
+| `POST /admin/users/sync` | Синхронизация зеркала из Keycloak Admin API: ФИО, email, активность. Роли существующих пользователей не трогает; новые получают стартовое назначение из системных ролей realm или пустой список. Ответ `{synced, created, updated, without_roles}` | `admin:users_write` (admin) |
 
 ### 10.3. Настройки системы
 
-`GET /admin/settings` / `PUT /admin/settings` (admin):
+`GET /admin/settings` / `PUT /admin/settings` (право `admin:settings`, по умолчанию admin):
 
 ```json
 {
@@ -1157,15 +1539,106 @@ KAM; ступень 2 (1.5×порога) — его `manager_id` (руково�
 ```
 
 `stuck_threshold_days` — настраиваемый порог «зависания» (1–2 недели по кейсодержателю;
-допустимые значения 1..60). `integration_mode`: `http | stream` (§13.7).
+допустимые значения 1..60). `integration_mode` — только `"http"`: события доставляет outbox
+PostgreSQL по HTTP + HMAC (§13.7); любое другое значение — `400 validation_error`. Поле
+оставлено в GET/PUT для совместимости. `file_delivery` — `proxy | presigned` (§3.2).
 
 ### 10.4. Аудит и DLQ интеграций
 
-| Метод/путь | Описание | Роли |
+| Метод/путь | Описание | Право (по умолчанию) |
 |---|---|---|
-| `GET /admin/audit-log` | Фильтры: `entity_type`, `entity_id`, `actor_id`, `from`, `to`, `action` | admin, observer |
-| `GET /admin/integration/events` | Журнал интеграционных событий (§13): фильтры `direction`, `system`, `status` (`delivered/retrying/dead`) | admin, observer |
-| `POST /admin/integration/events/{event_id}/retry` | Повторить доставку события из DLQ | admin |
+| `GET /admin/audit-log` | Фильтры: `entity_type`, `entity_id`, `actor_id`, `from`, `to`, `action` | `admin:audit` (admin, observer) |
+| `GET /admin/integration/events` | Журнал интеграционных событий (§13): фильтры `direction`, `system`, `status` (`delivered/retrying/dead`) | `admin:audit` (admin, observer) |
+| `POST /admin/integration/events/{event_id}/retry` | Повторить доставку события из DLQ | `admin:integrations` (admin) |
+
+### 10.5. Роли и права
+
+Роли и права живут в БД CRM; права определяет код (каталог — §12.4), роли настраивает
+администратор без программиста. Все эндпоинты, кроме `GET /roles`, — право `admin:roles`
+(по умолчанию только admin).
+
+| Метод/путь | Описание |
+|---|---|
+| `GET /roles` | Каталог ролей для любого пользователя CRM: `{items: [{code, name, description, is_system, workflow_types, record_scope, transition_workflow_types}]}` — подписи ролей и выбор ролей переходов в конструкторе (`transition_workflow_types` — процессы, где роль может выполнять переходы) |
+| `GET /admin/permissions` | Каталог прав по группам: `{groups: [{code, name, permissions: [{code, name, description, scoped, requires}]}]}` |
+| `GET /admin/roles` | Роли с правами и числом пользователей; системные — первыми |
+| `GET /admin/roles/{role_id}` | Роль + `users` (кому назначена) + `coverage` (по процессу: сколько переходов ограничено ролями и сколько из них разрешено этой роли) + `differs_from_default` (системная роль отличается от набора по умолчанию) |
+| `POST /admin/roles` | Создать свою роль → `201` |
+| `PATCH /admin/roles/{role_id}` | Изменить название, описание, права, процессы, область записей; `version` обязателен |
+| `POST /admin/roles/{role_id}/reset` | Сбросить системную роль к набору по умолчанию: `{"version": N}` |
+| `DELETE /admin/roles/{role_id}` | Удалить свою роль → `204` |
+| `PUT /admin/users/{user_id}/roles` | Назначить роли пользователю (полная замена списка): `{"roles": ["kam_b2c"], "version": N}` → пользователь как в §10.2 |
+
+Создание роли:
+
+```json
+{
+  "code": "analyst",
+  "name": "Аналитик",
+  "description": "Отчёты по всем КАМам без правки заявок",
+  "permissions": ["requests:read", "reports:read", "reports:all", "export:run"],
+  "workflow_types": ["b2b", "b2c"],
+  "record_scope": "all"
+}
+```
+
+Ответ (роль):
+
+```json
+{
+  "id": "role-uuid",
+  "code": "kam_b2c",
+  "name": "КАМ B2C",
+  "description": "Права КАМа только в процессе B2C (физлица и юрлица)",
+  "is_system": false,
+  "is_locked": false,
+  "workflow_types": ["b2c"],
+  "record_scope": "all",
+  "permissions": ["requests:read", "requests:write", "…"],
+  "permissions_count": 28,
+  "users_count": 1,
+  "created_at": "…", "updated_at": "…",
+  "version": …
+}
+```
+
+Правила валидации:
+- `code` — `^[a-z][a-z0-9_]{1,39}$`, неизменяем (хранится в `app_user.roles` и `allowed_roles`
+  переходов); коды `svc_*`, `offline_access`, `uma_authorization` зарезервированы за Keycloak;
+- `name` — 2–60 символов; код и название (без учёта регистра) уникальны — иначе `409 role_exists`;
+- `permissions` — только коды каталога (`400`, `details[].code = unknown_permission`) и с
+  зависимостями (`permission_dependency`, в `details` — `permission` и `requires`); до 100 кодов;
+- `workflow_types` — непустое подмножество `b2b`, `b2c`; `record_scope` — `all` (все заявки
+  процессов) или `own` (только где пользователь ответственный), по умолчанию `all`;
+- `PUT …/roles` — только существующие коды (`unknown_role`), без повторов (`duplicate_role`),
+  не больше 10;
+- `version` — optimistic lock (`409 stale_version`).
+
+Защита от потери управления:
+- все мутации RBAC — в одной транзакции под advisory-локом `hashtextextended('rbac', 0)`:
+  двое администраторов не снимут права друг с друга одновременно;
+- `admin` — системная заблокированная роль: её права и область не меняются, сброс тоже
+  недоступен (`409 role_locked`); синхронизация каталога с кодом (`seed_rbac_catalog`)
+  возвращает ей набор из кода;
+- системную роль удалить нельзя (`409 role_system`); свою — только если она никому не
+  назначена и не указана в `allowed_roles` переходов (`409 role_in_use`, в `details` — число
+  пользователей и список переходов);
+- после любого изменения остаётся хотя бы один активный пользователь с `admin:roles`, а
+  снять это право с себя нельзя (`409 access_lockout`);
+- удаление роли берёт эксклюзивные локи воронок b2b → b2c (после RBAC-лока): применение
+  пакета схемы не добавит её код в переходы в момент удаления. Воронка занята дольше 30 с —
+  `409 workflow_busy` с `Retry-After`, роль не удалена.
+
+После COMMIT: локальный сброс кэша каталога ролей и SSE `access.changed`
+(`{role_codes, user_ids}`): каждая реплика сбрасывает кэш (pub/sub `crm:v1:events`),
+открытые интерфейсы перечитывают `/auth/me`. Без KeyDB кэш каталога живёт не дольше TTL —
+5 с (`RBAC_CATALOG_TTL_SECONDS`); назначения пользователя читаются из БД на каждом запросе.
+Аудит: `role.created`, `role.updated` (`permissions_added`/`permissions_removed`), `role.reset`,
+`role.deleted`, `user.roles_changed`.
+
+Аварийный вход, если в CRM не осталось администратора, — CLI в контейнере backend:
+`python -m app.tools.rbac grant-admin <username>` (назначить `admin`, аудит с
+`after.source = "cli"`) и `python -m app.tools.rbac list-admins`.
 
 ---
 
@@ -1178,14 +1651,14 @@ KAM; ступень 2 (1.5×порога) — его `manager_id` (руково�
 
 ```
 POST /api/v1/internal/jobs/check-stuck-requests
-X-Internal-Token: <из K8s Secret internal-job-token>
-Idempotency-Key: <генерирует CronJob: uuidgen>
+X-Internal-Token: <из K8s Secret crm-internal, ключ INTERNAL_API_TOKEN>
 ```
 
-Защита: сравнение токена (constant-time) со значением из env `INTERNAL_JOB_TOKEN`
+Защита: сравнение токена (constant-time) со значением из env `INTERNAL_API_TOKEN`
 (K8s Secret; в compose — из `.env`). Неверный/отсутствующий токен → `401`. Дополнительно
 NetworkPolicy ограничивает источник кластером. Keycloak не используется намеренно —
-CronJob остаётся тривиальным `curl` (демо-стори для жюри).
+CronJob остаётся тривиальным `curl`. `Idempotency-Key` CronJob не передаёт: заголовок
+необязателен (§1.6), повторный запуск безопасен благодаря `dedup_key` уведомлений.
 
 Логика: выбрать заявки в нетерминальных статусах, где
 `now() - status_updated_at > threshold`, `threshold = coalesce(status.stuck_threshold_days,
@@ -1215,68 +1688,225 @@ workflow.stuck_threshold_days, settings.stuck_threshold_days)` → помети�
 | Метод/путь | Auth | Описание |
 |---|---|---|
 | `POST /internal/jobs/purge-deleted` | `X-Internal-Token` | Физическое удаление soft-deleted старше 30 дней (152-ФЗ), CronJob раз в сутки |
+| `POST /internal/jobs/purge-idempotency-keys` | `X-Internal-Token` | Физическое удаление просроченных ключей `Idempotency-Key` (TTL 24 ч, §1.6) пачками по 5 000 по `expires_at`; CronJob `idempotency-purge` ежечасно (`15 * * * *`). Ответ `{"purged": N, "duration_ms": N}`. Сохранённые ответы мутаций — ПДн-шифртекст, дольше срока не храним |
 | `POST /internal/jobs/outbox-relay` | `X-Internal-Token` | Принудительный прогон outbox-доставки (§13.7); обычно relay работает фоновой задачей внутри backend, эндпоинт — для отладки |
 | `/internal/bot/*` | Bearer, роль `svc_notification` | §9.2–9.3 |
 
 ---
 
-## 12. RBAC-матрица
+## 12. RBAC: роли, права, области B2B/B2C
 
-### 12.1. Роль × эндпоинты
+Доступ определяют права, а не коды ролей: каждый эндпоинт требует право (§12.1), права с
+областью действуют только в процессах роли и с её областью записей (§12.2). Роли и их права
+хранятся в БД CRM и настраиваются администратором (§12.3, §10.5); наборы четырёх системных
+ролей по умолчанию — §12.4.
 
-Обозначения: **C**reate / **R**ead / **U**pdate / **D**elete / **X** — спецоперация; `—` — 403.
+### 12.1. Эндпоинт → право
 
-| Модуль / операция | admin | head_kam | kam | observer | svc_notification | svc_integration |
+«Вход» — любой пользователь с хотя бы одной ролью CRM. Права с областью проверяются в
+процессе объекта (§12.2).
+
+| Модуль | Эндпоинты | Право | Дополнительно в обработчике |
+|---|---|---|---|
+| Профиль, UI | `GET /auth/me`, `GET /roles`, `GET /events/stream`, `/ui/presets*`, `GET /search`, `GET /flags`, `GET /workflows`, `GET /workflows/{id}`, `GET /files/{id}/download` | вход | поиск — группы по праву чтения и области заявок; схема процесса — §12.2; скачивание — §3.2 |
+| Заявки | `GET /requests`, `/requests/board`, `/requests/{id}`, `…/history`, `…/transitions`, `…/comments`, `…/files` | `requests:read` | область; заявка вне области — `404`, доска процесса вне области — `403` |
+| | `POST /requests` | `requests:write` | в процессе заявки; другой ответственный — `requests:assign_any` |
+| | `PATCH /requests/{id}` | `requests:write` | чужая заявка — `requests:write_any` |
+| | `POST /requests/{id}/assign` | `requests:assign` | назначить другого — `requests:assign_any` |
+| | `POST /requests/{id}/transitions` | `requests:transition` | чужая заявка — `requests:write_any`; `allowed_roles` перехода |
+| | `POST /requests/{id}/reopen` | `requests:reopen` | в процессе заявки |
+| | `DELETE /requests/{id}` | `requests:delete` | в процессе заявки |
+| | `POST /requests/{id}/comments`, `DELETE …/comments/{cid}` | `comments:write` | удалить чужой комментарий — `comments:delete_any` |
+| | `POST /requests/{id}/files`, `DELETE …/files/{fid}` | `requests:files` | удалить чужой файл — `requests:write_any` |
+| Конструктор | `POST /workflows/{id}/impact-preview`, `POST /workflows/{id}/changes` | `workflow:change` | безопасный пакет автора с `workflow:approve` применяется сразу |
+| | `GET /workflows/{id}/changes`, `GET /workflows/changes/{chid}` | `workflow:history` | |
+| | `POST /workflows/changes/{chid}/approve`, `…/reject` | `workflow:approve` | |
+| Вузы | `GET /universities`, `…/{id}`, `…/{id}/contacts` | `universities:read` | |
+| | `POST /universities`, `PATCH …/{id}`, `POST`/`PATCH` контактов | `universities:write` | чужой вуз (КАМ — другой) — `crm:write_any` |
+| | `DELETE /universities/{id}` | `universities:delete` | |
+| | `DELETE /universities/{id}/contacts/{cid}` | `contacts:delete` | |
+| Договоры | `GET /contracts`, `…/{id}`, `…/{id}/files` | `contracts:read` | |
+| | `POST /contracts`, `PATCH …/{id}`, `POST …/{id}/files` | `contracts:write` | чужой договор — `crm:write_any` |
+| | `DELETE /contracts/{id}` | `contracts:delete` | |
+| | `DELETE /contracts/{id}/files/{fid}` | `contracts:files_delete` | |
+| Продукты | `GET` / `POST`, `PATCH` / `DELETE` | `products:read` / `products:write` / `products:delete` | |
+| Программы | `GET` / `POST`, `PATCH` / `PATCH …/priority`, `POST …/priorities/reorder` / `DELETE` | `programs:read` / `programs:write` / `programs:priority` / `programs:delete` | |
+| Студенты | `GET /students`, `…/{id}`, `…/{id}/history` | `students:read` | ПДн всегда маскированы |
+| | `POST /students`, `PATCH …/{id}`, `POST …/{id}/status` | `students:write` | |
+| | `POST /students/{id}/reveal` | `students:reveal` | аудит `student.pii_revealed` |
+| | `GET`, `POST /students/{id}/files` | `students:files` | |
+| | `DELETE /students/{id}/files/{fid}` | `students:files_delete` | |
+| | `DELETE /students/{id}` | `students:delete` | |
+| Активности | `GET /activities` / `POST`, `PATCH`, `DELETE` / участники | `activities:read` / `activities:write` / `activities:participants` | |
+| Импорт | `/import/sessions*` | `import:run` | `dictionary:*` — `import:dictionaries`; чужие сессии — `files:others` |
+| Экспорт | `/export/jobs*` | `export:run` | плюс право чтения сущности (§7.1); чужие выгрузки — `files:others` |
+| Отчёты | `/reports/*`, включая `kam-activity` | `reports:read` | область; «все КАМы» — `reports:all` |
+| Уведомления | `GET /notifications`, `POST …/read`, `/notifications/settings`, `…/test`, `…/channels`, `…/telegram/*` | `notifications:self` | |
+| | `GET /notifications/rules` | `notification_rules:read` | |
+| | `POST`, `PATCH`, `DELETE /notifications/rules*` | `notification_rules:write` | |
+| Админка | `GET /admin/users` | `admin:users` | |
+| | `PATCH /admin/users/{id}`, `POST /admin/users/sync` | `admin:users_write` | |
+| | `PUT /admin/users/{id}/roles`, `/admin/roles*`, `GET /admin/permissions` | `admin:roles` | защита от потери управления (§10.5) |
+| | `/admin/settings` | `admin:settings` | |
+| | `/admin/feature-flags*` | `admin:flags` | |
+| | `/admin/dictionaries*` | `admin:dictionaries` | |
+| | `GET /admin/audit-log`, `GET /admin/integration/events` | `admin:audit` | |
+| | `POST /admin/integration/events/{eid}/retry` | `admin:integrations` | |
+
+### 12.2. Область B2B/B2C и правила видимости
+
+- **Заявки** — список, доска, поиск, карточка, история, комментарии, файлы — только в области
+  `requests:read`: процессы ролей плюс область записей (`all` / `own`). Системные роли по
+  умолчанию действуют в обеих воронках со всеми записями: kam читает все заявки, а пишет свои.
+- **Объект вне области — `404 not_found`**, а не `403`: карточка, история, переходы,
+  комментарии, файлы заявки, скачивание файла заявки и вложения её комментария.
+  Существование чужой заявки не раскрывается.
+- **Коллекция в процессе вне области — `403`** с текстом «Процесс B2C недоступен вашей роли»:
+  доска (`GET /requests/board?workflow_type=…`), создание заявки, отчёт «Активность КАМов» и
+  его выгрузка. Список `GET /requests?workflow_type=…` вне области и общие отчёты §7.2
+  возвращают пустую выборку.
+- **Действие над видимой заявкой без права в её процессе — `403`** («Перевод заявок процесса
+  B2B недоступен вашей роли»). Чужая заявка: правка полей и переходы — с `requests:write_any`,
+  иначе `403` «Изменять заявку может только её ответственный» / «Переход доступен только
+  ответственному по заявке». Переход дополнительно сверяется с `allowed_roles` ребра (§4.3).
+- **Назначение ответственного:** без `requests:assign_any` — только взять «свободную» заявку
+  на себя; новый ответственный обязан видеть процесс заявки (`400`, `workflow_not_allowed`).
+- **Отчёты:** область `reports:read`; «все КАМы» — при `reports:all` и записях `all` в процессе,
+  иначе только свои заявки. Ключ кэша отчётов включает область (`b2b:*|b2c:<uuid>`).
+- **Схемы процессов** видны при `workflow:read` или `requests:read` в процессе; чужая — `404`.
+  Пакет изменений процесса, схема которого не видна, — `404`; право есть, но не в этом
+  процессе — `403`.
+- **Вузы и договоры** читают все с правом `*:read`; правка чужих (ответственный — другой
+  КАМ) — с `crm:write_any`, иначе `403` «Изменять можно только объекты, где вы ответственный».
+- **ПДн:** студенты — всегда маскированы, раскрытие — `students:reveal` с аудитом; контакты
+  B2C-клиентов без `clients:pii` (observer) — маскированы.
+- **Файлы:** договоров, студентов, заявок и вложений комментариев скачиваются с `files:business`;
+  исходники импорта и результаты выгрузок — автору или с `files:others`.
+- **Telegram-бот** (§9.3): «мои заявки» — только свои в процессах ролей; зависшие — с
+  `reports:all` все заявки процессов роли, иначе свои.
+- **Уведомления по правилу `role`** получают активные пользователи с ролью, которые видят
+  заявку события (процесс и область записей).
+- **Фронт** берёт `permissions` и `access` из `/auth/me` и скрывает недоступные разделы и
+  кнопки (`hasPermission(code, wf)`); backend дублирует все проверки — «отображение строго по
+  ролевой модели» проверяется на обоих уровнях.
+
+### 12.3. Модель: роли, права, объединение по процессу
+
+- **Право** — код `<область>:<действие>` из каталога в коде (`backend/app/core/rbac_catalog.py`):
+  60 прав в 8 группах. Права создаёт только программист — право без проверки в коде ничего
+  не значит. Миграция 0004 засевает каталог в `app_permission`; после изменений кода БД
+  приводит к нему идемпотентная синхронизация (`seed_rbac_catalog`: сид, `tools/rbac.py`).
+- **Роль** — набор прав, процессы (`workflow_types`: `b2b`, `b2c`) и область записей
+  (`record_scope`: `all` — все заявки процесса, `own` — только где пользователь ответственный).
+  Системные роли `admin`, `head_kam`, `kam`, `observer` имеют наборы по умолчанию из кода
+  (§12.4), `admin` заблокирована. Свои роли создаёт администратор (§10.5); например, сид
+  стенда заводит `kam_b2b` и `kam_b2c` — права КАМа только в одном процессе.
+- **Назначение** — `app_user.roles` (массив кодов ролей); источник истины — БД CRM (§1.2).
+- **Право с областью** (18 прав: заявки, комментарии, файлы заявок, конструктор процессов,
+  отчёты) действует только в процессах роли и с её областью записей. Остальные права —
+  общие: справочники, студенты, импорт, экспорт, администрирование.
+- **Несколько ролей объединяются по процессу:** в процессе P действуют права с областью тех
+  ролей, у которых P входит в `workflow_types`; записи процесса — `all`, если хоть одна такая
+  роль даёт `all`, иначе `own`. Общие права — объединение всех ролей.
+- **Зависимости** (`requires`): редактор ролей не даст сохранить право без необходимых
+  (например, `requests:write_any` требует `requests:read` и `requests:write`); наборы
+  системных ролей замкнуты по зависимостям.
+- **Проверка.** Каждый эндпоинт закрыт зависимостью `require_permission(<код>)`: для права с
+  областью — «есть хотя бы в одном процессе»; право в процессе конкретного объекта проверяет
+  обработчик. Опечатка в коде права падает при импорте роутера. Каталог ролей (единицы строк)
+  кэшируется в памяти процесса: TTL 5 с, загрузка одним SELECT, сброс по SSE `access.changed`
+  на каждой реплике. Назначения пользователя читаются из БД на каждом запросе.
+- Наборы системных ролей подобраны так, что доступ четырёх базовых ролей к каждому эндпоинту
+  совпадает с прежней матрицей доступа по ролям; регрессия — `tests/test_access_matrix.py`.
+
+### 12.4. Каталог прав и системные роли по умолчанию
+
+«Область» — право с областью B2B/B2C (§12.3); «+» — право в наборе системной роли по
+умолчанию. Итого: admin — 59 (все, кроме `requests:kam`: администратор не попадает в отчёт
+нагрузки КАМов и в выбор КАМа), head_kam — 40, kam — 28, observer — 14. Полный каталог с
+описаниями и зависимостями отдаёт `GET /admin/permissions` (§10.5).
+
+| Право | Название | Область | admin | head_kam | kam | observer |
 |---|---|---|---|---|---|---|
-| `GET /auth/me` | R | R | R | R | — | — |
-| Вузы `/universities` | CRUD | CRU | CRU (свои¹) | R | — | — |
-| Контакты вузов | CRUD | CRUD | CRU | R | — | — |
-| Договоры `/contracts` (+файлы) | CRUD | CRUD | CRU (свои¹) | R (без скачивания файлов) | — | — |
-| Продукты `/products` | CRUD | CRU | R | R | — | — |
-| Программы `/programs` | CRUD | CRU | CRU | R | — | — |
-| Приоритеты программ (`/priority`, `/reorder`) | X | X | X | — | — | — |
-| Заявки: чтение/список/канбан | R | R | R (все²) | R | — | — |
-| Заявки: создание | C | C | C | — | — | — |
-| Заявки: изменение полей | U | U | U (ответственный) | — | — | — |
-| Заявки: переход по статусу | X | X | X (ответственный + `allowed_roles` транзиции) | — | — | — |
-| Заявки: назначение ответственного | X | X | X (только взять свободную на себя) | — | — | — |
-| Заявки: удаление | D | — | — | — | — | — |
-| Комментарии | CRD (любые) | CR + D свои | CR + D свои | — | — | — |
-| Workflow: чтение схемы | R | R | R | R | — | — |
-| Workflow: изменения (`/changes`, `/impact-preview`) | C | C | — | R (списки) | — | — |
-| Workflow: approve/reject | X | — | — | — | — | — |
-| Импорт `/import/*` | X | X | X | — | — | — |
-| Импорт справочников (`dictionary:*`) | X | — | — | — | — | — |
-| Экспорт `/export/*` | X | X | X | X (маскир. ПДн) | — | — |
-| Отчёты `/reports/*` | R | R | R (своя зона²) | R | — | — |
-| Студенты `/students` (все выдачи маскированы) | CRUD | CRU | CRU | R | — | — |
-| Студенты: раскрытие ПДн (`/reveal`, с аудитом) | X | X | X | — | — | — |
-| Студенты: файлы | CRUD | CRU | CRU | — | — | — |
-| UI-инфраструктура (`/events/stream`, `/ui/presets`, `/search`, `/flags`) | X | X | X | X | — | — |
-| Активности `/activities` | CRUD | CRUD | R + участники | R | — | — |
-| Нотификации: свои настройки/лента/тест/TG-код | X | X | X | X | — | — |
-| Админ: справочники | CRUD | — | — | — | — | — |
-| Админ: пользователи | RU | R | — | — | — | — |
-| Админ: настройки | RU | — | — | — | — | — |
-| Админ: аудит, журнал интеграций | R + retry | — | — | R | — | — |
-| `/internal/bot/*` | — | — | — | — | X | — |
-| `/integrations/lms/webhook`, `/integrations/cms/webhook` | — | — | — | — | — | X (или HMAC, §13.6) |
-| `/internal/jobs/*` | — (только X-Internal-Token) | — | — | — | — | — |
+| **Заявки** | | | | | | |
+| `requests:read` | Просмотр заявок, доски и карточек | да | + | + | + | + |
+| `requests:write` | Создание заявок и правка своих | да | + | + | + | — |
+| `requests:write_any` | Правка и переходы по чужим заявкам | да | + | + | — | — |
+| `requests:transition` | Перевод заявок по этапам | да | + | + | + | — |
+| `requests:assign` | Назначение ответственного: взять заявку на себя | да | + | + | + | — |
+| `requests:assign_any` | Назначение любого ответственного | да | + | + | — | — |
+| `requests:kam` | Ведёт портфель заявок как КАМ (отчёт нагрузки, «свободные» заявки) | да | — | — | + | — |
+| `requests:reopen` | Переоткрытие закрытых заявок | да | + | — | — | — |
+| `requests:delete` | Удаление заявок (в архив) | да | + | — | — | — |
+| `comments:write` | Комментарии к заявкам | да | + | + | + | — |
+| `comments:delete_any` | Удаление чужих комментариев | да | + | — | — | — |
+| `requests:files` | Файлы заявок: загрузка и удаление своих | да | + | + | + | — |
+| `clients:pii` | Контакты клиентов B2C без маскирования | — | + | + | + | — |
+| **Конструктор процессов** | | | | | | |
+| `workflow:read` | Просмотр схемы процесса | да | + | + | + | + |
+| `workflow:history` | История и пакеты изменений схемы | да | + | + | — | + |
+| `workflow:change` | Правка схемы: черновик и пакет изменений | да | + | + | — | — |
+| `workflow:approve` | Согласование и публикация изменений схемы | да | + | — | — | — |
+| **Вузы, договоры, продукты, программы** | | | | | | |
+| `universities:read` | Просмотр вузов и контактов | — | + | + | + | + |
+| `universities:write` | Создание и правка вузов и контактов | — | + | + | + | — |
+| `universities:delete` | Удаление вузов | — | + | — | — | — |
+| `contacts:delete` | Удаление контактов вуза | — | + | + | — | — |
+| `contracts:read` | Просмотр договоров | — | + | + | + | + |
+| `contracts:write` | Создание и правка договоров, загрузка файлов | — | + | + | + | — |
+| `contracts:delete` | Удаление договоров | — | + | — | — | — |
+| `contracts:files_delete` | Удаление файлов договоров | — | + | + | — | — |
+| `crm:write_any` | Правка чужих вузов и договоров (КАМ — другой) | — | + | + | — | — |
+| `products:read` | Просмотр продуктов | — | + | + | + | + |
+| `products:write` | Создание и правка продуктов | — | + | + | — | — |
+| `products:delete` | Удаление продуктов | — | + | — | — | — |
+| `programs:read` | Просмотр программ | — | + | + | + | + |
+| `programs:write` | Создание и правка программ | — | + | + | + | — |
+| `programs:priority` | Ручная приоритизация программ | — | + | + | + | — |
+| `programs:delete` | Удаление программ | — | + | — | — | — |
+| `files:business` | Скачивание файлов договоров, студентов и заявок | — | + | + | + | — |
+| **Пул талантов и активности** | | | | | | |
+| `students:read` | Просмотр студентов (ПДн маскированы) | — | + | + | + | + |
+| `students:write` | Создание и правка студентов, смена статуса | — | + | + | + | — |
+| `students:reveal` | Раскрытие ПДн студента (с записью в аудит) | — | + | + | + | — |
+| `students:files` | Файлы студентов: просмотр и загрузка | — | + | + | + | — |
+| `students:files_delete` | Удаление файлов студентов | — | + | + | — | — |
+| `students:delete` | Удаление студентов | — | + | — | — | — |
+| `activities:read` | Просмотр активностей и расписания | — | + | + | + | + |
+| `activities:write` | Создание и правка активностей | — | + | + | — | — |
+| `activities:participants` | Запись студентов на активности | — | + | + | + | — |
+| **Аналитика и экспорт** | | | | | | |
+| `reports:read` | Дашборды и отчёты | да | + | + | + | + |
+| `reports:all` | Отчёты по всем КАМам (иначе — только по своим заявкам) | да | + | + | — | + |
+| `export:run` | Экспорт данных (ПДн маскируются по правам) | — | + | + | + | + |
+| **Импорт** | | | | | | |
+| `import:run` | Мастер импорта данных | — | + | + | + | — |
+| `import:dictionaries` | Импорт справочников через мастер | — | + | — | — | — |
+| **Уведомления** | | | | | | |
+| `notifications:self` | Личные уведомления и привязка Telegram | — | + | + | + | + |
+| `notification_rules:read` | Просмотр правил уведомлений и порогов | — | + | + | — | — |
+| `notification_rules:write` | Настройка правил уведомлений | — | + | — | — | — |
+| **Администрирование** | | | | | | |
+| `admin:users` | Список пользователей | — | + | + | — | — |
+| `admin:users_write` | Руководители для эскалаций, синхронизация с Keycloak | — | + | — | — | — |
+| `admin:roles` | Роли и права, назначение ролей | — | + | — | — | — |
+| `admin:settings` | Системные настройки и пороги | — | + | — | — | — |
+| `admin:dictionaries` | Справочники | — | + | — | — | — |
+| `admin:flags` | Фичефлаги | — | + | — | — | — |
+| `admin:audit` | Журнал аудита и интеграций (чтение) | — | + | — | — | + |
+| `admin:integrations` | Повтор доставки интеграций | — | + | — | — | — |
+| `files:others` | Импорты, выгрузки и служебные файлы других пользователей | — | + | — | — | — |
 
-¹ «свои» для kam: объекты, где он ответственный (`kam_id`/`assignee_id`), — на запись;
-на чтение kam видит всё (решение: не переусложнять, п.2 PLAN — «не более двух параллельных
-взаимодействий, разные роли»; коллеги должны видеть контекст вуза).
-² зона видимости для агрегатов kam — его заявки/вузы; списки заявок он видит все, но фильтр
-`assignee_id=me` — дефолт в UI.
+### 12.5. Сервисные доступы
 
-### 12.2. Правила видимости (сводно)
+| Доступ | Кто | Эндпоинты |
+|---|---|---|
+| JWT client credentials, роль `svc_notification` (клиент `crm-notification`) | Telegram-бот | `/internal/bot/*` (§9.2–9.3) |
+| HMAC `X-Webhook-Signature` или JWT с ролью `svc_integration` (клиент `crm-integration`) | lms-stub, cms-stub | `/integrations/lms/webhook`, `/integrations/cms/webhook` (§13.6) |
+| `X-Internal-Token` | K8s CronJob | `/internal/jobs/*` (§11) |
 
-- `admin`, `head_kam`, `observer` — видят всё (observer — с маскированием ПДн, без файлов студентов).
-- `kam` — читает всё, **пишет** только объекты, где он ответственный (или неназначенные заявки — может взять).
-- Ответ `404` (не `403`) для объектов, которые роль не должна видеть вовсе (сейчас таких нет,
-  правило зафиксировано на будущее).
-- Фронт получает `permissions` из `/auth/me` и скрывает недоступные разделы/кнопки; backend
-  дублирует все проверки — «отображение строго по ролевой модели» проверяется на обоих уровнях.
+Сервисные роли — только в Keycloak: в каталог ролей CRM они не входят, коды `svc_*`
+зарезервированы.
 
 ---
 
@@ -1476,61 +2106,66 @@ X-Webhook-Signature: sha256=<hex HMAC>
   через Keycloak. Для реального контракта заказчика останется выбрать один из двух.
 - **Push из CRM** в заглушки подписывается тем же HMAC (симметрично), заглушки проверяют.
 
-### 13.7. Надёжность: outbox, ретраи, DLQ, асинхронная шина (KeyDB Streams)
+### 13.7. Надёжность и транспорт: outbox PostgreSQL → HTTP + HMAC, ретраи, DLQ
 
-**Outbox (синхронный HTTP-режим, по умолчанию, `integration_mode: "http"`).**
-Событие пишется в `integration_event (direction='outbound', status='pending')` **в той же
-транзакции**, что и бизнес-изменение (переход заявки и т.п.). Фоновый relay в backend
-(asyncio-задача, период 5 с) забирает `pending/retrying` с `next_retry_at <= now()` и шлёт HTTP.
+**Outbox — источник истины.** Исходящее событие пишется в `integration_event
+(direction='outbound', status='pending')` **в той же транзакции**, что и бизнес-изменение
+(переход заявки, изменение программы): нет COMMIT — нет события; есть COMMIT — событие не
+потеряется при падении процесса. Фоновый relay в backend (asyncio-задача в lifespan, период
+5 с) берёт до 50 событий `pending`/`retrying` с `next_retry_at <= now()` под
+`FOR UPDATE SKIP LOCKED` — реплики не берут одно событие дважды. Бизнес-транзакция внешнюю
+систему не ждёт: доставка асинхронная. Принудительный прогон — `POST /internal/jobs/outbox-relay`
+(§11.2).
 
-- Ретраи только на сетевые ошибки и 5xx: backoff 1 мин → 5 мин → 30 мин → 2 ч → 6 ч (5 попыток).
-- 4xx — не ретраим, сразу `status='dead'` (ошибка контракта, чинится руками).
-- После исчерпания — `status='dead'` (DLQ); просмотр и ручной retry — §10.4;
-  admin получает нотификацию `integration.delivery_failed`.
+**Транспорт** — протокол `IntegrationTransport` (`backend/app/core/integration_transport.py`):
+доставить одно событие и классифицировать исход. Реализация — `HttpIntegrationTransport`:
+`POST` конверта §13.1 по адресу из типа события, заголовок
+`X-Webhook-Signature: sha256=HEX(HMAC_SHA256(secret, raw_body))`, секрет — по системе-получателю
+(`LMS_WEBHOOK_SECRET`, `CMS_WEBHOOK_SECRET`), таймаут 10 с.
 
-**Асинхронная шина (режим `integration_mode: "stream"`)** — облегчённая «шина данных»
-на KeyDB Streams (кейсодержатель явно допустил «можно асинхронно через шину»):
+| `event_type` | Адрес |
+|---|---|
+| `crm.request.handed_over` | `{LMS_BASE_URL}/api/v1/enrollments` |
+| `crm.program.upserted` | `{LMS_BASE_URL}/api/v1/programs/upsert` |
+| `crm.program.published` | `{CMS_BASE_URL}/api/v1/catalog/upsert` |
+| `crm.program.unpublished` | `{CMS_BASE_URL}/api/v1/catalog/unpublish` |
 
-> **Roadmap.** В текущей реализации relay работает только в режиме `http`;
-> настройка `integration_mode` в `/admin/settings` валидируется и сохраняется,
-> но транспорт `stream` ещё не переключает — схема ниже описывает целевое
-> устройство шины.
-
-| Stream | Producer | Consumer group |
+| Исход | Когда | Что происходит |
 |---|---|---|
-| `bus:crm:lms` | backend relay | `lms-stub` |
-| `bus:lms:crm` | lms-stub | `crm-backend` |
-| `bus:crm:cms` | backend relay | `cms-stub` |
-| `bus:cms:crm` | cms-stub | `crm-backend` |
+| `delivered` | Ответ 2xx | `status='delivered'`, `processed_at`; внешние id из ответа (`lms_enrollment_id`, `cms_external_id`) сохраняются в `external_link` |
+| `retry` | Сетевая ошибка, 5xx | `attempts + 1`, `status='retrying'`, `next_retry_at` по расписанию 1 мин → 5 мин → 30 мин → 2 ч → 6 ч |
+| `dead` (DLQ) | 4xx (ошибка контракта), неизвестный тип события, исчерпаны 5 повторов | `status='dead'`, `last_error`; событие `integration.delivery_failed` в outbox уведомлений (получатели — по правилам уведомлений) |
 
-Механика: `XADD bus:crm:lms * event <json-конверт §13.1>`; потребитель —
-`XREADGROUP GROUP <cg> <consumer> BLOCK 5000 COUNT 10 STREAMS <stream> >`, после успешной
-обработки `XACK`. Необработанные (PEL) старше 10 мин перехватываются `XAUTOCLAIM` любым
-живым консьюмером; после 5 неудачных обработок — `XADD bus:dlq * …` + запись в
-`integration_event(status='dead')`. Конверт, идемпотентность и состав payload — **те же**,
-меняется только транспорт; режим переключается настройкой §10.3 без изменения кода обработчиков.
+Итого до 6 попыток: первая и 5 повторов. 4xx не ретраится — это ошибка контракта, её чинят
+руками. Журнал и ручной повтор из DLQ — §10.4 (`admin:audit`, `admin:integrations`).
+
+**Настройка `integration_mode`** (`/admin/settings`, §10.3) принимает только `"http"`; миграция
+0003 привела ранее сохранённое значение к `http`.
+
+**Почему без KeyDB Streams.** Режим `stream` убран осознанно:
+- KeyDB в контуре эфемерный (`emptyDir`, падение кэша не роняет CRM) — шина на нём теряет
+  события при рестарте;
+- вторая очередь рядом с outbox — dual-write: событие может попасть в одну и не попасть в другую;
+- гарантию доставки уже даёт outbox в PostgreSQL, а асинхронность — фоновый relay.
+
+**Корпоративная шина в проде.** Kafka или ESB заказчика подключается новой реализацией
+`IntegrationTransport` — без смены конверта, outbox, ретраев и DLQ. Ключ сообщения — `event_id`
+конверта: получатель дедуплицирует по нему (§13.5). Outbox остаётся источником истины.
 
 ```mermaid
 flowchart LR
     subgraph CRM[backend CRM]
       TX[Бизнес-транзакция] --> OB[(outbox: integration_event)]
-      OB --> RL[Relay]
+      OB --> RL["Relay: 5 с, SKIP LOCKED"]
+      RL --> TR{{"IntegrationTransport"}}
       WH[/POST /integrations/lms/webhook\nPOST /integrations/cms/webhook/]
     end
-    subgraph Transport[Транспорт - переключается настройкой]
-      HTTP{{"HTTP push + HMAC"}}
-      KS[("KeyDB Streams: bus:*")]
-    end
-    RL -->|integration_mode=http| HTTP
-    RL -->|integration_mode=stream| KS
-    HTTP --> LMS[lms-stub :8020]
-    HTTP --> CMS[cms-stub :8030]
-    KS --> LMS
-    KS --> CMS
-    LMS -->|lms.learning.*| WH
-    CMS -->|cms.lead.created| WH
-    LMS -.->|stream-режим: bus:lms:crm| KS2[("KeyDB Streams")] -.-> CRM
-    CMS -.->|bus:cms:crm| KS2
+    TR -->|HTTP POST + HMAC| LMS[lms-stub :8020]
+    TR -->|HTTP POST + HMAC| CMS[cms-stub :8030]
+    TR -.->|прод: новая реализация| BUS[("Шина заказчика: Kafka / ESB")]
+    RL -->|"4xx или 5 повторов"| DLQ[("DLQ: status dead, §10.4")]
+    LMS -->|lms.learning.*, HMAC| WH
+    CMS -->|cms.lead.created, HMAC| WH
 ```
 
 ```mermaid
@@ -1564,21 +2199,21 @@ sequenceDiagram
 | Два workflow B2B и B2C; в B2C добавляются новые варианты взаимодействия | §4 (`workflow_type`), §5.1, §5.3 (`add_status`/`add_transition`) |
 | Workflow един для всех, версионирование запрещено, изменения сразу для всех | §5.1, §5.4 (применение в одной транзакции, без версий) |
 | Ветвления и возвраты на предыдущие шаги | §5.1 (`kind: forward/return/reject`), §4.3 |
-| Изменение «на лету»: заявки сопоставляются на новую схему, работа не встаёт | §5.4 (миграция + история `migrated`) |
-| Переименование/удаление статуса — только с апрувом администратора | §5.3 (классы операций), §5.2 (`approve` — только admin) |
+| Изменение «на лету»: заявки сопоставляются на новую схему, работа не встаёт | §5.4 (пакетный перенос под коротким локом воронки, история `migrated`, сводные уведомления; `409 workflow_busy` вместо долгого ожидания) |
+| Переименование/удаление статуса — только с апрувом администратора | §5.3 (классы операций), §5.2 (`approve` — право `workflow:approve`, по умолчанию только admin) |
 | При удалении статуса заявки переносятся на соседний (лучше предыдущий) | §5.3 (`migrate_to_status_id`, дефолт — предыдущий по `position`) |
 | Один вуз: договор один, продуктов несколько; не переусложнять | §3.2 (`warning_duplicate`), §3.1/§3.3 |
-| Keycloak self-hosted, RBAC по ролям; UI строго по ролям | §1.2, §2 (`permissions`), §12 |
+| Keycloak self-hosted, RBAC по ролям; UI строго по ролям | §1.2 (Keycloak — вход, роли и права — в CRM), §2.1 (`permissions`, `access`), §10.5 (роли и права без программиста), §12 (права, области B2B/B2C) |
 | Двусторонние интеграции LMS/CMS на заглушках; двусторонность проверяется | §13.2–13.4 (все 4 направления) |
-| JSON по API; можно асинхронно через шину; состав: статус, ответственный, вуз, программа, продукт + ключи БД и S3 | §13.1 (конверт), §13.7 (KeyDB Streams) |
+| JSON по API; можно асинхронно через шину; состав: статус, ответственный, вуз, программа, продукт + ключи БД и S3 | §13.1 (конверт), §13.7 (outbox PostgreSQL + асинхронная фоновая доставка; транспорт — сменный адаптер под шину заказчика) |
 | Обогащение из открытых источников — разовая предзагрузка; загрузка через диалог в админке (JSON/таблицы) | §10.1 |
 | XLSX **и XLS**; устойчивость к битым кодировкам при загрузке/выгрузке | §6.2 (xlrd/openpyxl, charset-normalizer), §7.1 (encoding/BOM) |
 | Интерактивный диалоговый маппинг полей | §6.1–6.3 |
-| Интерактивные дашборды + экспорт в растровые/файловые форматы | §7.2 (JSON-агрегаты; PNG на фронте через ECharts), §7.1 |
+| Интерактивные дашборды + экспорт в растровые/файловые форматы | §7.2 (JSON-агрегаты; PNG на фронте через ECharts), §7.2.1 (отчёт «Активность КАМов»: XLSX и PDF), §7.1 |
 | PostgreSQL + MinIO S3 | §3.2 (файлы), §6/§7 (файлы импорта/экспорта), `s3_keys` в §13.1 |
 | Студенты: ФИО + email, шифрование/псевдонимизация | §8.2–8.3 (blind index, маскирование observer) |
-| Закрытый контур, безопасность | §1.2, §11.1 (токен+NetworkPolicy), §13.6 (HMAC), `file_delivery: proxy` |
-| KeyDB кэш | §1.2 (JWKS), §5.4 (схема wf), §7.2 (отчёты), §1.6/§13.5 (идемпотентность), §9.2 (TG-коды) |
+| Закрытый контур, безопасность | §1.2, §1.6 (идемпотентность мутаций), §11.1 (токен+NetworkPolicy), §12.2 (404 вне области), §13.6 (HMAC), `file_delivery: proxy` |
+| KeyDB кэш | §5.4 (схема wf), §7.2 (отчёты), §13.5 (дедуп входящих событий), §9.2 (TG-коды), §2.2 (pub/sub SSE, сброс кэша каталога ролей); ключи идемпотентности — в PostgreSQL (§1.6) |
 | Ручное изменение приоритетов курсов КАМами/админами | §3.4 (`/priority`, `/reorder`) |
 | Telegram-бот, авторизация через Keycloak, one-time code | §9.2–9.3 |
 | Зависшие заявки: настраиваемый порог, эскалация руководителю | §10.3, §11.1, §9.4 (recipients с manager_id) |
@@ -1627,6 +2262,7 @@ POST   /api/v1/requests/{id}/assign
 GET    /api/v1/requests/{id}/transitions   POST   /api/v1/requests/{id}/transitions
 GET    /api/v1/requests/{id}/history
 GET    /api/v1/requests/{id}/comments      POST   /api/v1/requests/{id}/comments DELETE /api/v1/requests/{id}/comments/{cid}
+GET    /api/v1/requests/{id}/files         POST   /api/v1/requests/{id}/files    DELETE /api/v1/requests/{id}/files/{fid}
 POST   /api/v1/requests/{id}/reopen
 
 # workflow
@@ -1647,6 +2283,7 @@ GET    /api/v1/export/jobs/{id}/download
 GET    /api/v1/reports/funnel              GET    /api/v1/reports/kam-workload   GET    /api/v1/reports/stuck
 GET    /api/v1/reports/universities-coverage                                     GET    /api/v1/reports/programs-demand
 GET    /api/v1/reports/talent-pool-funnel  GET    /api/v1/reports/dynamics       GET    /api/v1/reports/dashboard
+GET    /api/v1/reports/kam-activity        GET    /api/v1/reports/kam-activity/summary
 
 # talent pool
 GET    /api/v1/students                    POST   /api/v1/students
@@ -1662,6 +2299,8 @@ GET    /api/v1/notifications/settings      PUT    /api/v1/notifications/settings
 POST   /api/v1/notifications/test          GET    /api/v1/notifications/channels
 GET    /api/v1/notifications               POST   /api/v1/notifications/read
 POST   /api/v1/notifications/telegram/link-code                                  DELETE /api/v1/notifications/telegram/link
+GET    /api/v1/notifications/rules         POST   /api/v1/notifications/rules
+PATCH  /api/v1/notifications/rules/{rid}   DELETE /api/v1/notifications/rules/{rid}
 
 # админ
 GET    /api/v1/admin/dictionaries          GET    /api/v1/admin/dictionaries/{name}/items
@@ -1674,20 +2313,31 @@ GET    /api/v1/admin/feature-flags         PATCH  /api/v1/admin/feature-flags/{n
 GET    /api/v1/admin/audit-log
 GET    /api/v1/admin/integration/events    POST   /api/v1/admin/integration/events/{eid}/retry
 
+# роли и права (§10.5)
+GET    /api/v1/roles
+GET    /api/v1/admin/permissions           GET    /api/v1/admin/roles            POST   /api/v1/admin/roles
+GET    /api/v1/admin/roles/{rid}           PATCH  /api/v1/admin/roles/{rid}      DELETE /api/v1/admin/roles/{rid}
+POST   /api/v1/admin/roles/{rid}/reset     PUT    /api/v1/admin/users/{id}/roles
+
 # интеграции (входящие webhook'и)
 POST   /api/v1/integrations/lms/webhook    POST   /api/v1/integrations/cms/webhook
 
 # internal
 POST   /api/v1/internal/jobs/check-stuck-requests
 POST   /api/v1/internal/jobs/purge-deleted POST   /api/v1/internal/jobs/outbox-relay
+POST   /api/v1/internal/jobs/purge-idempotency-keys
 POST   /api/v1/internal/bot/bind           GET    /api/v1/internal/bot/bindings/{chat_id}
 DELETE /api/v1/internal/bot/bindings/{chat_id}
 GET    /api/v1/internal/bot/users/{chat_id}/summary
 GET    /api/v1/internal/bot/users/{chat_id}/requests
 GET    /api/v1/internal/bot/users/{chat_id}/notifications
 
-# health (все сервисы)
+# health (все сервисы); у backend ещё алиасы /healthz/{live,ready}, /health/{live,ready},
+# /api/v1/health/{live,ready}
 GET    /healthz                            GET    /readyz
+
+# документация API backend (Swagger, OpenAPI с заголовком Idempotency-Key у мутаций)
+GET    /api/v1/docs                        GET    /api/v1/openapi.json
 
 # notification-service :8010
 POST   /api/v1/send                        GET    /api/v1/outbox
@@ -1701,9 +2351,12 @@ POST   /api/v1/catalog/upsert              POST   /api/v1/catalog/unpublish     
 
 Открытые допущения (зафиксированы, менять только через обновление этого документа):
 
-1. Роли `admin / head_kam / kam / observer` (+ сервисные `svc_notification`, `svc_integration`) —
-   **зафиксированы для всего проекта** (см. OVERVIEW.md; PLAN §2 ролей не перечисляет). Если ТЗ
-   добавит роли — расширяется матрица §12 и realm-JSON, эндпоинты не меняются.
+1. Системные роли `admin / head_kam / kam / observer` и их наборы прав по умолчанию задаёт код
+   (§12.4), сервисные `svc_notification`, `svc_integration` живут только в Keycloak (PLAN §2
+   ролей не перечисляет). Новые роли создаёт администратор в CRM без программиста (§10.5);
+   новое право появляется только вместе с кодом его проверки (каталог `rbac_catalog.py`).
 2. LMS-события не двигают заявку по workflow автоматически (§13.3) — переходы делают люди;
    при появлении реального контракта LMS это может стать настраиваемым флагом транзиции.
-3. Kam читает все объекты, пишет свои (§12.2) — следствие «не переусложнять» из PLAN §2.
+3. Системная роль kam читает все объекты своих процессов, пишет свои (§12.2) — следствие
+   «не переусложнять» из PLAN §2. Роль с областью записей `own` видит только заявки, где
+   пользователь ответственный.

@@ -29,9 +29,8 @@ from app.modules.workflow.conditions import validate_condition_syntax
 # проверяет V-7 под эксклюзивным локом воронки (строгий — операции пакета, мягкий — живые
 # строки; graph.check_operation_roles / graph.validate_graph).
 # DEFAULT_TRANSITION_ROLES — системные роли с переходами: значение по умолчанию для чистых
-# проверок без БД (юнит-тесты, совместимость).
+# проверок без БД (юнит-тесты).
 DEFAULT_TRANSITION_ROLES = ("admin", "head_kam", "kam")
-TRANSITION_ROLES = DEFAULT_TRANSITION_ROLES  # совместимость (удаляется в волне 3)
 MAX_ALLOWED_ROLES = 20
 
 RoleCode = Annotated[str, StringConstraints(pattern=ROLE_CODE_PATTERN)]

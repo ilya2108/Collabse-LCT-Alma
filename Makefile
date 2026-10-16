@@ -85,10 +85,12 @@ k8s-apply: ## идемпотентный apply: Jobs пересоздаются 
 	kubectl -n $(NS) wait --for=condition=available deploy/backend --timeout=300s
 	@echo "Стенд готов: http://crm.localhost (k3d, без /etc/hosts); minikube — http://crm.local (make hosts)"
 
+# pipefail: без него упавший kustomize (нет секретов) даёт kubeconform пустой вход — «0 ресурсов», exit 0
+k8s-validate: SHELL := /bin/bash
 k8s-validate: ## рендер всех overlay + kubeconform (нужны сгенерированные секреты)
-	kubectl kustomize $(K3D_OVERLAY) | kubeconform -strict -ignore-missing-schemas -summary
-	kubectl kustomize $(MINI_OVERLAY) | kubeconform -strict -ignore-missing-schemas -summary
-	kubectl kustomize $(VM_OVERLAY) | kubeconform -strict -ignore-missing-schemas -summary
+	set -o pipefail; kubectl kustomize $(K3D_OVERLAY) | kubeconform -strict -ignore-missing-schemas -summary
+	set -o pipefail; kubectl kustomize $(MINI_OVERLAY) | kubeconform -strict -ignore-missing-schemas -summary
+	set -o pipefail; kubectl kustomize $(VM_OVERLAY) | kubeconform -strict -ignore-missing-schemas -summary
 
 k8s-down: ## удалить кластер (k3d или minikube)
 	k3d cluster delete $(CLUSTER) 2>/dev/null || minikube delete -p $(CLUSTER) || true
