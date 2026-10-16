@@ -10,9 +10,10 @@ PDF и именах файлов — «Просрочки» (`overdue_*`).
   прошлый период — той же длины перед текущим, его срез T_prev — начало P («на 01.10»);
 - визит — `[entered, left)`: вход — строка истории со сменой этапа, кроме перевода схемы
   (`stage_entry_condition`, как у отчёта КАМов и доски). Строки `system_migration` делят
-  визит на подотрезки: этап и норма берутся на момент среза; перевод на терминальный этап
-  завершает визит (`active_end`), но в «Уложились в норму» не попадает. Для текущего
-  периода открытый визит начинается с `deal.stage_entered_at` (как доска и бот);
+  визит на подотрезки: этап и норма берутся на момент среза; пока перевод схемы держит
+  заявку на терминальном этапе, визит не в работе (без обратного перевода — завершён,
+  `active_end`), но в «Уложились в норму» не попадает. Для текущего периода открытый
+  визит начинается с `deal.stage_entered_at` (как доска и бот);
 - просрочен на t — визит активен и `t − entered > N(этап на t)`, строго, по точному
   времени: совпадает с «зависшими» отчёта КАМов, фильтром доски `?stuck=true` и ботом;
 - задержка — `(t − entered) − N`; корзины — по целым суткам вверх: 1–3, 4–7, 8–14,
@@ -21,8 +22,10 @@ PDF и именах файлов — «Просрочки» (`overdue_*`).
   («уложились»); «Уложились в норму» считается по решениям в периоде, поэтому этап, который
   ещё висит после срока, тоже входит в знаменатель (без ошибки выжившего);
 - атрибуция — на дату: владелец по `audit_log request.assigned` (`OwnerTimeline`), а не
-  текущий ответственный. «Получена просроченной» (`inherited`) — владелец на дату получил
-  заявку, когда срок уже прошёл; в правило отбора такие заявки не входят;
+  текущий ответственный. «Получена просроченной» (`inherited`) — в момент истечения срока
+  заявку вёл не тот, кто ведёт её на дату; в правило отбора такие заявки не входят;
+- поступило за период — созданные плюс назначения извне группы: передача между КАМами
+  команды командный показатель не меняет;
 - напоминания — журнал `notification` (`request.stuck`); реакция — первое собственное
   действие получателя после первого доставленного напоминания, горизонт 72 ч.
 
@@ -32,23 +35,40 @@ PDF и именах файлов — «Просрочки» (`overdue_*`).
 для T и T_prev.
 
 Область — `report_scope` и `kam_activity._resolve_scope` (403 на процесс вне области и на
-чужой `kam_id` при «только свои»). Кэш — cache-aside на 60 с, ключи `dash:sla:{sha1}` и
-`dash:sla-kam:{sha1}`; начало журнала напоминаний кэшируется отдельно на час
-(`dash:sla:journal_from`). Выгрузка идёт мимо кэша.
+чужой `kam_id` при «только свои»). Кэш — cache-aside на 60 с с одним пересчётом на ключ в
+процессе (single-flight), ключи `dash:sla:{sha1}` и `dash:sla-kam:{sha1}`; начало журнала
+напоминаний кэшируется отдельно на час (`dash:sla:journal_from`). Разбор КАМа грузит
+только его заявки (атрибуция на дату), справочные значения команды берёт из командного
+отчёта (кэш вкладки). Выгрузка идёт мимо кэша. Запросы — в цикле событий, разбор строк и
+расчёт — в отдельном потоке (`_in_thread`), без пауз на сборку мусора (`gc_paused`).
 """
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import math
 import re
 import statistics
+import threading
 import uuid
+import weakref
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from fractions import Fraction
+from functools import partial
 from typing import Any
 
 import sqlalchemy as sa
@@ -78,6 +98,7 @@ from app.modules.reporting.kam_activity import (
     _scope_payload,
     _visible_workflows,
     fetch_people,
+    kam_role_codes,
     previous_bounds,
     resolve_bounds,
     resolve_params,
@@ -116,7 +137,7 @@ TREND_WEEKLY_MAX_DAYS = 184
 TREND_MIN_N = 5
 REACTION_HORIZON = timedelta(hours=72)
 MAX_OVERDUE_ITEMS = 2000
-MAX_KAM_ITEMS = 5000
+MAX_KAM_ITEMS = 1000
 JOURNAL_FROM_TTL = 3600
 JOURNAL_FROM_KEY = "dash:sla:journal_from"
 
@@ -159,13 +180,15 @@ DEFINITIONS: tuple[tuple[str, str], ...] = (
     ),
     (
         "Этап",
-        "Этап на дату среза. Перевод схемы процесса и события LMS время на этапе не обнуляют.",
+        "Этап на дату среза. Перевод схемы процесса и события LMS время на этапе не обнуляют. "
+        "Пока перевод схемы держит заявку на завершающем этапе, она не в работе.",
     ),
     (
         "Чья заявка",
         "Заявка учитывается за тем, кто вёл её на дату среза (по истории передач), а в "
-        "«Детализации» — за текущим ответственным. «Получена просроченной» — КАМ получил "
-        "заявку, когда срок уже прошёл; такие заявки в правило отбора не входят.",
+        "«Детализации» — за текущим ответственным. «Получена просроченной» — в момент "
+        "истечения срока заявку вёл другой КАМ; такие заявки в правило отбора не входят. "
+        "Если заявку вернули прежнему владельцу, его собственная просрочка остаётся за ним.",
     ),
     (
         "Только свои заявки",
@@ -358,7 +381,7 @@ class Visit:
     segments: tuple[Segment, ...]
     exit_kind: str  # manual | return | outcome | system_terminal | open
     exit_stage_id: uuid.UUID | None
-    active_end: datetime | None  # начало терминального подотрезка или left
+    active_end: datetime | None  # начало терминального «хвоста» или left
     overdue_from: datetime | None  # первый момент просрочки (может быть в будущем)
 
     @property
@@ -423,21 +446,30 @@ def make_visit(
     exit_kind: str,
     exit_stage_id: uuid.UUID | None = None,
 ) -> Visit:
-    """Визит с вычисленными `active_end` и `overdue_from` (минимум по нетерминальным
-    подотрезкам значения `max(a_i, entered + N_i)`, если оно раньше конца подотрезка)."""
-    terminal_at = next((s.start for s in segments if s.terminal), None)
-    active_end = terminal_at if terminal_at is not None else left
-    if terminal_at is not None:
+    """Визит с вычисленными `active_end` и `overdue_from`.
+
+    Визит в работе на нетерминальных подотрезках. `active_end` — начало терминального
+    «хвоста»: перевода схемы на терминальный этап, после которого заявка на нетерминальный
+    этап уже не возвращалась (иначе `left`). Если перевод схемы увёл заявку на терминальный
+    этап, а следующий вернул на нетерминальный, визит снова в работе — как у доски и отчёта
+    КАМов, которые смотрят на текущий этап и `stage_entered_at`. Визит, открытый входом в
+    терминальный этап (выигрыш или отказ), в работе не бывает. `overdue_from` — минимум по
+    нетерминальным подотрезкам значения `max(a_i, entered + N_i)`, если оно раньше конца
+    подотрезка."""
+    tail = len(segments)
+    while tail and segments[tail - 1].terminal:
+        tail -= 1
+    if segments and segments[0].terminal:
+        tail = 0  # вход в терминальный этап — не рабочий визит
+    active_end = segments[tail].start if tail < len(segments) else left
+    if tail < len(segments):
         exit_kind = "system_terminal"
     overdue: datetime | None = None
-    for segment in segments:
-        if segment.terminal or not _before(segment.start, active_end):
-            break
-        end = segment.end
-        if active_end is not None:
-            end = active_end if end is None else min(end, active_end)
+    for segment in segments[:tail]:
+        if segment.terminal:
+            continue
         candidate = max(segment.start, entered + segment.norm)
-        if end is None or candidate < end:
+        if segment.end is None or candidate < segment.end:
             overdue = candidate  # первый подходящий подотрезок даёт минимум
             break
     return Visit(
@@ -542,15 +574,21 @@ def segment_at(visit: Visit, moment: datetime) -> Segment | None:
     return None
 
 
+def work_segment_at(visit: Visit, moment: datetime) -> Segment | None:
+    """Подотрезок на момент, если визит в работе (нетерминальный этап до `active_end`)."""
+    if moment < visit.entered or not _before(moment, visit.active_end):
+        return None
+    segment = segment_at(visit, moment)
+    return None if segment is None or segment.terminal else segment
+
+
 def is_active_at(visit: Visit, moment: datetime) -> bool:
-    return visit.entered <= moment and _before(moment, visit.active_end)
+    return work_segment_at(visit, moment) is not None
 
 
 def delay_at(visit: Visit, moment: datetime) -> timedelta | None:
-    """Задержка на момент: `(t − entered) − N(этап на t)`; None — визит не активен."""
-    if not is_active_at(visit, moment):
-        return None
-    segment = segment_at(visit, moment)
+    """Задержка на момент: `(t − entered) − N(этап на t)`; None — визит не в работе."""
+    segment = work_segment_at(visit, moment)
     if segment is None:
         return None
     return (moment - visit.entered) - segment.norm
@@ -602,6 +640,27 @@ class OwnerTimeline:
         index = bisect_right(self._times, moment)
         return self._times[index - 1] if index else None
 
+    def _owner_after(self, index: int) -> uuid.UUID:
+        """Владелец сразу после изменения `index` (как его видит `owner_at`)."""
+        if index == len(self.changes) - 1:
+            return self.current
+        return self.changes[index][2] or self.current
+
+    def _owner_before(self, index: int) -> uuid.UUID:
+        if index == 0:
+            return self.changes[0][1] or self.current
+        return self._owner_after(index - 1)
+
+    def held_since(self, moment: datetime) -> datetime | None:
+        """Начало непрерывного владения `owner_at(moment)`: последнее изменение, которым
+        заявка перешла к нему от другого (None — ведёт её с начала истории). Передача
+        A → B → A возвращает момент возврата к A."""
+        owner = self.owner_at(moment)
+        for index in range(bisect_right(self._times, moment) - 1, -1, -1):
+            if self._owner_before(index) != owner:
+                return self._times[index]
+        return None
+
     def spans(
         self, start: datetime, end: datetime | None
     ) -> list[tuple[datetime, datetime | None, uuid.UUID]]:
@@ -620,12 +679,18 @@ class OwnerTimeline:
 def inherited_at(
     visit: Visit, timeline: OwnerTimeline, moment: datetime
 ) -> tuple[bool, datetime | None]:
-    """(получена уже просроченной, у владельца с) относительно владельца на `moment`."""
-    acquired = timeline.acquired_at(moment)
-    if acquired is None or acquired <= visit.entered:
-        return False, None
-    inherited = visit.overdue_from is not None and acquired > visit.overdue_from
-    return inherited, acquired
+    """(получена уже просроченной, у владельца с) относительно владельца на `moment`.
+
+    «Получена просроченной» — в момент истечения срока заявку вёл не тот, кто ведёт её на
+    `moment` (`owner_at(overdue_from) ≠ owner_at(moment)`): передача A → B → A собственную
+    просрочку A не снимает. «У владельца с» — начало его непрерывного владения, если оно
+    позже входа в этап."""
+    owner = timeline.owner_at(moment)
+    since = timeline.held_since(moment)
+    with_since = since if since is not None and since > visit.entered else None
+    due = visit.overdue_from
+    inherited = due is not None and due <= moment and timeline.owner_at(due) != owner
+    return inherited, with_since
 
 
 # --------------------------------------------------------------------------------------
@@ -654,9 +719,7 @@ def snapshot(
     """Точный срез на момент: заявки в работе с этапом, задержкой и владельцем на дату."""
     items: list[SnapItem] = []
     for visit in visits:
-        if not is_active_at(visit, moment):
-            continue
-        segment = segment_at(visit, moment)
+        segment = work_segment_at(visit, moment)
         if segment is None:
             continue
         timeline = timelines[visit.deal_id]
@@ -734,7 +797,8 @@ def closed_late_in(
     end: datetime,
 ) -> list[ClosedItem]:
     """Завершённые в `[start, end)` ручным выходом; опоздание — по последнему подотрезку,
-    владелец — на момент выхода, `inherited` — если он получил заявку уже после срока."""
+    владелец — на момент выхода, `inherited` — если в момент истечения срока заявку вёл
+    другой КАМ."""
     items: list[ClosedItem] = []
     for visit in visits:
         if visit.exit_kind not in MANUAL_EXITS or visit.left is None:
@@ -743,22 +807,16 @@ def closed_late_in(
             continue
         segment = visit.last_segment
         timeline = timelines[visit.deal_id]
-        late = visit.overdue_from is not None and visit.overdue_from < visit.left
+        owner = timeline.owner_at(visit.left)
+        due = visit.overdue_from
+        late = due is not None and due < visit.left
         delay = max((visit.left - visit.entered) - segment.norm, ZERO) if late else ZERO
-        inherited = False
-        if late:
-            acquired = timeline.acquired_at(visit.left)
-            inherited = (
-                acquired is not None
-                and acquired > visit.entered
-                and visit.overdue_from is not None
-                and acquired > visit.overdue_from
-            )
+        inherited = late and due is not None and timeline.owner_at(due) != owner
         items.append(
             ClosedItem(
                 visit=visit,
                 left=visit.left,
-                owner=timeline.owner_at(visit.left),
+                owner=owner,
                 stage_id=segment.stage_id,
                 norm=segment.norm,
                 late=late,
@@ -769,22 +827,36 @@ def closed_late_in(
     return items
 
 
+# (кому поступила, от кого): создание — от None, назначение — от прежнего владельца
+InflowEvent = tuple[uuid.UUID, uuid.UUID | None]
+
+
 def inflow(
     deals: Iterable[DealInfo],
     timelines: Mapping[uuid.UUID, OwnerTimeline],
     start: datetime,
     end: datetime,
-) -> Counter[uuid.UUID]:
-    """Поступило за период: созданные в нём (владелец на момент создания) плюс назначения."""
-    result: Counter[uuid.UUID] = Counter()
+) -> list[InflowEvent]:
+    """События поступления за `[start, end)`: создание (владелец на момент создания) и
+    назначения. Считает их `inflow_count` — по группе владельцев."""
+    events: list[InflowEvent] = []
     for deal in deals:
         timeline = timelines[deal.deal_id]
         if start <= deal.created_at < end:
-            result[timeline.owner_at(deal.created_at)] += 1
-        for at, _before, after in timeline.changes:
-            if start <= at < end and after is not None:
-                result[after] += 1
-    return result
+            events.append((timeline.owner_at(deal.created_at), None))
+        for at, before, after in timeline.changes:
+            if start <= at < end and after is not None and after != before:
+                events.append((after, before))
+    return events
+
+
+def inflow_count(events: Iterable[InflowEvent], include: Callable[[uuid.UUID], bool]) -> int:
+    """Поступило в группу владельцев (КАМ, КАМы фильтра или вся команда): созданные у её
+    участников плюс назначения извне группы. Передача внутри группы — не поступление:
+    иначе командный показатель рос бы на каждую передачу между КАМами."""
+    return sum(
+        1 for owner, source in events if include(owner) and (source is None or not include(source))
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -928,7 +1000,9 @@ def _month_after(moment: datetime) -> datetime:
 
 def trend_grid(bounds: PeriodBounds) -> tuple[str, datetime, list[TrendPoint]]:
     """Корзины тренда: недели (понедельник 00:00 МСК, не короче 8 недель) при периоде
-    до 184 дней, иначе месяцы внутри периода. Срез корзины — `min(конец, as_of)`."""
+    до 184 дней, иначе месяцы внутри периода. Конец корзины — не позже конца периода, срез
+    корзины — `min(конец, as_of)`; `complete=false` только у корзины, срез которой взят
+    раньше её конца (текущая неделя или месяц)."""
     as_of = bounds.as_of
     weekly = bounds.days <= TREND_WEEKLY_MAX_DAYS
     if weekly:
@@ -940,7 +1014,10 @@ def trend_grid(bounds: PeriodBounds) -> tuple[str, datetime, list[TrendPoint]]:
     window_start = cursor
     points: list[TrendPoint] = []
     while cursor < as_of:
-        end = cursor + timedelta(weeks=1) if weekly else min(_month_after(cursor), bounds.end)
+        # последняя корзина обрезается концом периода: у прошедшего периода она полная
+        # (срез — на его конец), неполной бывает только текущая неделя или месяц
+        step = cursor + timedelta(weeks=1) if weekly else _month_after(cursor)
+        end = min(step, bounds.end)
         snapshot_at = min(end, as_of)
         label = (snapshot_at - timedelta(seconds=1)).astimezone(REPORT_TZ).strftime("%d.%m")
         points.append(
@@ -1016,8 +1093,10 @@ class SnapshotGrid:
 
     def add_visit(self, visit: Visit, timeline: OwnerTimeline) -> None:
         for segment in visit.segments:
-            if segment.terminal or not _before(segment.start, visit.active_end):
+            if not _before(segment.start, visit.active_end):
                 break
+            if segment.terminal:
+                continue  # перевод схемы на терминальный этап и обратно: пауза визита
             end = segment.end
             if visit.active_end is not None:
                 end = visit.active_end if end is None else min(end, visit.active_end)
@@ -1270,8 +1349,98 @@ def reaction(episode: Episode, actions: Sequence[Action], moment: datetime) -> E
     )
 
 
+VisitKey = tuple[uuid.UUID, int]
+
+
+@dataclass
+class ReminderIndex:
+    """Напоминания и эпизоды за `[start, end)`, разложенные по владельцам один раз:
+    сводка по КАМу или команде не перебирает весь журнал заново.
+
+    `reminded` — визиты с напоминанием получателю, `escalated` — визиты с эскалацией по
+    владельцу на момент эскалации, `sent` — базовые ключи получателя (доставлен ли хотя бы
+    один), `episodes` — эпизоды, первое напоминание которых попало в окно."""
+
+    reminded: dict[uuid.UUID, set[VisitKey]] = field(default_factory=lambda: defaultdict(set))
+    escalated: dict[uuid.UUID, set[VisitKey]] = field(default_factory=lambda: defaultdict(set))
+    sent: dict[uuid.UUID, dict[tuple[VisitKey, str], bool]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+    episodes: dict[uuid.UUID, list[Episode]] = field(default_factory=lambda: defaultdict(list))
+
+    @classmethod
+    def build(
+        cls,
+        visit_reminders: Mapping[VisitKey, VisitReminders],
+        episodes: Iterable[Episode],
+        timelines: Mapping[uuid.UUID, OwnerTimeline],
+        start: datetime,
+        end: datetime,
+    ) -> ReminderIndex:
+        index = cls()
+        for key, summary in visit_reminders.items():
+            for row in summary.rows:
+                if not start <= row.created_at < end:
+                    continue
+                if row.level == "manager":
+                    index.escalated[timelines[row.deal_id].owner_at(row.created_at)].add(key)
+                    continue
+                if row.recipient_id is None:
+                    continue
+                index.reminded[row.recipient_id].add(key)
+                slots = index.sent[row.recipient_id]
+                slot = (key, row.base_key)
+                slots[slot] = slots.get(slot, False) or row.status == "sent"
+        for episode in episodes:
+            if start <= episode.first_at < end:
+                index.episodes[episode.recipient].append(episode)
+        return index
+
+    def summary(self, include: Callable[[uuid.UUID], bool]) -> dict[str, Any]:
+        """Агрегаты по владельцам из `include` (визиты — без двойного счёта)."""
+        reminded: set[VisitKey] = set()
+        escalated: set[VisitKey] = set()
+        sent = delivered = 0
+        counts = Counter[str]()
+        hours: list[float] = []
+        total = 0
+        for owner, keys in self.reminded.items():
+            if include(owner):
+                reminded |= keys
+                slots = self.sent[owner]
+                sent += len(slots)
+                delivered += sum(slots.values())
+        for owner, keys in self.escalated.items():
+            if include(owner):
+                escalated |= keys
+        for owner, items in self.episodes.items():
+            if not include(owner):
+                continue
+            for episode in items:
+                total += 1
+                counts[episode.status] += 1
+                if episode.reaction_hours is not None:
+                    hours.append(episode.reaction_hours)
+        matured = counts["reacted_72h"] + counts["no_action"]
+        return {
+            "visits_reminded": len(reminded),
+            "visits_escalated": len(escalated),
+            "sent": sent,
+            "delivered": delivered,
+            "episodes": total,
+            "matured": matured,
+            "reacted_72h": counts["reacted_72h"],
+            "reacted_72h_pct": _ratio_pct(counts["reacted_72h"], matured),
+            "no_action": counts["no_action"],
+            "pending": counts["pending"],
+            "undelivered": counts["undelivered"],
+            "reaction_median_hours": round(statistics.median(hours), 1) if hours else None,
+            "reaction_avg_hours": round(sum(hours) / len(hours), 1) if hours else None,
+        }
+
+
 def summarize_reminders(
-    visit_reminders: Mapping[tuple[uuid.UUID, int], VisitReminders],
+    visit_reminders: Mapping[VisitKey, VisitReminders],
     episodes: Iterable[Episode],
     timelines: Mapping[uuid.UUID, OwnerTimeline],
     start: datetime,
@@ -1279,49 +1448,7 @@ def summarize_reminders(
     include: Callable[[uuid.UUID], bool],
 ) -> dict[str, Any]:
     """Агрегаты напоминаний за `[start, end)` по получателям из `include`."""
-    reminded: set[tuple[uuid.UUID, int]] = set()
-    escalated: set[tuple[uuid.UUID, int]] = set()
-    sent: dict[tuple[tuple[uuid.UUID, int], str, uuid.UUID], bool] = {}
-    for key, summary in visit_reminders.items():
-        for row in summary.rows:
-            if not start <= row.created_at < end:
-                continue
-            if row.level == "manager":
-                owner = timelines[row.deal_id].owner_at(row.created_at)
-                if include(owner):
-                    escalated.add(key)
-                continue
-            if row.recipient_id is None or not include(row.recipient_id):
-                continue
-            reminded.add(key)
-            slot = (key, row.base_key, row.recipient_id)
-            sent[slot] = sent.get(slot, False) or row.status == "sent"
-    counts = Counter[str]()
-    hours: list[float] = []
-    total = 0
-    for episode in episodes:
-        if not start <= episode.first_at < end or not include(episode.recipient):
-            continue
-        total += 1
-        counts[episode.status] += 1
-        if episode.reaction_hours is not None:
-            hours.append(episode.reaction_hours)
-    matured = counts["reacted_72h"] + counts["no_action"]
-    return {
-        "visits_reminded": len(reminded),
-        "visits_escalated": len(escalated),
-        "sent": len(sent),
-        "delivered": sum(sent.values()),
-        "episodes": total,
-        "matured": matured,
-        "reacted_72h": counts["reacted_72h"],
-        "reacted_72h_pct": _ratio_pct(counts["reacted_72h"], matured),
-        "no_action": counts["no_action"],
-        "pending": counts["pending"],
-        "undelivered": counts["undelivered"],
-        "reaction_median_hours": round(statistics.median(hours), 1) if hours else None,
-        "reaction_avg_hours": round(sum(hours) / len(hours), 1) if hours else None,
-    }
+    return ReminderIndex.build(visit_reminders, episodes, timelines, start, end).summary(include)
 
 
 def coverage(journal_from: datetime | None, start: datetime) -> str:
@@ -1859,6 +1986,58 @@ def norm_changes_stmt(workflow_types: Sequence[str], since: datetime, until: dat
 # --------------------------------------------------------------------------------------
 
 
+# --- расчёт вне цикла событий -------------------------------------------------------------
+
+_gc_lock = threading.Lock()
+_gc_holders = 0
+_gc_was_enabled = False
+
+
+@contextmanager
+def gc_paused() -> Iterator[None]:
+    """Автоматическая сборка циклического мусора на время загрузки и расчёта отключена.
+
+    На десятках тысяч заявок отчёт создаёт миллионы долгоживущих объектов, и полные сборки
+    (поколение 2) занимали до 40 % времени отчёта, каждый раз останавливая весь процесс на
+    0,5–0,7 с. Объекты расчёта освобождает счётчик ссылок; пауза длится загрузку набора и
+    сборку ответа (секунды даже на 50 тыс. заявок), вложенные и параллельные расчёты
+    считаются счётчиком, сборка включается после последнего — если до первого была
+    включена."""
+    global _gc_holders, _gc_was_enabled
+    with _gc_lock:
+        if _gc_holders == 0:
+            _gc_was_enabled = gc.isenabled()
+            gc.disable()
+        _gc_holders += 1
+    try:
+        yield
+    finally:
+        with _gc_lock:
+            _gc_holders -= 1
+            if _gc_holders == 0 and _gc_was_enabled:
+                gc.enable()
+
+
+async def _in_thread(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Чистый Python отчёта — в отдельном потоке (цикл событий обслуживает другие запросы)
+    и без пауз на сборку мусора (`gc_paused`)."""
+
+    def run() -> Any:
+        with gc_paused():
+            return fn(*args, **kwargs)
+
+    return await asyncio.to_thread(run)
+
+
+async def _rows(session: AsyncSession, stmt: sa.Executable) -> Sequence[sa.Row[Any]]:
+    """Большие выборки отчёта (десятки и сотни тысяч строк) — через Core, без ORM-обёртки
+    результата: строки те же, разбор дешевле. Серверный курсор (`stream`) не берём: в
+    asyncpg его портал живёт до конца транзакции и мешает TRUNCATE в той же транзакции
+    (сид и demo-reset), а остановки цикла событий давали не выборки, а сборка мусора."""
+    connection = await session.connection()
+    return (await connection.execute(stmt)).all()
+
+
 async def fetch_stage_infos(
     session: AsyncSession, workflow_types: Sequence[str], *, default_days: int
 ) -> dict[uuid.UUID, StageInfo]:
@@ -1899,14 +2078,7 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
         return None
 
 
-async def fetch_deals(
-    session: AsyncSession,
-    params: KamActivityParams,
-    scope: DealScope,
-    since: datetime,
-    until: datetime,
-) -> dict[uuid.UUID, DealInfo]:
-    result = await session.execute(deals_stmt(params, scope, since, until))
+def parse_deals(rows: Iterable[Any]) -> dict[uuid.UUID, DealInfo]:
     return {
         row.id: DealInfo(
             deal_id=row.id,
@@ -1921,17 +2093,13 @@ async def fetch_deals(
             stage_entered_at=row.stage_entered_at,
             created_at=row.created_at,
         )
-        for row in result.all()
+        for row in rows
     }
 
 
-async def fetch_history(
-    session: AsyncSession, deal_ids: Sequence[uuid.UUID], until: datetime
-) -> dict[uuid.UUID, list[HistoryRow]]:
+def parse_history(rows: Iterable[Any]) -> dict[uuid.UUID, list[HistoryRow]]:
     result: dict[uuid.UUID, list[HistoryRow]] = defaultdict(list)
-    if not deal_ids:
-        return result
-    for row in (await session.execute(history_stmt(deal_ids, until))).all():
+    for row in rows:
         result[row.deal_id].append(
             HistoryRow(
                 deal_id=row.deal_id,
@@ -1946,30 +2114,24 @@ async def fetch_history(
     return result
 
 
-async def fetch_assignments(
-    session: AsyncSession, deal_ids: Sequence[uuid.UUID]
+def parse_assignments(
+    rows: Iterable[Any],
 ) -> dict[uuid.UUID, list[tuple[datetime, uuid.UUID | None, uuid.UUID | None]]]:
     result: dict[uuid.UUID, list[tuple[datetime, uuid.UUID | None, uuid.UUID | None]]] = (
         defaultdict(list)
     )
-    if not deal_ids:
-        return result
-    for row in (await session.execute(assignments_stmt(deal_ids))).all():
+    for row in rows:
         result[row.entity_id].append(
             (row.created_at, _uuid_or_none(row.before_id), _uuid_or_none(row.after_id))
         )
     return result
 
 
-async def fetch_reminders(
-    session: AsyncSession, deal_ids: Sequence[uuid.UUID], lower: datetime, until: datetime
-) -> list[ReminderRow]:
-    if not deal_ids:
-        return []
-    rows: list[ReminderRow] = []
-    for row in (await session.execute(reminders_stmt(deal_ids, lower, until))).all():
+def parse_reminders(rows: Iterable[Any]) -> list[ReminderRow]:
+    result: list[ReminderRow] = []
+    for row in rows:
         level, base = parse_dedup_key(row.dedup_key, row.escalation)
-        rows.append(
+        result.append(
             ReminderRow(
                 row_id=row.id,
                 deal_id=row.entity_id,
@@ -1981,7 +2143,73 @@ async def fetch_reminders(
                 base_key=base or str(row.id),
             )
         )
-    return rows
+    return result
+
+
+def parse_last_actions(rows: Iterable[Any]) -> dict[uuid.UUID, LastAction]:
+    result: dict[uuid.UUID, LastAction] = {}
+    for row in rows:
+        candidates = [
+            LastAction(at=at, kind=kind, actor_id=actor)
+            for at, kind, actor in (
+                (row.h_at, row.h_kind, row.h_actor),
+                (row.c_at, "comment", row.c_actor),
+                (row.f_at, "file", row.f_actor),
+            )
+            if at is not None
+        ]
+        if candidates:
+            result[row.deal_id] = max(candidates, key=lambda action: action.at)
+    return result
+
+
+def parse_actions(rows: Iterable[Any]) -> dict[uuid.UUID, list[Action]]:
+    result: dict[uuid.UUID, list[Action]] = defaultdict(list)
+    for row in rows:
+        result[row.deal_id].append(Action(at=row.at, kind=row.kind, actor_id=row.actor_id))
+    for items in result.values():
+        items.sort(key=lambda action: action.at)
+    return result
+
+
+# разбор строк — в потоке: на десятках тысяч заявок это заметное время чистого Python
+
+
+async def fetch_deals(
+    session: AsyncSession,
+    params: KamActivityParams,
+    scope: DealScope,
+    since: datetime,
+    until: datetime,
+) -> dict[uuid.UUID, DealInfo]:
+    rows = await _rows(session, deals_stmt(params, scope, since, until))
+    return await _in_thread(parse_deals, rows)
+
+
+async def fetch_history(
+    session: AsyncSession, deal_ids: Sequence[uuid.UUID], until: datetime
+) -> dict[uuid.UUID, list[HistoryRow]]:
+    if not deal_ids:
+        return defaultdict(list)
+    rows = await _rows(session, history_stmt(deal_ids, until))
+    return await _in_thread(parse_history, rows)
+
+
+async def fetch_assignments(
+    session: AsyncSession, deal_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[tuple[datetime, uuid.UUID | None, uuid.UUID | None]]]:
+    if not deal_ids:
+        return defaultdict(list)
+    return parse_assignments(await _rows(session, assignments_stmt(deal_ids)))
+
+
+async def fetch_reminders(
+    session: AsyncSession, deal_ids: Sequence[uuid.UUID], lower: datetime, until: datetime
+) -> list[ReminderRow]:
+    if not deal_ids:
+        return []
+    rows = await _rows(session, reminders_stmt(deal_ids, lower, until))
+    return await _in_thread(parse_reminders, rows)
 
 
 async def fetch_journal_from(session: AsyncSession, *, use_cache: bool = True) -> datetime | None:
@@ -2005,33 +2233,17 @@ async def fetch_last_actions(
 ) -> dict[uuid.UUID, LastAction]:
     if not deal_ids:
         return {}
-    result: dict[uuid.UUID, LastAction] = {}
-    for row in (await session.execute(last_actions_stmt(deal_ids, before))).all():
-        candidates = [
-            LastAction(at=at, kind=kind, actor_id=actor)
-            for at, kind, actor in (
-                (row.h_at, row.h_kind, row.h_actor),
-                (row.c_at, "comment", row.c_actor),
-                (row.f_at, "file", row.f_actor),
-            )
-            if at is not None
-        ]
-        if candidates:
-            result[row.deal_id] = max(candidates, key=lambda action: action.at)
-    return result
+    rows = await _rows(session, last_actions_stmt(deal_ids, before))
+    return await _in_thread(parse_last_actions, rows)
 
 
 async def fetch_actions(
     session: AsyncSession, deal_ids: Sequence[uuid.UUID], lower: datetime, until: datetime
 ) -> dict[uuid.UUID, list[Action]]:
-    result: dict[uuid.UUID, list[Action]] = defaultdict(list)
     if not deal_ids:
-        return result
-    for row in (await session.execute(actions_stmt(deal_ids, lower, until))).all():
-        result[row.deal_id].append(Action(at=row.at, kind=row.kind, actor_id=row.actor_id))
-    for items in result.values():
-        items.sort(key=lambda action: action.at)
-    return result
+        return defaultdict(list)
+    rows = await _rows(session, actions_stmt(deal_ids, lower, until))
+    return await _in_thread(parse_actions, rows)
 
 
 async def fetch_reminder_settings(session: AsyncSession) -> tuple[bool, datetime | None, bool]:
@@ -2090,8 +2302,8 @@ class SlaDataset:
     no_action_prev: set[uuid.UUID]
     decisions: list[DecisionItem]
     closures: list[ClosedItem]
-    inflow_cur: Counter[uuid.UUID]
-    inflow_prev: Counter[uuid.UUID]
+    inflow_cur: list[InflowEvent]
+    inflow_prev: list[InflowEvent]
     grid: SnapshotGrid
     visit_reminders: dict[tuple[uuid.UUID, int], VisitReminders]
     episodes: list[Episode]
@@ -2103,6 +2315,8 @@ class SlaDataset:
     people: dict[uuid.UUID, PersonRef]
     names: dict[uuid.UUID, str] = field(default_factory=dict)
     _indexes: dict[str, dict[uuid.UUID, list[Any]]] = field(default_factory=dict, repr=False)
+    _inflow_index: dict[str, Counter[uuid.UUID]] = field(default_factory=dict, repr=False)
+    _reminder_indexes: dict[str, ReminderIndex] = field(default_factory=dict, repr=False)
 
     def select(self, name: str, include: Callable[[uuid.UUID], bool]) -> list[Any]:
         """Элементы `snap | snap_prev | decisions | closures` владельцев фильтра (индекс по
@@ -2121,6 +2335,30 @@ class SlaDataset:
             self._indexes[name] = index
         return [item for owner in owners for item in index.get(owner, ())]
 
+    def inflow(self, name: str, include: Include) -> int:
+        """Поступило в группу владельцев по событиям `inflow_cur | inflow_prev`; для одного
+        КАМа — по индексу (у события получатель всегда отличается от источника)."""
+        events: list[InflowEvent] = getattr(self, name)
+        if include.owners is None or len(include.owners) > 1:
+            return inflow_count(events, include)
+        index = self._inflow_index.get(name)
+        if index is None:
+            index = self._inflow_index[name] = Counter(owner for owner, _source in events)
+        return index[next(iter(include.owners))]
+
+    def reminder_index(self, *, prev: bool = False) -> ReminderIndex:
+        """Напоминания текущего (или прошлого) периода по владельцам — строится один раз."""
+        name = "prev" if prev else "cur"
+        index = self._reminder_indexes.get(name)
+        if index is None:
+            bounds = self.prev if prev else self.bounds
+            start, end = bounds.start, bounds.as_of
+            index = ReminderIndex.build(
+                self.visit_reminders, self.episodes, self.timelines, start, end
+            )
+            self._reminder_indexes[name] = index
+        return index
+
     def person(self, user_id: uuid.UUID) -> PersonRef:
         return self.people.get(user_id) or PersonRef(
             user_id=user_id,
@@ -2132,7 +2370,8 @@ class SlaDataset:
         result = {item.owner for item in self.snap} | {item.owner for item in self.snap_prev}
         result |= {item.owner for item in self.decisions}
         result |= {item.owner for item in self.closures}
-        result |= set(self.inflow_cur) | set(self.inflow_prev)
+        result |= {owner for owner, _source in self.inflow_cur}
+        result |= {owner for owner, _source in self.inflow_prev}
         result |= {episode.recipient for episode in self.episodes}
         return result
 
@@ -2162,33 +2401,38 @@ def _keep_visit(visit: Visit, since: datetime) -> bool:
     return visit.active_end > visit.entered and visit.active_end > since
 
 
-async def load_dataset(
-    session: AsyncSession,
-    params: KamActivityParams,
-    scope: DealScope,
-    bounds: PeriodBounds,
-    *,
-    use_cache: bool = True,
-) -> SlaDataset:
-    """Все данные отчёта одним проходом: заявки окна, визиты, владельцы, срезы T и T_prev,
-    решения, закрытия, тренд, напоминания и реакция, оговорки. `params.kam_ids` — фильтр
-    по атрибуции на дату (предфильтр в SQL, окончательный отбор — у потребителя)."""
-    default_days = await _global_stuck_default(session)
-    prev = previous_bounds(bounds)
-    granularity, window_start, points = trend_grid(bounds)
-    since = min(prev.start, window_start)
-    until = bounds.as_of
-    workflows = _visible_workflows(params, scope)
-    stages = await fetch_stage_infos(session, workflows, default_days=default_days)
-    deals = await fetch_deals(session, params, scope, since, until) if workflows else {}
-    deal_ids = list(deals)
-    history = await fetch_history(session, deal_ids, until)
-    changes = await fetch_assignments(session, deal_ids)
+@dataclass
+class _Core:
+    """Промежуточный результат расчёта (чистый Python, считается в отдельном потоке)."""
 
+    visits: list[Visit]
+    timelines: dict[uuid.UUID, OwnerTimeline]
+    snap: list[SnapItem]
+    snap_prev: list[SnapItem]
+    decisions: list[DecisionItem] = field(default_factory=list)
+    closures: list[ClosedItem] = field(default_factory=list)
+    grid: SnapshotGrid | None = None
+    inflow_cur: list[InflowEvent] = field(default_factory=list)
+    inflow_prev: list[InflowEvent] = field(default_factory=list)
+
+
+def compute_core(
+    deals: Mapping[uuid.UUID, DealInfo],
+    history: Mapping[uuid.UUID, Sequence[HistoryRow]],
+    changes: Mapping[uuid.UUID, Sequence[tuple[datetime, uuid.UUID | None, uuid.UUID | None]]],
+    stages: Mapping[uuid.UUID, StageInfo],
+    bounds: PeriodBounds,
+    points: Sequence[TrendPoint],
+    *,
+    since: datetime,
+    default_days: int,
+) -> _Core:
+    """Визиты, владельцы, срезы T и T_prev, решения, закрытия, сетка тренда, поступления."""
+    prev = previous_bounds(bounds)
     visits: list[Visit] = []
     for deal in deals.values():
         for visit in build_visits(
-            history.get(deal.deal_id, []),
+            history.get(deal.deal_id, ()),
             deal,
             stages,
             is_current=bounds.is_current,
@@ -2200,32 +2444,103 @@ async def load_dataset(
         deal.deal_id: OwnerTimeline(changes.get(deal.deal_id, ()), deal.responsible_id)
         for deal in deals.values()
     }
-
-    snap = snapshot(visits, bounds.as_of, timelines)
-    snap_prev = snapshot(visits, prev.as_of, timelines)
-    overdue_now = sorted({item.visit.deal_id for item in snap if item.overdue}, key=str)
-    overdue_then = sorted({item.visit.deal_id for item in snap_prev if item.overdue}, key=str)
-    last_actions = await fetch_last_actions(session, overdue_now, bounds.as_of)
-    last_prev = await fetch_last_actions(session, overdue_then, prev.as_of)
-
-    decisions = decided_in(visits, timelines, since, bounds.as_of)
-    closures = closed_late_in(visits, timelines, prev.start, bounds.as_of)
-    grid = SnapshotGrid([point.snapshot_at for point in points])
+    core = _Core(
+        visits=visits,
+        timelines=timelines,
+        snap=snapshot(visits, bounds.as_of, timelines),
+        snap_prev=snapshot(visits, prev.as_of, timelines),
+    )
+    core.decisions = decided_in(visits, timelines, since, bounds.as_of)
+    core.closures = closed_late_in(visits, timelines, prev.start, bounds.as_of)
+    core.grid = SnapshotGrid([point.snapshot_at for point in points])
     for visit in visits:
-        grid.add_visit(visit, timelines[visit.deal_id])
+        core.grid.add_visit(visit, timelines[visit.deal_id])
+    core.inflow_cur = inflow(deals.values(), timelines, bounds.start, bounds.as_of)
+    core.inflow_prev = inflow(deals.values(), timelines, prev.start, prev.as_of)
+    return core
+
+
+def compute_episode_starts(
+    visits: Sequence[Visit], rows: Sequence[ReminderRow], start: datetime, end: datetime
+) -> tuple[dict[VisitKey, VisitReminders], list[Episode]]:
+    """Напоминания по визитам и эпизоды, первое напоминание которых попало в `[start, end)`."""
+    visit_reminders = match_reminders(visits, rows)
+    by_key = {visit.key: visit for visit in visits}
+    starts: list[Episode] = []
+    for key, summary in visit_reminders.items():
+        episode = reminder_episode(by_key[key], summary)
+        if episode is not None and start <= episode.first_at < end:
+            starts.append(episode)
+    return visit_reminders, starts
+
+
+def _overdue_ids(items: Iterable[SnapItem]) -> list[uuid.UUID]:
+    return sorted({item.visit.deal_id for item in items if item.overdue}, key=str)
+
+
+async def load_dataset(
+    session: AsyncSession,
+    params: KamActivityParams,
+    scope: DealScope,
+    bounds: PeriodBounds,
+    *,
+    use_cache: bool = True,
+) -> SlaDataset:
+    """Все данные отчёта: заявки окна, визиты, владельцы, срезы T и T_prev, решения,
+    закрытия, тренд, напоминания и реакция, оговорки. `params.kam_ids` — фильтр по
+    атрибуции на дату (предфильтр в SQL, окончательный отбор — у потребителя).
+
+    Запросы идут в цикле событий, а разбор строк и расчёт (чистый Python, на
+    50 тыс. заявок — секунды) — в отдельном потоке (`_in_thread`): воркер в это время
+    продолжает обслуживать другие запросы. На время загрузки автоматическая сборка мусора
+    приостановлена (`gc_paused`): полные сборки по миллионам новых объектов набора
+    занимали до 40 % времени и останавливали весь процесс."""
+    with gc_paused():  # сборка — после загрузки: объекты набора долгоживущие, их много
+        return await _load_dataset(session, params, scope, bounds, use_cache=use_cache)
+
+
+async def _load_dataset(
+    session: AsyncSession,
+    params: KamActivityParams,
+    scope: DealScope,
+    bounds: PeriodBounds,
+    *,
+    use_cache: bool,
+) -> SlaDataset:
+    default_days = await _global_stuck_default(session)
+    prev = previous_bounds(bounds)
+    granularity, window_start, points = trend_grid(bounds)
+    since = min(prev.start, window_start)
+    until = bounds.as_of
+    workflows = _visible_workflows(params, scope)
+    stages = await fetch_stage_infos(session, workflows, default_days=default_days)
+    deals = await fetch_deals(session, params, scope, since, until) if workflows else {}
+    deal_ids = list(deals)
+    history = await fetch_history(session, deal_ids, until)
+    changes = await fetch_assignments(session, deal_ids)
+    core = await _in_thread(
+        compute_core,
+        deals,
+        history,
+        changes,
+        stages,
+        bounds,
+        points,
+        since=since,
+        default_days=default_days,
+    )
+    visits, timelines = core.visits, core.timelines
+    last_actions = await fetch_last_actions(session, _overdue_ids(core.snap), bounds.as_of)
+    last_prev = await fetch_last_actions(session, _overdue_ids(core.snap_prev), prev.as_of)
 
     # напоминания: нижняя граница — самый ранний вход загруженных визитов
     lower = min((visit.entered for visit in visits), default=None)
     reminder_rows = (
         await fetch_reminders(session, deal_ids, lower, until) if lower is not None else []
     )
-    visit_reminders = match_reminders(visits, reminder_rows)
-    starts: list[Episode] = []
-    by_key = {visit.key: visit for visit in visits}
-    for key, summary in visit_reminders.items():
-        episode = reminder_episode(by_key[key], summary)
-        if episode is not None and prev.start <= episode.first_at < bounds.as_of:
-            starts.append(episode)
+    visit_reminders, starts = await _in_thread(
+        compute_episode_starts, visits, reminder_rows, prev.start, bounds.as_of
+    )
     delivered = [episode for episode in starts if episode.delivered_at is not None]
     actions = (
         await fetch_actions(
@@ -2262,6 +2577,7 @@ async def load_dataset(
     if coverage(journal_from, bounds.start) == "partial" and journal_from is not None:
         notes.append(f"Журнал напоминаний ведётся с {_date_text(journal_from)}.")
 
+    assert core.grid is not None
     dataset = SlaDataset(
         bounds=bounds,
         prev=prev,
@@ -2273,16 +2589,16 @@ async def load_dataset(
         deals=deals,
         visits=visits,
         timelines=timelines,
-        snap=snap,
-        snap_prev=snap_prev,
+        snap=core.snap,
+        snap_prev=core.snap_prev,
         last_actions=last_actions,
-        no_action=no_action_ids(snap, last_actions),
-        no_action_prev=no_action_ids(snap_prev, last_prev),
-        decisions=decisions,
-        closures=closures,
-        inflow_cur=inflow(deals.values(), timelines, bounds.start, bounds.as_of),
-        inflow_prev=inflow(deals.values(), timelines, prev.start, prev.as_of),
-        grid=grid,
+        no_action=no_action_ids(core.snap, last_actions),
+        no_action_prev=no_action_ids(core.snap_prev, last_prev),
+        decisions=core.decisions,
+        closures=core.closures,
+        inflow_cur=core.inflow_cur,
+        inflow_prev=core.inflow_prev,
+        grid=core.grid,
         visit_reminders=visit_reminders,
         episodes=episodes,
         journal_from=journal_from,
@@ -2319,7 +2635,7 @@ def _include(kam_ids: Iterable[uuid.UUID] | None) -> Include:
 
 
 def _period_sums(
-    ds: SlaDataset, include: Include, start: datetime, end: datetime, inflow_counts: Counter
+    ds: SlaDataset, include: Include, start: datetime, end: datetime, inflow_name: str
 ) -> dict[str, Any]:
     decided = summarize_decided(
         item for item in ds.select("decisions", include) if start <= item.at < end
@@ -2330,7 +2646,7 @@ def _period_sums(
     return {
         **decided,
         **closed,
-        "inflow": sum(count for owner, count in inflow_counts.items() if include(owner)),
+        "inflow": ds.inflow(inflow_name, include),
     }
 
 
@@ -2338,11 +2654,11 @@ def _sums(ds: SlaDataset, include: Include) -> tuple[dict[str, Any], dict[str, A
     """(текущие, прошлые) значения KPI по владельцам из `include`."""
     cur = {
         **summarize_snapshot(ds.select("snap", include), ds.no_action),
-        **_period_sums(ds, include, ds.bounds.start, ds.bounds.as_of, ds.inflow_cur),
+        **_period_sums(ds, include, ds.bounds.start, ds.bounds.as_of, "inflow_cur"),
     }
     prev = {
         **summarize_snapshot(ds.select("snap_prev", include), ds.no_action_prev),
-        **_period_sums(ds, include, ds.prev.start, ds.prev.as_of, ds.inflow_prev),
+        **_period_sums(ds, include, ds.prev.start, ds.prev.as_of, "inflow_prev"),
     }
     return cur, prev
 
@@ -2513,6 +2829,11 @@ def _last_action_payload(ds: SlaDataset, deal_id: uuid.UUID) -> dict[str, Any] |
     }
 
 
+def _missing_stage(stage_id: uuid.UUID) -> dict[str, Any]:
+    """Этап вне загруженных процессов (практически недостижимо) — как удалённый."""
+    return {"id": str(stage_id), "code": "", "name": "—", "color": None, "deleted": True}
+
+
 def overdue_item(ds: SlaDataset, item: SnapItem) -> dict[str, Any]:
     deal = ds.deals[item.visit.deal_id]
     stage = ds.stages.get(item.stage_id)
@@ -2526,9 +2847,7 @@ def overdue_item(ds: SlaDataset, item: SnapItem) -> dict[str, Any]:
         "client": deal.client_ref(),
         "kam_id": str(item.owner),
         "kam": person.full_name,
-        "stage": stage.ref()
-        if stage
-        else {"id": str(item.stage_id), "code": "", "name": "—", "color": None, "deleted": True},
+        "stage": stage.ref() if stage else _missing_stage(item.stage_id),
         "stage_since": item.visit.entered.isoformat(),
         "on_stage_days": _days(ds.bounds.as_of - item.visit.entered),
         "norm_days": stage.norm_days if stage else _days(item.norm),
@@ -2591,9 +2910,7 @@ def late_closed_list(ds: SlaDataset, include: Include, limit: int | None) -> dic
                 "kam": ds.person(item.owner).full_name,
                 "university": deal.university_ref(),
                 "client": deal.client_ref(),
-                "stage": stage.ref()
-                if stage
-                else {"id": str(item.stage_id), "code": "", "name": "—", "color": None},
+                "stage": stage.ref() if stage else _missing_stage(item.stage_id),
                 "entered": item.visit.entered.isoformat(),
                 "left_at": item.left.isoformat(),
                 "duration_days": _days(item.left - item.visit.entered),
@@ -2629,9 +2946,7 @@ def episodes_list(ds: SlaDataset, include: Include, limit: int | None) -> list[d
                 "title": deal.title,
                 "kam_id": str(episode.recipient),
                 "kam": ds.person(episode.recipient).full_name,
-                "stage": stage.ref()
-                if stage
-                else {"id": str(segment.stage_id), "code": "", "name": "—", "color": None},
+                "stage": stage.ref() if stage else _missing_stage(segment.stage_id),
                 "first_reminder_at": episode.first_at.isoformat(),
                 "delivered_at": episode.delivered_at.isoformat() if episode.delivered_at else None,
                 "status": episode.status,
@@ -2648,8 +2963,7 @@ def _public(values: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _reminder_stats(ds: SlaDataset, include: Include, *, prev: bool = False) -> dict[str, Any]:
-    start, end = (ds.prev.start, ds.prev.as_of) if prev else (ds.bounds.start, ds.bounds.as_of)
-    return summarize_reminders(ds.visit_reminders, ds.episodes, ds.timelines, start, end, include)
+    return ds.reminder_index(prev=prev).summary(include)
 
 
 def _transfer_dates(ds: SlaDataset, owner: uuid.UUID) -> list[date]:
@@ -2844,31 +3158,19 @@ def team_body(
 
 
 def kam_body(
-    ds: SlaDataset, kam: PersonRef, *, with_team: bool, limit_items: bool = True
+    ds: SlaDataset,
+    kam: PersonRef,
+    *,
+    team_ref: Mapping[str, Any] | None = None,
+    limit_items: bool = True,
 ) -> dict[str, Any]:
-    """Тело ответа `GET /reports/sla/kams/{kam_id}`; `team` — справочно, только при широкой
-    области (набор данных загружен без фильтра КАМа)."""
+    """Тело ответа `GET /reports/sla/kams/{kam_id}`; `team_ref` — справочные значения
+    команды (`team_ref_from_report`), только при широкой области, иначе `team = null`."""
     include = _include((kam.user_id,))
     info = ds.reminders_info()
     with_reminders = info["coverage"] != "none"
     cur, prev = _sums(ds, include)
     limit = MAX_KAM_ITEMS if limit_items else None
-    team_ref: dict[str, Any] | None = None
-    if with_team:
-        everyone = _include(None)
-        team_cur, _team_prev = _sums(ds, everyone)
-        rows = [kam_row(ds, person, with_reminders=False) for person in _kam_people(ds, everyone)]
-        _team_rows, team = team_reference(rows)
-        reminders_all = _reminder_stats(ds, everyone) if with_reminders else {}
-        team_ref = {
-            "overdue_pct": team_cur["overdue_pct"],
-            "delay_median_days": team_cur["delay_median_days"],
-            "delay_avg_days": team_cur["delay_avg_days"],
-            "on_time_pct": team_cur["on_time_pct"],
-            "active_median": team["active_median"],
-            "reacted_72h_pct": reminders_all.get("reacted_72h_pct"),
-            "reaction_median_hours": reminders_all.get("reaction_median_hours"),
-        }
     stages = stage_rows(ds, include, only_with_data=True)
     flat_stages = [
         {"workflow_type": workflow_type, **row}
@@ -2901,7 +3203,7 @@ def kam_body(
         "definition": DEFINITION,
         "definitions": [{"term": term, "text": text} for term, text in DEFINITIONS],
         "kpi": kpi_dict(cur, prev),
-        "team": team_ref,
+        "team": dict(team_ref) if team_ref is not None else None,
         "aging": _aging_rows(cur, prev),
         "overdue": overdue_list(ds, include, limit),
         "stages": flat_stages,
@@ -2927,6 +3229,48 @@ def _prepare(
     return params, scope, resolve_bounds(params, now=now)
 
 
+# один пересчёт на ключ в процессе: одновременные запросы одного отчёта ждут первый расчёт
+# и берут его из кэша (замок живёт, пока его кто-то ждёт)
+_FLIGHTS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+async def _cached(
+    key: str, compute: Callable[[], Awaitable[dict[str, Any]]], *, enabled: bool
+) -> dict[str, Any]:
+    """Cache-aside на `REPORT_CACHE_TTL_SECONDS` с защитой от одновременных пересчётов
+    (single-flight). KeyDB недоступен — расчёт из PG, запросы одного ключа идут по очереди."""
+    if not enabled:
+        return await compute()
+    cache = get_cache()
+    cached = await cache.get_json(key)
+    if cached is not None:
+        return cached
+    lock = _FLIGHTS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _FLIGHTS[key] = lock
+    async with lock:
+        cached = await cache.get_json(key)
+        if cached is not None:
+            return cached
+        result = await compute()
+        await cache.set_json(key, result, REPORT_CACHE_TTL_SECONDS)
+        return result
+
+
+def _hide_foreign_people(ds: SlaDataset, params: KamActivityParams, scope: DealScope) -> None:
+    """Строки отчёта — только участники данных и КАМы процессов области (и сам КАМ при
+    области «только свои»): пользователь из фильтра `kam_id` без данных и без роли КАМа
+    (например, администратор) строкой не раскрывается — ни ФИО, ни ролей."""
+    roles = set(kam_role_codes(params, scope))
+    owners = ds.owners()
+    for user_id, person in list(ds.people.items()):
+        if user_id in owners or user_id == scope.own_user_id or roles.intersection(person.roles):
+            continue
+        del ds.people[user_id]
+        ds.names[user_id] = person.full_name  # подпись автора последнего действия остаётся
+
+
 async def build_sla(
     session: AsyncSession,
     viewer: AppUser,
@@ -2941,29 +3285,41 @@ async def build_sla(
     """«Просрочки» по команде (или по КАМам фильтра) с кэшем cache-aside на 60 с.
     `include_late`/`include_reminders`/`limit_items=False` — для выгрузки (мимо кэша)."""
     params, scope, bounds = _prepare(viewer, params, scope)
+
+    async def compute() -> dict[str, Any]:
+        dataset = await load_dataset(session, params, scope, bounds, use_cache=use_cache)
+        _hide_foreign_people(dataset, params, scope)
+        body = await _in_thread(
+            partial(
+                team_body,
+                dataset,
+                kam_ids=params.kam_ids,
+                own_only=scope.own_user_id is not None,
+                include_late=include_late,
+                include_reminders=include_reminders,
+                limit_items=limit_items,
+            )
+        )
+        return _envelope(CODE, params, {"scope": _scope_payload(scope), **body})  # type: ignore[arg-type]
+
     cacheable = use_cache and not include_late and not include_reminders and limit_items
-    cache = get_cache()
-    key = _cache_key(CODE, params, scope)
-    if cacheable:
-        cached = await cache.get_json(key)
-        if cached is not None:
-            return cached
-    dataset = await load_dataset(session, params, scope, bounds, use_cache=use_cache)
-    body = {
-        "scope": _scope_payload(scope),
-        **team_body(
-            dataset,
-            kam_ids=params.kam_ids,
-            own_only=scope.own_user_id is not None,
-            include_late=include_late,
-            include_reminders=include_reminders,
-            limit_items=limit_items,
-        ),
+    return await _cached(_cache_key(CODE, params, scope), compute, enabled=cacheable)
+
+
+def team_ref_from_report(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Справочные значения команды для разбора КАМа — из командного отчёта (тот же расчёт,
+    что у вкладки, обычно уже в кэше)."""
+    kpi = report["kpi"]
+    reminders = (report.get("reminders") or {}).get("team") or {}
+    return {
+        "overdue_pct": kpi["overdue_pct"]["value"],
+        "delay_median_days": kpi["delay_median_days"]["value"],
+        "delay_avg_days": kpi["delay_avg_days"]["value"],
+        "on_time_pct": kpi["on_time_pct"]["value"],
+        "active_median": (report.get("team") or {}).get("active_median"),
+        "reacted_72h_pct": reminders.get("reacted_72h_pct"),
+        "reaction_median_hours": reminders.get("reaction_median_hours"),
     }
-    result = _envelope(CODE, params, body)  # type: ignore[arg-type]
-    if cacheable:
-        await cache.set_json(key, result, REPORT_CACHE_TTL_SECONDS)
-    return result
 
 
 async def build_sla_kam(
@@ -2977,36 +3333,45 @@ async def build_sla_kam(
     limit_items: bool = True,
 ) -> dict[str, Any]:
     """Разбор КАМа: 403 — «только свои» и чужой id (или процесс вне области), 404 — нет
-    пользователя; пользователь без данных — 200 с нулями. `kam_id` из query не участвует."""
+    пользователя или он не КАМ процессов области и данных по нему нет (ФИО и роли других
+    пользователей не раскрываются); КАМ без данных — 200 с нулями. `kam_id` из query не
+    участвует.
+
+    Набор данных грузится с предфильтром по КАМу (атрибуция на дату: заявки, где он
+    ответственный сейчас или фигурирует в передачах), справочные значения команды — из
+    командного отчёта с теми же фильтрами (кэш вкладки), а не пересчётом всей команды."""
     params, scope, bounds = _prepare(viewer, replace(params, kam_ids=(kam_id,)), scope)
     user = await session.get(AppUser, kam_id)
     if user is None:
         raise not_found("Пользователь не найден")
-    cacheable = use_cache and limit_items
-    cache = get_cache()
-    key = _cache_key(CODE_KAM, params, scope)
-    if cacheable:
-        cached = await cache.get_json(key)
-        if cached is not None:
-            return cached
-    with_team = scope.own_user_id is None
-    # справочные значения команды нужны только при широкой области — тогда без фильтра КАМа
-    load_params = replace(params, kam_ids=()) if with_team else params
-    dataset = await load_dataset(session, load_params, scope, bounds, use_cache=use_cache)
-    person = dataset.people.get(kam_id) or PersonRef(
-        user_id=kam_id,
-        full_name=user.full_name or user.username,
-        roles=tuple(user.roles or ()),
-        is_active=bool(user.is_active),
+    is_kam = scope.own_user_id is not None or bool(
+        set(kam_role_codes(params, scope)).intersection(user.roles or ())
     )
-    body = {
-        "scope": _scope_payload(scope),
-        **kam_body(dataset, person, with_team=with_team, limit_items=limit_items),
-    }
-    result = _envelope(CODE_KAM, params, body)  # type: ignore[arg-type]
-    if cacheable:
-        await cache.set_json(key, result, REPORT_CACHE_TTL_SECONDS)
-    return result
+
+    async def compute() -> dict[str, Any]:
+        dataset = await load_dataset(session, params, scope, bounds, use_cache=use_cache)
+        if not is_kam and kam_id not in dataset.owners():
+            raise not_found("Пользователь не найден")
+        team_ref: dict[str, Any] | None = None
+        if scope.own_user_id is None:
+            team = await build_sla(
+                session, viewer, replace(params, kam_ids=()), scope=scope, use_cache=use_cache
+            )
+            team_ref = team_ref_from_report(team)
+        person = dataset.people.get(kam_id) or PersonRef(
+            user_id=kam_id,
+            full_name=user.full_name or user.username,
+            roles=tuple(user.roles or ()),
+            is_active=bool(user.is_active),
+        )
+        body = await _in_thread(
+            partial(kam_body, dataset, person, team_ref=team_ref, limit_items=limit_items)
+        )
+        return _envelope(CODE_KAM, params, {"scope": _scope_payload(scope), **body})  # type: ignore[arg-type]
+
+    return await _cached(
+        _cache_key(CODE_KAM, params, scope), compute, enabled=use_cache and limit_items
+    )
 
 
 __all__ = ["CODE", "CODE_KAM", "build_sla", "build_sla_kam", "load_dataset"]

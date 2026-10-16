@@ -27,7 +27,13 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import AppUser
-from app.modules.reporting.kam_activity import REPORT_TZ, WORKFLOW_LABELS, KamActivityParams
+from app.modules.reporting.kam_activity import (
+    REPORT_TZ,
+    WORKFLOW_LABELS,
+    KamActivityParams,
+    _resolve_scope,
+    viewer_scope,
+)
 from app.modules.reporting.kam_activity_export import (
     _DATE_FORMAT,
     _PCT_FORMAT,
@@ -900,10 +906,14 @@ def _closing_sections(report: Mapping[str, Any]) -> list[Section]:
 def pdf_sections(
     report: Mapping[str, Any], by_kam: bool, meta: ExportMeta | None = None
 ) -> list[Section]:
-    """Модель PDF по командному отчёту: «Сводка без имён» (`by_kam=False`) или по КАМам."""
+    """Модель PDF по командному отчёту: «Сводка без имён» (`by_kam=False`) или по КАМам.
+
+    В сводке без имён нет ни одного ФИО — ни КАМов, ни автора выгрузки (кто выгрузил,
+    видно в журнале выгрузок и аудите `export.created`): её можно переслать как
+    обезличенную."""
     filters = describe_filters(report, names=by_kam)
     lines = [period_text(report), f"Фильтры: {filters}"]
-    if meta is not None:
+    if meta is not None and by_kam:
         lines.append(f"Сформировал: {meta.generated_by}")
     pairs = _stage_pairs(report)
     sections: list[Section] = [
@@ -1249,17 +1259,44 @@ async def build_sla_file(
     export_format: str,
     options: Mapping[str, Any] | None = None,
 ) -> tuple[bytes, int, str]:
-    """Файл «Просрочек»: `(байты, просроченных заявок, имя файла)`; область — как у API."""
+    """Файл «Просрочек»: `(байты, просроченных заявок, имя файла)`; область — как у API.
+
+    `options.by_kam` (PDF) — «По КАМам» вместо «Сводки без имён». При области «только
+    свои» PDF один — разбор себя, и считается только он (без командного отчёта)."""
     if export_format not in _EXTENSIONS:
         from app.core.errors import unprocessable
 
         raise unprocessable(f"Формат «{export_format}» не поддерживается для «Просрочек»")
     opts = options or {}
     params = KamActivityParams.from_filters(filters)
+    by_kam = bool(opts.get("by_kam"))
+
+    scope = viewer_scope(user)
+    if export_format == "pdf" and scope.own_user_id is not None:
+        # «только свои» — один вариант PDF: разбор себя; 403 на чужой kam_id — как у API
+        _resolve_scope(user, params, scope)
+        kam_report = await build_sla_kam(
+            session,
+            user,
+            user.id,
+            dataclasses.replace(params, kam_ids=()),
+            scope=scope,
+            use_cache=False,
+            limit_items=False,
+        )
+        meta = ExportMeta(
+            generated_by=user.full_name or user.username,
+            generated_at=_now(),
+            filters_text=describe_filters(kam_report),
+        )
+        data = await asyncio.to_thread(render_sla_kam_pdf, kam_report, meta)
+        return data, int(kam_report["overdue"]["total"]), file_name(kam_report, export_format)
+
     report = await build_sla(
         session,
         user,
         params,
+        scope=scope,
         use_cache=False,
         include_late=True,
         include_reminders=True,
@@ -1282,7 +1319,6 @@ async def build_sla_file(
         )
         return data, rows, name
 
-    by_kam = bool(opts.get("by_kam"))
     meta = ExportMeta(
         generated_by=user.full_name or user.username,
         generated_at=_now(),
@@ -1290,18 +1326,6 @@ async def build_sla_file(
     )
     if export_format == "xlsx":
         data = await asyncio.to_thread(render_sla_xlsx, report, meta)
-        return data, rows, name
-    if report["scope"]["own_only"]:
-        # «только свои» — один вариант PDF: разбор себя
-        kam_report = await build_sla_kam(
-            session,
-            user,
-            user.id,
-            dataclasses.replace(params, kam_ids=()),
-            use_cache=False,
-            limit_items=False,
-        )
-        data = await asyncio.to_thread(render_sla_kam_pdf, kam_report, meta)
         return data, rows, name
     data = await asyncio.to_thread(render_sla_pdf, report, meta, by_kam=by_kam)
     return data, rows, name

@@ -265,6 +265,46 @@ def test_inherited_relative_to_owner_at_t() -> None:
     assert inherited_at(visit, early, at(12)) == (False, at(3))  # получил до срока
 
 
+def test_inherited_return_to_previous_owner_keeps_own_overdue() -> None:
+    """Просрочка у A, затем A → B → A: у A она остаётся собственной, у B была полученной."""
+    visit, _next = visits_of([row(0, A), row(20, B, A)])  # срок истёк на 7-й день, выход на 20-й
+    timeline = OwnerTimeline([(at(9), KAM_A, KAM_B), (at(11), KAM_B, KAM_A)], current=KAM_A)
+    assert timeline.held_since(at(12)) == at(11)
+    assert timeline.held_since(at(10)) == at(9)
+    assert timeline.held_since(at(8)) is None
+    assert inherited_at(visit, timeline, at(10)) == (True, at(9))  # у B — полученная
+    assert inherited_at(visit, timeline, at(12)) == (False, at(11))  # у A — своя
+    (item,) = snapshot([visit], at(12), {visit.deal_id: timeline})
+    assert item.owner == KAM_A and item.overdue and not item.inherited
+    (closed,) = sla.closed_late_in([visit], {visit.deal_id: timeline}, at(0), at(30))
+    assert closed.owner == KAM_A and closed.late and not closed.inherited
+    passed = OwnerTimeline([(at(9), KAM_A, KAM_B)], current=KAM_B)
+    (closed,) = sla.closed_late_in([visit], {visit.deal_id: passed}, at(0), at(30))
+    assert closed.owner == KAM_B and closed.inherited
+
+
+def test_inflow_team_excludes_internal_transfers() -> None:
+    """Командное «Поступило» — созданные плюс назначения извне группы: передача A → B
+    внутри команды поступлением не считается, у самого B — считается."""
+    other = uuid.UUID(int=103)
+    old = DealInfo(**{**deal(created=-30).__dict__, "deal_id": uuid.UUID(int=801)})
+    new = DealInfo(**{**deal(created=5).__dict__, "deal_id": uuid.UUID(int=802)})
+    timelines = {
+        old.deal_id: OwnerTimeline([(at(3), KAM_A, KAM_B)], current=KAM_B),
+        new.deal_id: OwnerTimeline((), KAM_A),
+    }
+    events = sla.inflow([old, new], timelines, at(0), at(10))
+    assert sorted(events, key=str) == sorted([(KAM_B, KAM_A), (KAM_A, None)], key=str)
+    count = sla.inflow_count
+    assert count(events, sla.Include()) == 1  # команда: только созданная
+    assert count(events, sla.Include(frozenset({KAM_B}))) == 1  # B: получил от A
+    assert count(events, sla.Include(frozenset({KAM_A}))) == 1  # A: создал новую
+    assert count(events, sla.Include(frozenset({KAM_A, KAM_B}))) == 1
+    assert count(events, sla.Include(frozenset({KAM_B, other}))) == 1
+    only_transfer = sla.inflow([old], timelines, at(0), at(10))
+    assert count(only_transfer, sla.Include()) == 0
+
+
 def test_snapshot_ignores_closed_and_terminal() -> None:
     infos = []
     rows_by_deal = {
@@ -287,6 +327,33 @@ def test_snapshot_ignores_closed_and_terminal() -> None:
     items = snapshot(visits, at(5), timelines)
     assert [item.visit.deal_id for item in items] == [uuid.UUID(int=1)]
     assert items[0].stage_id == B and not items[0].overdue
+
+
+def test_migration_to_terminal_and_back_resumes_visit() -> None:
+    """Перевод схемы увёл заявку на терминальный этап, следующий вернул на рабочий: визит
+    снова в работе (как у доски и «Активности КАМов»), время на этапе не обнулено."""
+    rows = [
+        row(0, B),
+        row(5, WON, B, "system_migration"),
+        row(8, C, WON, "system_migration"),
+    ]
+    (visit,) = visits_of(rows)
+    assert visit.active_end is None and visit.exit_kind == "open"
+    assert sla.is_active_at(visit, at(4)) and not sla.is_active_at(visit, at(6))
+    assert sla.is_active_at(visit, at(9))
+    assert visit.overdue_from == at(8)  # норма «Встречи» 3 сут истекла ещё до возврата
+    assert delay_at(visit, at(9)) == 9 * DAY - 3 * DAY
+    assert decision(visit) == (at(8), False)
+    timelines = {visit.deal_id: OwnerTimeline((), KAM_A)}
+    assert [item.stage_id for item in snapshot([visit], at(9), timelines)] == [C]
+    assert snapshot([visit], at(6), timelines) == []
+    grid = SnapshotGrid([at(4), at(6), at(9)])
+    grid.add_visit(visit, timelines[visit.deal_id])
+    assert [point["active"] for point in grid.series()] == [1, 0, 1]
+    assert [point["overdue"] for point in grid.series()] == [0, 0, 1]
+    # вход в терминальный этап (выигрыш) — не рабочий визит, даже если схему потом сменили
+    outcome = visits_of([row(0, A), row(2, WON, A), row(4, B, WON, "system_migration")])[1]
+    assert outcome.active_end == at(2) and not sla.is_active_at(outcome, at(5))
 
 
 # --- 12–13: разностные массивы и сетка тренда --------------------------------------------
@@ -357,6 +424,12 @@ def test_trend_grid() -> None:
     assert not points[-1].complete and points[-1].snapshot_at == bounds.as_of
     assert points[-1].label == "16.10"
     assert any(point.in_period for point in points)
+    # прошедший период, который кончается не в воскресенье: последняя корзина обрезана
+    # концом периода и полная — срез взят на его конец
+    past = _bounds(date(2026, 1, 1), date(2026, 3, 31), now)
+    _g, _start, weeks = trend_grid(past)
+    assert weeks[-1].end == past.end and weeks[-1].snapshot_at == past.as_of
+    assert weeks[-1].label == "31.03" and all(point.complete for point in weeks)
     long = _bounds(date(2026, 1, 1), date(2026, 9, 30), now)
     granularity, start, months = trend_grid(long)
     assert granularity == "month" and start == long.start
@@ -714,3 +787,72 @@ def test_is_current_open_visit_starts_at_stage_entered_at() -> None:
     assert past.entered == at(0)
     (synthetic,) = build_visits([], info, STAGES, is_current=False)
     assert (synthetic.entered, synthetic.segments[0].stage_id) == (at(2), A)
+
+
+def test_kam_view_params_match_report_params() -> None:
+    """Разбор КАМа принимает те же фильтры, что отчёт команды (кроме `kam_id` — он в пути):
+    иначе фронт шлёт новый фильтр в обе ручки, а разбор его молча игнорирует."""
+    from fastapi import FastAPI
+
+    from app.modules.reporting.sla_router import router
+
+    app = FastAPI()
+    app.include_router(router)
+    paths = app.openapi()["paths"]
+
+    def query(path: str) -> set[str]:
+        return {item["name"] for item in paths[path]["get"]["parameters"] if item["in"] == "query"}
+
+    assert "kam_id" in query("/reports/sla")
+    assert query("/reports/sla") - {"kam_id"} == query("/reports/sla/kams/{kam_id}")
+
+
+async def test_cached_single_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Одновременные запросы одного отчёта: расчёт один, остальные берут его из кэша."""
+    import asyncio
+
+    store: dict[str, Any] = {}
+
+    class MemoryCache:
+        async def get_json(self, key: str) -> Any:
+            return store.get(key)
+
+        async def set_json(self, key: str, value: Any, ttl: int) -> bool:
+            store[key] = value
+            return True
+
+    monkeypatch.setattr(sla, "get_cache", MemoryCache)
+    calls = 0
+
+    async def compute() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return {"calls": calls}
+
+    results = await asyncio.gather(
+        *(sla._cached("dash:sla:test", compute, enabled=True) for _ in range(5))
+    )
+    assert calls == 1 and results == [{"calls": 1}] * 5
+    assert await sla._cached("dash:sla:test", compute, enabled=False) == {"calls": 2}
+
+
+def test_gc_paused_nested_and_restores() -> None:
+    """Пауза сборки мусора на время расчёта: вложенные паузы считаются, по выходу последней
+    состояние восстанавливается; выключенную до расчёта сборку пауза не включает."""
+    import gc
+
+    assert gc.isenabled()
+    with sla.gc_paused():
+        assert not gc.isenabled()
+        with sla.gc_paused():
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    assert gc.isenabled()
+    gc.disable()
+    try:
+        with sla.gc_paused():
+            pass
+        assert not gc.isenabled()
+    finally:
+        gc.enable()

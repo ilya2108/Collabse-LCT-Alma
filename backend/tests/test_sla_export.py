@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import io
 import uuid
-from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -115,8 +114,8 @@ def make_dataset(*, titles: dict[int, str] | None = None) -> SlaDataset:
         no_action_prev=sla.no_action_ids(snap_prev, {}),
         decisions=sla.decided_in(visits, timelines, since, bounds.as_of),
         closures=sla.closed_late_in(visits, timelines, prev.start, bounds.as_of),
-        inflow_cur=Counter(),
-        inflow_prev=Counter(),
+        inflow_cur=[],
+        inflow_prev=[],
         grid=grid,
         visit_reminders={},
         episodes=[],
@@ -229,7 +228,7 @@ def test_pdf_renders() -> None:
 def test_kam_pdf_sections() -> None:
     dataset = make_dataset()
     person = dataset.people[uuid.UUID(int=101)]
-    body = sla.kam_body(dataset, person, with_team=False)
+    body = sla.kam_body(dataset, person)
     report = {"params": {}, "scope": {"own_only": True}, **body}
     texts = section_texts(pdf_kam_sections(report, META))
     assert any(text.startswith("У Павлова Р. Е.:") for text in texts)

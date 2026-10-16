@@ -32,7 +32,7 @@ async def _count(session, model, *where) -> int:  # noqa: ANN001
 
 def test_plan_is_deterministic() -> None:
     first = seed_sla.build_sla_plan(ANCHOR)
-    assert first == seed_sla.build_sla_plan(ANCHOR) and len(first) == 10
+    assert first == seed_sla.build_sla_plan(ANCHOR) and len(first) == 11
     for plan in first:
         assert plan.path[-1] == (plan.stage, plan.days_on_stage)
         assert [days for _code, days in plan.path] == sorted(
@@ -52,7 +52,7 @@ async def test_seed_sla_picture_and_idempotency(
     monkeypatch.setattr(seed, "_NOW", ANCHOR)
     await seed.run_seed()
     printed = capsys.readouterr().out
-    assert "seed: просрочки — сценарных заявок 10, передач 2" in printed
+    assert "seed: просрочки — сценарных заявок 11, передач 2" in printed
 
     async with db_session_factory() as session:
         users = {
@@ -64,7 +64,7 @@ async def test_seed_sla_picture_and_idempotency(
         rows = {row["kam"]: row for row in report["kams"]}
         kam = {
             name: rows[users[name].full_name]
-            for name in ("kam05@demo", "kam12@demo", "kam18@demo", "kam2@demo")
+            for name in ("kam05@demo", "kam12@demo", "kam15@demo", "kam18@demo", "kam2@demo")
         }
         # у разных КАМов разная картина; ни один блок не пуст
         assert report["kpi"]["overdue"]["value"] > 0 and report["kpi"]["decided"]["value"] > 0
@@ -74,7 +74,19 @@ async def test_seed_sla_picture_and_idempotency(
         assert any(point["overdue"] for point in report["trend"]["points"])
         assert kam["kam18@demo"]["overdue_no_action"] > 0 and kam["kam18@demo"]["attention"]
         assert kam["kam12@demo"]["attention"] and kam["kam12@demo"]["overdue_30_plus"] > 0
-        assert kam["kam05@demo"]["inherited"] == 1  # передача kam19 → kam05 уже просроченной
+        assert kam["kam15@demo"]["attention"] and kam["kam15@demo"]["own_overdue"] >= 2
+        # kam05: одна собственная просрочка и одна полученная при передаче kam19 → kam05.
+        # С полученной он прошёл бы правило (≥ 2 просрочек и доля не ниже порога), без неё
+        # — нет: полученные просрочки в правило отбора не входят
+        kam05 = kam["kam05@demo"]
+        assert (kam05["inherited"], kam05["own_overdue"]) == (1, 1)
+        threshold = report["attention"]["threshold_pct"]
+        assert kam05["overdue"] >= 2 and kam05["overdue_pct"] >= threshold
+        assert not kam05["attention"]
+        # командное «Поступило» — без передач внутри команды
+        assert report["kpi"]["inflow"]["value"] == (
+            sum(row["inflow"] for row in report["kams"]) - 2
+        )
         assert kam["kam2@demo"]["overdue"] > 0
         quiet = [
             row

@@ -43,7 +43,12 @@ def kam_view_params(
         list[uuid.UUID] | None, Query(description=f"ИТ-направление, {_IDS}")
     ] = None,
 ) -> KamActivityParams:
-    """Параметры разбора КАМа — те же, что у отчёта, без `kam_id` (КАМ — в пути)."""
+    """Параметры разбора КАМа — те же, что у отчёта, без `kam_id` (КАМ — в пути).
+
+    Обёртку над `kam_activity_params` сделать нельзя: её query-параметр `kam_id` совпадает
+    по имени с параметром пути, и FastAPI принимает его за путь. Поэтому набор повторён, а
+    тест `test_kam_view_params_match_report_params` сверяет query-параметры обеих ручек:
+    новый фильтр отчёта без правки здесь роняет тест, а не молча игнорируется разбором."""
     return KamActivityParams(
         date_from=date_from,
         date_to=date_to,
@@ -85,7 +90,7 @@ async def report_sla(
     responses={
         200: {"model": SlaKamReportOut},
         **_ERRORS,
-        404: {"description": "Пользователь не найден"},
+        404: {"description": "Пользователь не найден или не КАМ процессов области без данных"},
     },
 )
 async def report_sla_kam(

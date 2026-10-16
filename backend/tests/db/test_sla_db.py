@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import os
 import time as clock
 import uuid
 from datetime import date, datetime, timedelta
@@ -265,6 +266,35 @@ async def test_migration_to_terminal_ends_visit(db_session, workflows, people) -
     assert report["kpi"]["completed"]["value"] == 0
 
 
+async def test_migration_to_terminal_and_back_counts_like_board(
+    api, db_session, workflows, people, monkeypatch
+) -> None:
+    """Перевод схемы увёл открытую заявку на терминальный этап, следующий вернул на рабочий:
+    «Просрочено» совпадает с «зависшими» отчёта КАМов и фильтром доски `?stuck=true`."""
+    real_now = factories.utcnow()
+    monkeypatch.setattr(sla, "_now", lambda: real_now)
+    monkeypatch.setattr(ka, "_now", lambda: real_now)
+    _wf, stages = workflows["b2b"]
+    deal = await _deal(
+        db_session, workflows, people["kam1"], [("negotiation", real_now - timedelta(days=30))]
+    )
+    await _history(
+        db_session, deal, stages["rejected"], real_now - timedelta(days=10), "system_migration"
+    )
+    await _history(
+        db_session, deal, stages["contract_prep"], real_now - timedelta(days=5), "system_migration"
+    )
+
+    report = await _report(db_session, people["head"])
+    item = _item(report, deal)
+    assert item is not None and item["stage"]["code"] == "contract_prep"
+    assert datetime.fromisoformat(item["stage_since"]) == real_now - timedelta(days=30)
+    detail = await ka.build_kam_activity(db_session, people["head"], KamActivityParams())
+    assert report["kpi"]["overdue"]["value"] == detail["totals"]["stuck"] == 1
+    board = await api.as_user(people["head"]).get(f"{API}/requests", params={"stuck": "true"})
+    assert board.status_code == 200 and board.json()["total"] == 1
+
+
 async def test_lms_integration_row_does_not_split_visit(db_session, workflows, people) -> None:
     _wf, stages = workflows["b2b"]
     deal = await _deal(db_session, workflows, people["kam1"], [("negotiation", ago(20))])
@@ -427,6 +457,17 @@ async def test_empty_period_no_data(api, db_session, workflows, people) -> None:
     assert empty.json()["headline"] == "У Петрова К. А.: заявок в работе нет."
     missing = await head.get(f"{API}/reports/sla/kams/{uuid.uuid4()}")
     assert missing.status_code == 404
+    # не КАМ процессов области и без данных (администратор): 404, как у несуществующего, —
+    # ФИО и роли не раскрываются ни разбором, ни строкой фильтра kam_id
+    admin = await factories.make_user(
+        db_session, roles=("admin",), full_name="Соколова Анна Викторовна"
+    )
+    hidden = await head.get(f"{API}/reports/sla/kams/{admin.id}")
+    assert hidden.status_code == 404
+    assert hidden.json()["error"]["message"] == missing.json()["error"]["message"]
+    filtered = await head.get(f"{API}/reports/sla", params={"kam_id": str(admin.id)})
+    assert filtered.status_code == 200 and filtered.json()["kams"] == []
+    assert "Соколова" not in filtered.text
     bad = await head.get(f"{API}/reports/sla", params={"from": "2026-10-10", "to": "2026-10-01"})
     assert bad.status_code == 400
 
@@ -525,6 +566,10 @@ async def test_transfer_attribution(api, db_session, workflows, people) -> None:
     assert late["kam_id"] == str(kam2.id) and late["inherited"] is True
     assert row2["late_closed"] == 1 and row2["late_inherited"] == 1
     assert sla.TRANSFER_NOTE in report["notes"]
+    # «Поступило»: обе заявки созданы до периода; передачи kam1 → kam2 внутри команды
+    # командный показатель не меняют, у самого kam2 — это два поступления
+    assert report["kpi"]["inflow"]["value"] == 0
+    assert (row1["inflow"], row2["inflow"]) == (0, 2)
     # фильтр kam_id=kam1 находит заявки, которые сейчас у kam2
     filtered = await _report(db_session, head, kam_ids=(kam1.id,))
     assert [row["kam_id"] for row in filtered["kams"]] == [str(kam1.id)]
@@ -687,7 +732,7 @@ async def test_cache_key_depends_on_scope_and_kam(people) -> None:
 
 
 async def test_build_sla_file_xlsx_and_pdf(
-    api, db_session, workflows, people, memory_storage
+    api, db_session, workflows, people, memory_storage, monkeypatch
 ) -> None:
     import openpyxl
 
@@ -728,7 +773,19 @@ async def test_build_sla_file_xlsx_and_pdf(
         )
     assert excinfo.value.status_code == 403
 
-    # через механизм выгрузок: 201, имя файла, PDF «Сводка без имён» без имён КАМов
+    # через механизм выгрузок: 201, имя файла; options.by_kam доходит до PDF — «По КАМам»
+    # с именами, без него — «Сводка без имён» (ни КАМов, ни автора выгрузки)
+    from app.modules.reporting import sla_export
+
+    rendered: list[tuple[bool, list[str]]] = []
+    original = sla_export.render_sla_pdf
+
+    def spy(report, meta, *, by_kam=False):  # noqa: ANN001, ANN202
+        texts = sla_export.section_texts(sla_export.pdf_sections(report, by_kam, meta))
+        rendered.append((by_kam, texts))
+        return original(report, meta, by_kam=by_kam)
+
+    monkeypatch.setattr(sla_export, "render_sla_pdf", spy)
     client = api.as_user(head)
     job = await client.post(
         f"{API}/export/jobs",
@@ -737,6 +794,21 @@ async def test_build_sla_file_xlsx_and_pdf(
     assert job.status_code == 201, job.text
     assert job.json()["file"]["file_name"] == "overdue_20260921-20261020.pdf"
     assert job.json()["rows"] == 1
+    named = await client.post(
+        f"{API}/export/jobs",
+        json={
+            "entity_type": "report:sla",
+            "format": "pdf",
+            "filters": filters,
+            "options": {"by_kam": True},
+        },
+    )
+    assert named.status_code == 201, named.text
+    (plain, plain_texts), (with_names, named_texts) = rendered
+    assert (plain, with_names) == (False, True)
+    surnames = ("Петров", "Морозов")  # КАМ и автор выгрузки
+    assert not any(name in text for text in plain_texts for name in surnames)
+    assert any("Петров" in text for text in named_texts)
     bad = await client.post(
         f"{API}/export/jobs",
         json={"entity_type": "report:sla", "format": "xlsx", "filters": {"kam_id": "x"}},
@@ -774,7 +846,36 @@ SELECT id, :first, :stage, 'Новая', 'Переговоры', 'manual', stage
 )
 
 
-async def test_performance_10k_requests(db_session, workflows, people) -> None:
+_BULK_EXTRAS = (
+    # передачи — у 5 % заявок, журнал напоминаний и комментарии — у 30 %
+    """
+    INSERT INTO audit_log (actor_user_id, action, entity_type, entity_id, before, after,
+                           created_at)
+    SELECT d.responsible_user_id, 'request.assigned', 'deal', d.id,
+           jsonb_build_object('assignee_id', CAST(:first_kam AS text)),
+           jsonb_build_object('assignee_id', d.responsible_user_id::text),
+           d.stage_entered_at + interval '1 day'
+      FROM deal d WHERE d.title LIKE 'Замер %' AND (hashtext(d.id::text) % 20) = 0
+    """,
+    """
+    INSERT INTO notification (recipient_user_id, event_type, entity_type, entity_id, channel,
+                              address, status, dedup_key, payload, created_at, sent_at, body)
+    SELECT d.responsible_user_id, 'request.stuck', 'deal', d.id, 'telegram', '1', 'sent',
+           'stuck:' || d.id || ':' || d.stage_id || ':responsible:' || g, '{}'::jsonb,
+           d.stage_entered_at + make_interval(days => 15 + g * 3),
+           d.stage_entered_at + make_interval(days => 15 + g * 3), 'b'
+      FROM deal d, generate_series(0, 2) g
+     WHERE d.title LIKE 'Замер %' AND (hashtext(d.id::text) % 10) < 3
+    """,
+    """
+    INSERT INTO deal_comment (deal_id, author_user_id, body, created_at)
+    SELECT d.id, d.responsible_user_id, 'комментарий', d.stage_entered_at + interval '2 days'
+      FROM deal d WHERE d.title LIKE 'Замер %' AND (hashtext(d.id::text) % 10) < 3
+    """,
+)
+
+
+async def _bulk(db_session, workflows, people, count: int) -> None:  # noqa: ANN001
     wf, stages = workflows["b2b"]
     university = await factories.make_university(db_session, kam=people["kam1"])
     kams = [people["kam1"], people["kam2"]] + [
@@ -797,16 +898,92 @@ async def test_performance_10k_requests(db_session, workflows, people) -> None:
             "uni": university.id,
             "resp": [kam.id for kam in kams],
             "now": NOW,
-            "n": 10_000,
+            "n": count,
         },
     )
-    await db_session.execute(sa.text("ANALYZE deal"))
-    await db_session.execute(sa.text("ANALYZE deal_stage_history"))
+    for statement in _BULK_EXTRAS:
+        await db_session.execute(sa.text(statement), {"first_kam": str(people["kam1"].id)})
+    for table in ("deal", "deal_stage_history", "audit_log", "notification", "deal_comment"):
+        await db_session.execute(sa.text(f"ANALYZE {table}"))
+
+
+async def _timed(coro) -> tuple[Any, float, float]:  # noqa: ANN001
+    """(результат, секунды, самая долгая остановка цикла событий): расчёт не должен
+    держать цикл — остальные запросы воркера в это время обслуживаются."""
+    import asyncio
+
+    stalls: list[float] = []
+    stop = asyncio.Event()
+
+    async def ticker() -> None:
+        last = clock.perf_counter()
+        while not stop.is_set():
+            await asyncio.sleep(0.01)
+            now = clock.perf_counter()
+            stalls.append(now - last - 0.01)
+            last = now
+
+    task = asyncio.create_task(ticker())
     started = clock.perf_counter()
-    report = await sla.build_sla(db_session, people["head"], KamActivityParams(), use_cache=False)
-    elapsed = clock.perf_counter() - started
-    print(f"\nsla: 10 000 заявок — {elapsed:.2f} с")  # noqa: T201
-    assert report["kpi"]["active"]["value"] == 10_000
+    try:
+        result = await coro
+    finally:
+        elapsed = clock.perf_counter() - started
+        stop.set()
+        await task
+    return result, elapsed, max(stalls, default=0.0)
+
+
+class _MemoryCache:
+    def __init__(self) -> None:
+        self.store: dict[str, Any] = {}
+
+    async def get_json(self, key: str) -> Any:
+        return self.store.get(key)
+
+    async def set_json(self, key: str, value: Any, ttl: int) -> bool:
+        self.store[key] = value
+        return True
+
+
+async def _check_performance(  # noqa: ANN001
+    db_session, workflows, people, monkeypatch, count: int, limits: tuple[float, float, float]
+) -> None:
+    await _bulk(db_session, workflows, people, count)
+    head = people["head"]
+    report, elapsed, stall = await _timed(
+        sla.build_sla(db_session, head, KamActivityParams(), use_cache=False)
+    )
+    # разбор КАМа: командные значения — из кэша вкладки, набор — с предфильтром по КАМу
+    cache = _MemoryCache()
+    monkeypatch.setattr(sla, "get_cache", lambda: cache)
+    await sla.build_sla(db_session, head, KamActivityParams())
+    kam, kam_elapsed, _kam_stall = await _timed(
+        sla.build_sla_kam(db_session, head, people["kam2"].id, KamActivityParams())
+    )
+    print(  # noqa: T201
+        f"\nsla: {count} заявок — команда {elapsed:.2f} с (остановка цикла {stall:.2f} с), "
+        f"разбор КАМа {kam_elapsed:.2f} с"
+    )
+    assert report["kpi"]["active"]["value"] == count
     assert report["overdue"]["truncated"] is True
     assert len(report["overdue"]["items"]) == sla.MAX_OVERDUE_ITEMS
-    assert elapsed < 30
+    assert kam["team"]["overdue_pct"] == report["kpi"]["overdue_pct"]["value"]
+    assert len(kam["overdue"]["items"]) <= sla.MAX_KAM_ITEMS
+    team_limit, stall_limit, kam_limit = limits
+    assert elapsed < team_limit and stall < stall_limit and kam_elapsed < kam_limit
+
+
+async def test_performance_10k_requests(db_session, workflows, people, monkeypatch) -> None:
+    await _check_performance(db_session, workflows, people, monkeypatch, 10_000, (10, 1.0, 3))
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ALMA_SLA_PERF_50K"),
+    reason="замер на 50 000 заявок (~40 с) — по ALMA_SLA_PERF_50K=1",
+)
+async def test_performance_50k_requests(db_session, workflows, people, monkeypatch) -> None:
+    # замер 16.10.2026 на ноутбуке разработчика: команда 5,5–6,7 с (было 9–11 с), самая
+    # долгая остановка цикла событий 0,3 с (было — весь расчёт), разбор КАМа при командном
+    # отчёте в кэше 0,3–0,5 с (было 8–9,6 с)
+    await _check_performance(db_session, workflows, people, monkeypatch, 50_000, (20, 1.5, 3))
