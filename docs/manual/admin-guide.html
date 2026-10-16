@@ -128,7 +128,7 @@
 
 <section class="sec" id="sec-settings">
   <h2 class="section"><span class="num">6</span>Пороги «зависания» и эскалации</h2>
-  <ul class="dots"><li>Глобальный порог задаётся в «Нотификациях», блок «Правила и пороги «зависания»» (право <code>admin:settings</code>): через сколько дней без смены этапа заявка зависла и включена ли эскалация руководителю при 1,5× порога.</li><li>Порог отдельного этапа задаётся в конструкторе процесса и переопределяет глобальный.</li><li>Проверка зависших запускается по расписанию раз в час (CronJob <code>stuck-check</code>).</li><li>Правила адресации уведомлений на роли настраиваются через API: <code>/api/v1/notifications/rules</code> (права <code>notification_rules:read</code> и <code>notification_rules:write</code>).</li></ul>
+  <ul class="dots"><li>Порог «зависания» задаётся на этапе в конструкторе процессов; пустое поле — наследуется от процесса (14 дней). Глобального порога в интерфейсе нет: у процесса порог задан всегда.</li><li>В «Нотификациях», блок «Правила и пороги «зависания»» (право <code>admin:settings</code>), включается эскалация руководителю при 1,5× порога.</li><li>Проверка зависших запускается по расписанию раз в час (CronJob <code>stuck-check</code>).</li><li>Правила адресации уведомлений на роли настраиваются через API: <code>/api/v1/notifications/rules</code> (права <code>notification_rules:read</code> и <code>notification_rules:write</code>).</li></ul>
 </section>
 
 <section class="sec" id="sec-dictionaries">

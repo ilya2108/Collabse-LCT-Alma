@@ -96,7 +96,10 @@ class Settings(BaseSettings):
     cms_webhook_secret: str = "dev-cms-secret"
 
     # --- зависшие заявки ------------------------------------------------------------
-    # сидирует app_setting['stuck_threshold_days_default']; рабочие пороги живут в БД
+    # расчётом не читается: app_setting['stuck_threshold_days_default'] сидируется литералом
+    # в app/tools/seed.py, а до глобального уровня каскад не доходит — у процесса порог
+    # задан всегда (workflow.stuck_threshold_days NOT NULL DEFAULT 14). Рабочие пороги —
+    # на этапах и процессе в БД, меняются на этапах в конструкторе процессов
     stuck_default_days: int = Field(default=14, ge=1, le=60)
 
     # --- идемпотентность мутаций (api-contract.md §1.6) -------------------------------

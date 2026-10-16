@@ -194,10 +194,18 @@ export interface University {
   version: number;
   created_at: string;
   updated_at: string;
-  /** Агрегаты карточки (§3.1: «+агрегаты: счётчики договоров/заявок/студентов»). */
-  contracts_count?: number;
-  active_requests?: number;
-  students_count?: number;
+  /**
+   * Агрегаты карточки (§3.1: «+агрегаты: счётчики договоров/заявок/студентов»):
+   * только в GET /universities/{id}, в списке и ответах на запись — null.
+   */
+  aggregates?: UniversityAggregates | null;
+}
+
+/** Счётчики карточки вуза — `UniversityOut.aggregates` (crm/schemas.py). */
+export interface UniversityAggregates {
+  contracts_count: number;
+  active_requests: number;
+  students_count: number;
 }
 
 /** Контактное лицо вуза (§3.1). */
@@ -248,11 +256,11 @@ export interface Contract {
   version: number;
   created_at?: string;
   updated_at?: string;
-  /** Денормализованные подписи владельца (если backend их отдаёт). */
+  /** Подписи владельца: вуз или контрагент (ContractOut, без ПДн контрагента). */
   university?: { id: string; name: string } | null;
   counterparty?: { id: string; display_name: string } | null;
-  /** Предупреждение о втором активном договоре вуза (§3.2). */
-  warning_duplicate?: boolean;
+  /** Текст предупреждения о втором активном договоре вуза (§3.2); только в ответе создания. */
+  warning_duplicate?: string | null;
 }
 
 /** Файл в MinIO — общий формат файлов всего API (§3.2). */
@@ -411,7 +419,8 @@ export interface RequestComment {
   text: string;
   author: UserRef;
   created_at: string;
-  deleted_at?: string | null;
+  /** Удалён (CommentOut.deleted): text тогда — «(удалено)». */
+  deleted?: boolean;
 }
 
 /** Доступный переход для текущего пользователя (workflow-engine.md §7). */

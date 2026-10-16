@@ -201,6 +201,9 @@ NPM_PURPOSES: dict[str, str] = {
     "@types/react": "типы React",
     "@types/react-dom": "типы React DOM",
     "@types/qrcode": "типы qrcode",
+    "eslint": "проверка правил хуков React (npm run lint)",
+    "eslint-plugin-react-hooks": "правила хуков React для ESLint",
+    "@typescript-eslint/parser": "разбор TypeScript для ESLint",
 }
 NPM_PREFIX_PURPOSES: tuple[tuple[str, str], ...] = (
     ("@radix-ui/react-", "примитив интерфейса Radix (основа shadcn/ui)"),

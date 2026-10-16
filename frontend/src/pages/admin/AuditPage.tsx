@@ -28,6 +28,7 @@ const ACTION_LABELS: Record<string, string> = {
   'auth.login': 'Вход в систему',
   'request.transitioned': 'Переход заявки',
   'request.created': 'Создание заявки',
+  'counterparty.created': 'Создание клиента B2C',
   'request.assigned': 'Назначение ответственного',
   'workflow.change_requested': 'Запрос изменения процесса',
   'workflow.change_applied': 'Публикация схемы процесса',
@@ -51,6 +52,7 @@ const ACTION_LABELS: Record<string, string> = {
 
 const ENTITY_LABELS: Record<string, string> = {
   deal: 'заявка',
+  counterparty: 'клиент B2C',
   student: 'студент',
   workflow: 'процесс',
   university: 'вуз',

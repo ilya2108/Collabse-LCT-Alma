@@ -18,7 +18,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover';
 /**
  * Контролы панели фильтров дашборда (redesign.md §6.3, §5.1):
  * — RangePicker → Popover + Calendar (react-day-picker, locale ru) с
- *   пресетами периодов «Месяц/Квартал/Год» в футере поповера;
+ *   пресетами скользящих периодов «30 дней / 3 месяца / 12 месяцев» в футере
+ *   поповера (не календарные: календарный «Месяц» — у отчёта «Активность КАМов»);
  * — мультиселекты КАМ/вуз/продукт → Popover + Command (паттерн Combobox)
  *   с чипом выбранного и счётчиком «+N» в триггере.
  */
@@ -31,10 +32,11 @@ interface DateRangeFilterProps {
   onChange: (from: string | null, to: string | null) => void;
 }
 
+// «30 дней» — по сегодня включительно, как период KPI по умолчанию (DEFAULT_KPI_DAYS)
 const RANGE_PRESETS = [
-  { label: 'Месяц', months: 1 },
-  { label: 'Квартал', months: 3 },
-  { label: 'Год', months: 12 },
+  { label: '30 дней', amount: 29, unit: 'day' },
+  { label: '3 месяца', amount: 3, unit: 'month' },
+  { label: '12 месяцев', amount: 12, unit: 'month' },
 ] as const;
 
 export function DateRangeFilter({ from, to, onChange }: DateRangeFilterProps): ReactNode {
@@ -84,7 +86,7 @@ export function DateRangeFilter({ from, to, onChange }: DateRangeFilterProps): R
               size="sm"
               onClick={() => {
                 onChange(
-                  dayjs().subtract(preset.months, 'month').format(DATE_FMT),
+                  dayjs().subtract(preset.amount, preset.unit).format(DATE_FMT),
                   dayjs().format(DATE_FMT),
                 );
                 setOpen(false);

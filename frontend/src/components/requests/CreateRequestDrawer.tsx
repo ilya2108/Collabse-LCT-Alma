@@ -16,7 +16,7 @@ import { isApiError } from '@/shared/api/errors';
 import { createRequest, type CreateRequestPayload } from '@/shared/api/endpoints/requests';
 import type { RequestItem, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
-import { toastError, toastSuccess } from '@/shared/lib/toast';
+import { toastError, toastInfo, toastSuccess } from '@/shared/lib/toast';
 import { Button } from '@/shared/ui/button';
 import {
   Form,
@@ -36,6 +36,8 @@ import { Textarea } from '@/shared/ui/textarea';
  * Создание заявки (ux.md §7.4, redesign.md §5.2): Sheet 480px, react-hook-form
  * + zod. Заявка всегда создаётся в начальном этапе схемы; B2B — вуз
  * обязателен, B2C — контрагент (физлицо/юрлицо) + тип взаимодействия.
+ * Нового клиента B2C сервер находит в базе (физлицо — по email, юрлицо — по ИНН
+ * или названию) или создаёт; найденный — сообщаем отдельным тостом.
  * Ошибки 400 `validation_error` маппятся в поля через form.setError.
  */
 
@@ -163,6 +165,16 @@ export function CreateRequestDrawer({
     meta: { silent: true },
     onSuccess: (request) => {
       toastSuccess('Заявка создана', `«${request.title}» — этап «${request.status.name}»`);
+      if (request.client_matched) {
+        const name = request.client?.company_name ?? request.client?.full_name;
+        toastInfo(
+          'Клиент уже был в базе',
+          name
+            ? `Заявка привязана к существующему клиенту «${name}»`
+            : 'Заявка привязана к существующему клиенту',
+        );
+      }
+      if (request.warning_duplicate) toastInfo('Проверьте, не дубль ли это', request.warning_duplicate);
       void queryClient.invalidateQueries({ queryKey: ['board-requests'] });
       void queryClient.invalidateQueries({ queryKey: ['registry'] });
       form.reset(DEFAULTS);
@@ -371,6 +383,7 @@ export function CreateRequestDrawer({
                               placeholder="ИНН, 10 цифр…"
                             />
                           </FormControl>
+                          <FormDescription>Если организация с этим ИНН уже есть в базе, заявка привяжется к ней</FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -393,6 +406,9 @@ export function CreateRequestDrawer({
                           placeholder="client@example.com…"
                         />
                       </FormControl>
+                      {clientKind === 'person' ? (
+                        <FormDescription>Если клиент с этим email уже есть в базе, заявка привяжется к нему</FormDescription>
+                      ) : null}
                       <FormMessage />
                     </FormItem>
                   )}

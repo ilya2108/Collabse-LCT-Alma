@@ -540,7 +540,7 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 | `Tabs` | `Tabs` shadcn | Подчёркнутый вариант (list `border-b`, активный таб `border-b-2 border-primary text-primary`) |
 | `Tag` | `StatusBadge`/`Badge` §3.6 | Никогда не цвет-только: точка/иконка + текст |
 | `Select` | `Select` shadcn; с поиском/мульти — `Popover + Command` (паттерн Combobox) | мультиселекты фильтров: чипы выбранного внутри триггера, счётчик «+N» |
-| `DatePicker`/`RangePicker` | `Popover + Calendar` (react-day-picker, locale ru) | пресеты периодов («Месяц/Квартал/Год») — кнопки в футере поповера |
+| `DatePicker`/`RangePicker` | `Popover + Calendar` (react-day-picker, locale ru) | пресеты периодов («30 дней / 3 месяца / 12 месяцев»; скользящие, календарный «Месяц» — у отчёта «Активность КАМов») — кнопки в футере поповера |
 | `Upload.Dragger` | `FileDropzone` §3.9 | |
 | `Steps` | `Stepper` §3.10 | |
 | `Statistic` | `StatCard` §3.4 | |

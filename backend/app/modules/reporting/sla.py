@@ -1523,6 +1523,8 @@ _CONSONANTS = set("бвгджзклмнпрстфхцчшщ")
 
 def _genitive_surname(surname: str, female: bool) -> str:
     lower = surname.lower()
+    if lower.endswith(("ых", "их")):
+        return surname  # «Черных», «Долгих» не склоняются: «У Черных К. А.»
     if female:
         if lower.endswith(_FEMALE_SUFFIXES):
             return surname[:-1] + "ой"

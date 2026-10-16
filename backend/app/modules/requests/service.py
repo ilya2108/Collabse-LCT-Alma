@@ -1,8 +1,14 @@
-"""Доменные помощники модуля заявок: доступные переходы, контекст condition-DSL.
+"""Доменные помощники модуля заявок: доступные переходы, контекст condition-DSL,
+клиент B2C-заявки.
 
 `GET /requests/{id}/transitions` — единственный источник действий для карточки и
 канбана: RBAC-фильтр форсируется (недоступные роли не попадают в список), `condition`
 только аннотирует (`available` + причина), решение всегда за человеком (Р-4).
+
+`find_or_create_counterparty` — общий поиск/создание клиента B2C для формы создания заявки
+(`POST /requests` с `client`) и лида CMS (`cms.lead.created`): физлицо ищется по blind index
+email, юрлицо — по ИНН, без ИНН — по точному названию; ПДн физлица шифруются типом
+EncryptedStr, HMAC-колонки заполняются здесь.
 """
 
 from __future__ import annotations
@@ -12,6 +18,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pii import (
+    display_name_from_full_name,
+    get_pii_crypto,
+    mask_email,
+    mask_full_name,
+    mask_phone,
+)
 from app.models.crm import Counterparty, InteractionType
 from app.models.deal import Deal
 from app.models.user import AppUser
@@ -19,6 +32,92 @@ from app.models.workflow import WorkflowStage, WorkflowTransition
 from app.modules.requests.serializers import client_kind_of
 from app.modules.workflow.conditions import evaluate_condition
 from app.modules.workflow.service import transition_role_allowed
+
+
+async def find_or_create_counterparty(
+    session: AsyncSession,
+    *,
+    client_kind: str,
+    full_name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+    company_name: str | None = None,
+    inn: str | None = None,
+) -> tuple[Counterparty, bool]:
+    """Клиент B2C по данным формы или лида: (контрагент, создан ли он сейчас).
+
+    `client_kind`: `person` — физлицо (нужен full_name), иначе юрлицо (нужен company_name);
+    обязательность полей проверяет вызывающий код. Найденный клиент возвращается как есть —
+    его карточка данными запроса не переписывается. Физлицо без email искать не по чему —
+    создаётся новый контрагент. Только flush, commit — на вызывающей стороне.
+    """
+    if client_kind == "person":
+        crypto = get_pii_crypto()
+        email_hmac = crypto.email_hmac(email) if email else None
+        if email_hmac is not None:
+            existing = (
+                await session.execute(
+                    select(Counterparty).where(Counterparty.email_hmac == email_hmac)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing, False
+        if not full_name:
+            raise ValueError("ФИО физлица проверяет вызывающий код")
+        counterparty = Counterparty(
+            kind="person",
+            display_name=display_name_from_full_name(full_name),
+            full_name=full_name,
+            email=email,
+            phone=phone,
+            email_hmac=email_hmac,
+            full_name_hmac=crypto.full_name_hmac(full_name),
+        )
+        session.add(counterparty)
+        await session.flush()
+        return counterparty, True
+
+    if not company_name:
+        raise ValueError("Название юрлица проверяет вызывающий код")
+    stmt = select(Counterparty).where(Counterparty.kind == "legal_entity")
+    stmt = (
+        stmt.where(Counterparty.inn == inn)
+        if inn
+        else stmt.where(Counterparty.org_name == company_name)
+    )
+    existing = (await session.execute(stmt)).scalars().first()
+    if existing is not None:
+        return existing, False
+    counterparty = Counterparty(
+        kind="legal_entity",
+        display_name=company_name,
+        org_name=company_name,
+        inn=inn,
+        org_email=email,
+        org_phone=phone,
+    )
+    session.add(counterparty)
+    await session.flush()
+    return counterparty, True
+
+
+def counterparty_audit_after(counterparty: Counterparty, *, source: str) -> dict[str, Any]:
+    """Снимок нового клиента для audit_log: ПДн физлица — только маскированные
+    (data-model.md §8.5), реквизиты юрлица — как есть."""
+    if counterparty.kind == "person":
+        return {
+            "kind": "person",
+            "source": source,
+            "full_name": mask_full_name(counterparty.full_name or ""),
+            "email": mask_email(counterparty.email) if counterparty.email else None,
+            "phone": mask_phone(counterparty.phone) if counterparty.phone else None,
+        }
+    return {
+        "kind": "legal_entity",
+        "source": source,
+        "org_name": counterparty.org_name,
+        "inn": counterparty.inn,
+    }
 
 
 async def build_request_context(session: AsyncSession, deal: Deal) -> dict[str, Any]:

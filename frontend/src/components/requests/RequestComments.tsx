@@ -134,8 +134,9 @@ export function RequestComments({
   }
 
   const comments = commentsQuery.data?.items ?? [];
-  const isDeleted = (comment: RequestComment): boolean =>
-    Boolean(comment.deleted_at) || comment.text === '(удалено)';
+  // признак удаления — флаг `deleted` из CommentOut; поля deleted_at сервер не отдаёт,
+  // а сверка текста с «(удалено)» прятала бы живой комментарий с таким текстом
+  const isDeleted = (comment: RequestComment): boolean => comment.deleted === true;
 
   return (
     <div className="flex min-h-80 flex-col">

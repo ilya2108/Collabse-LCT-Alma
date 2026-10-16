@@ -374,6 +374,7 @@ async def test_overdue_equals_kam_activity_stuck_and_board_filter(
     )
     assert board.status_code == 200, board.text
     assert board.json()["total"] == report["kpi"]["overdue"]["value"]
+    assert all(item["is_stuck"] for item in board.json()["items"])
 
 
 # --- 7–8. область и пустые данные -------------------------------------------------------

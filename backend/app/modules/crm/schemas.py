@@ -177,6 +177,20 @@ class ContractLicenseOut(_ApiModel):
     note: str | None = None
 
 
+class ContractUniversityRef(_ApiModel):
+    """Подпись владельца-вуза в карточке и реестре договоров."""
+
+    id: UUID
+    name: str
+
+
+class ContractCounterpartyRef(_ApiModel):
+    """Подпись владельца-контрагента: только display_name, ПДн не раскрываются."""
+
+    id: UUID
+    display_name: str
+
+
 class ContractOut(ContractBase):
     id: UUID
     product_ids: list[UUID] = Field(default_factory=list)
@@ -186,6 +200,10 @@ class ContractOut(ContractBase):
     updated_at: datetime
     warning_duplicate: str | None = None
     files: list[FileOut] | None = None
+    # денормализованные подписи владельца (frontend Contract.university/counterparty);
+    # без них колонка «Вуз / Контрагент» и строка «Владелец» показывали «—»
+    university: ContractUniversityRef | None = None
+    counterparty: ContractCounterpartyRef | None = None
 
 
 # --- ИТ-направления -----------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 | Группа | Всего | Состав | Источник |
 |---|---|---|---|
 | Python-пакеты | 95 | в образах — 76, для разработки и тестов — 12, только для других версий Python и ОС — 7 | `backend/uv.lock`, `services/notification/uv.lock`, `services/lms-stub/uv.lock`, `services/cms-stub/uv.lock`, `services/llm-gateway/uv.lock` |
-| npm-пакеты | 308 | без признака `dev` — 182, с признаком `dev` (только сборка) — 50, платформенные бинарные сборки — 76 | `frontend/package-lock.json` |
+| npm-пакеты | 397 | без признака `dev` — 186, с признаком `dev` (только сборка) — 135, платформенные бинарные сборки — 76 | `frontend/package-lock.json` |
 | Образы контейнеров | 20 | собственные — 6, сторонние — 14 | Dockerfile, `deploy/`, `.github/workflows/` |
 | Действия GitHub Actions | 3 | сборка и проверки в CI | CI |
 | Шрифты | 1 | PDF отчётов | `backend/app/modules` |
@@ -21,19 +21,20 @@ Python-пакеты считаются парами «пакет — верси�
 
 | Лицензия | Python | npm | Образы |
 |---|---|---|---|
-| MIT | 45 | 259 | 1 |
-| ISC | — | 23 | — |
-| Apache-2.0 | 12 | 6 | 4 |
-| BSD-3-Clause | 17 | 3 | 1 |
+| MIT | 45 | 322 | 1 |
+| Apache-2.0 | 12 | 18 | 4 |
+| ISC | — | 28 | — |
+| BSD-3-Clause | 17 | 5 | 1 |
 | MPL-2.0 | 1 | 12 | — |
+| BSD-2-Clause | 1 | 6 | 1 |
 | PSF-2.0 | 3 | — | 1 |
 | 0BSD | — | 3 | — |
 | AGPL-3.0 | — | — | 3 |
-| BSD-2-Clause | 1 | — | 1 |
 | Apache-2.0 OR BSD-2-Clause | 1 | — | — |
 | Apache-2.0 OR BSD-3-Clause | 1 | — | — |
 | BSD | 1 | — | — |
 | BSD, Public Domain | 1 | — | — |
+| BlueOak-1.0.0 | — | 1 | — |
 | CC-BY-4.0 | — | 1 | — |
 | LGPL-3.0-only | 1 | — | — |
 | MIT AND PSF-2.0 | 1 | — | — |
@@ -240,18 +241,21 @@ Python-пакеты считаются парами «пакет — верси�
 | zod | 3.25.76 | MIT | схемы валидации данных |
 | zustand | 5.0.15 | MIT | состояние интерфейса |
 
-### Прямые зависимости сборки (`devDependencies`) — 6
+### Прямые зависимости сборки (`devDependencies`) — 9
 
 | Пакет | Версия | Лицензия | Назначение |
 |---|---|---|---|
 | @types/qrcode | 1.5.6 | MIT | типы qrcode |
 | @types/react | 18.3.31 | MIT | типы React |
 | @types/react-dom | 18.3.7 | MIT | типы React DOM |
+| @typescript-eslint/parser | 8.71.0 | MIT | разбор TypeScript для ESLint |
 | @vitejs/plugin-react | 4.7.0 | MIT | React в сборке Vite |
+| eslint | 10.12.0 | MIT | проверка правил хуков React (npm run lint) |
+| eslint-plugin-react-hooks | 7.1.1 | MIT | правила хуков React для ESLint |
 | typescript | 5.8.3 | Apache-2.0 | проверка типов |
 | vite | 6.4.3 | MIT | сборка и dev-сервер |
 
-### Транзитивные зависимости — 133
+### Транзитивные зависимости — 137
 
 | Пакет | Версия | Лицензия | Назначение |
 |---|---|---|---|
@@ -309,6 +313,7 @@ Python-пакеты считаются парами «пакет — верси�
 | @types/d3-zoom | 3.0.8 | MIT | — |
 | @types/estree | 1.0.9 | MIT | — |
 | @xyflow/system | 0.0.82 | MIT | — |
+| ajv | 8.20.0 | MIT | — |
 | ansi-regex | 5.0.1 | MIT | — |
 | ansi-styles | 4.3.0 | MIT | — |
 | aria-hidden | 1.2.6 | MIT | — |
@@ -336,6 +341,7 @@ Python-пакеты считаются парами «пакет — верси�
 | enhanced-resolve | 5.25.1 | MIT | — |
 | esbuild | 0.25.12 | MIT | — |
 | fast-deep-equal | 3.1.3 | MIT | — |
+| fast-uri | 3.1.8 | BSD-3-Clause | — |
 | fdir | 6.5.0 | MIT | — |
 | find-up | 4.1.0 | MIT | — |
 | framer-motion | 12.43.0 | MIT | — |
@@ -345,6 +351,7 @@ Python-пакеты считаются парами «пакет — верси�
 | is-fullwidth-code-point | 3.0.0 | MIT | — |
 | jiti | 2.7.0 | MIT | — |
 | js-tokens | 4.0.0 | MIT | — |
+| json-schema-traverse | 1.0.0 | MIT | — |
 | lightningcss | 1.32.0 | MPL-2.0 | — |
 | locate-path | 5.0.0 | MIT | — |
 | loose-envify | 1.4.0 | MIT | — |
@@ -365,6 +372,7 @@ Python-пакеты считаются парами «пакет — верси�
 | react-router | 6.30.6 | MIT | — |
 | react-style-singleton | 2.2.3 | MIT | — |
 | require-directory | 2.1.1 | MIT | — |
+| require-from-string | 2.0.2 | MIT | — |
 | require-main-filename | 2.0.0 | ISC | — |
 | rollup | 4.63.3 | MIT | — |
 | scheduler | 0.23.2 | MIT | — |
@@ -389,7 +397,7 @@ Python-пакеты считаются парами «пакет — верси�
 | zrender | 5.6.1 | BSD-3-Clause | — |
 | zustand | 4.5.7 | MIT | состояние интерфейса |
 
-### Транзитивные зависимости сборки — 45
+### Транзитивные зависимости сборки — 127
 
 | Пакет | Версия | Лицензия | Назначение |
 |---|---|---|---|
@@ -412,32 +420,114 @@ Python-пакеты считаются парами «пакет — верси�
 | @babel/template | 7.29.7 | MIT | — |
 | @babel/traverse | 7.29.8 | MIT | — |
 | @babel/types | 7.29.8 | MIT | — |
+| @cacheable/memory | 2.2.0 | MIT | — |
+| @cacheable/utils | 2.5.0 | MIT | — |
+| @eslint-community/eslint-utils | 4.10.1 | MIT | — |
+| @eslint-community/regexpp | 4.12.2 | MIT | — |
+| @eslint/config-array | 0.23.5 | Apache-2.0 | — |
+| @eslint/config-helpers | 0.7.0 | Apache-2.0 | — |
+| @eslint/core | 1.2.1 | Apache-2.0 | — |
+| @eslint/object-schema | 3.0.5 | Apache-2.0 | — |
+| @eslint/plugin-kit | 0.7.3 | Apache-2.0 | — |
+| @humanfs/core | 0.19.2 | Apache-2.0 | — |
+| @humanfs/node | 0.16.8 | Apache-2.0 | — |
+| @humanfs/types | 0.15.0 | Apache-2.0 | — |
+| @humanwhocodes/module-importer | 1.0.1 | Apache-2.0 | — |
+| @humanwhocodes/retry | 0.4.3 | Apache-2.0 | — |
+| @keyv/bigmap | 1.3.1 | MIT | — |
+| @keyv/serialize | 1.1.1 | MIT | — |
 | @rolldown/pluginutils | 1.0.0-beta.27 | MIT | — |
 | @types/babel__core | 7.20.5 | MIT | — |
 | @types/babel__generator | 7.27.0 | MIT | — |
 | @types/babel__template | 7.4.4 | MIT | — |
 | @types/babel__traverse | 7.28.0 | MIT | — |
+| @types/esrecurse | 4.3.1 | MIT | — |
+| @types/json-schema | 7.0.15 | MIT | — |
 | @types/node | 22.20.3 | MIT | — |
 | @types/prop-types | 15.7.15 | MIT | — |
+| @typescript-eslint/project-service | 8.71.0 | MIT | — |
+| @typescript-eslint/scope-manager | 8.71.0 | MIT | — |
+| @typescript-eslint/tsconfig-utils | 8.71.0 | MIT | — |
+| @typescript-eslint/types | 8.71.0 | MIT | — |
+| @typescript-eslint/typescript-estree | 8.71.0 | MIT | — |
+| @typescript-eslint/visitor-keys | 8.71.0 | MIT | — |
+| acorn | 8.19.0 | MIT | — |
+| acorn-jsx | 5.3.2 | MIT | — |
+| ajv | 6.15.0 | MIT | — |
+| balanced-match | 4.0.4 | MIT | — |
 | baseline-browser-mapping | 2.11.24 | Apache-2.0 | — |
+| brace-expansion | 5.0.12 | MIT | — |
 | browserslist | 4.29.0 | MIT | — |
+| cacheable | 2.5.0 | MIT | — |
 | caniuse-lite | 1.0.30001810 | CC-BY-4.0 | — |
 | convert-source-map | 2.0.0 | MIT | — |
+| cross-spawn | 7.0.6 | MIT | — |
 | csstype | 3.2.3 | MIT | — |
 | debug | 4.4.3 | MIT | — |
+| deep-is | 0.1.4 | MIT | — |
 | electron-to-chromium | 1.5.430 | ISC | — |
 | escalade | 3.2.0 | MIT | — |
+| escape-string-regexp | 4.0.0 | MIT | — |
+| eslint-scope | 9.1.2 | BSD-2-Clause | — |
+| eslint-visitor-keys | 3.4.3 | Apache-2.0 | — |
+| eslint-visitor-keys | 5.0.1 | Apache-2.0 | — |
+| espree | 11.2.0 | BSD-2-Clause | — |
+| esquery | 1.7.0 | BSD-3-Clause | — |
+| esrecurse | 4.3.0 | BSD-2-Clause | — |
+| estraverse | 5.3.0 | BSD-2-Clause | — |
+| esutils | 2.0.3 | BSD-2-Clause | — |
+| fast-json-stable-stringify | 2.1.0 | MIT | — |
+| fast-levenshtein | 2.0.6 | MIT | — |
+| file-entry-cache | 11.1.5 | MIT | — |
+| find-up | 5.0.0 | MIT | — |
+| flat-cache | 6.1.23 | MIT | — |
+| flatted | 3.4.4 | ISC | — |
 | gensync | 1.0.0-beta.2 | MIT | — |
+| glob-parent | 6.0.2 | ISC | — |
+| hashery | 1.5.1 | MIT | — |
+| hermes-estree | 0.25.1 | MIT | — |
+| hermes-parser | 0.25.1 | MIT | — |
+| hookified | 1.15.1 | MIT | — |
+| hookified | 2.2.0 | MIT | — |
+| ignore | 5.3.2 | MIT | — |
+| imurmurhash | 0.1.4 | MIT | — |
+| is-extglob | 2.1.1 | MIT | — |
+| is-glob | 4.0.3 | MIT | — |
+| isexe | 2.0.0 | ISC | — |
 | jsesc | 3.1.0 | MIT | — |
+| json-schema-traverse | 0.4.1 | MIT | — |
+| json-stable-stringify-without-jsonify | 1.0.1 | MIT | — |
 | json5 | 2.2.3 | MIT | — |
+| keyv | 5.6.0 | MIT | — |
+| levn | 0.4.1 | MIT | — |
+| locate-path | 6.0.0 | MIT | — |
 | lru-cache | 5.1.1 | ISC | — |
+| minimatch | 10.2.6 | BlueOak-1.0.0 | — |
 | ms | 2.1.3 | MIT | — |
+| natural-compare | 1.4.0 | MIT | — |
 | node-releases | 2.0.55 | MIT | — |
+| optionator | 0.9.4 | MIT | — |
+| p-limit | 3.1.0 | MIT | — |
+| p-locate | 5.0.0 | MIT | — |
+| path-key | 3.1.1 | MIT | — |
+| prelude-ls | 1.2.1 | MIT | — |
+| punycode | 2.3.1 | MIT | — |
+| qified | 0.10.1 | MIT | — |
 | react-refresh | 0.17.0 | MIT | — |
 | semver | 6.3.1 | ISC | — |
+| semver | 7.8.5 | ISC | — |
+| shebang-command | 2.0.0 | MIT | — |
+| shebang-regex | 3.0.0 | MIT | — |
+| ts-api-utils | 2.5.0 | MIT | — |
+| type-check | 0.4.0 | MIT | — |
 | undici-types | 6.21.0 | MIT | — |
 | update-browserslist-db | 1.3.3 | MIT | — |
+| uri-js | 4.4.1 | BSD-2-Clause | — |
+| which | 2.0.2 | ISC | — |
+| word-wrap | 1.2.5 | MIT | — |
 | yallist | 3.1.1 | ISC | — |
+| yocto-queue | 0.1.0 | MIT | — |
+| zod-validation-error | 4.0.2 | MIT | — |
 
 ### Платформенные бинарные сборки — 76
 

@@ -19,6 +19,7 @@ import { FunnelSwitcher } from './FunnelSwitcher';
 import { ErrorState, PageHeader, SegmentedControl, StatusBadge } from './local';
 import { FUNNEL_META, FUNNEL_ORDER, funnelMeta, isFunnelReturn } from './model';
 import { PiiValue, RevealEye } from './PiiCells';
+import { registryDefaultFilters } from './registryFilters';
 import { SchedulePanel } from './SchedulePanel';
 import { StatusChangeModal } from './StatusChangeModal';
 import { StudentFormDrawer } from './StudentFormDrawer';
@@ -54,6 +55,8 @@ export function TalentPoolPage(): ReactNode {
   const funnelStatus = FUNNEL_ORDER.includes(statusParam as StudentFunnelStatus)
     ? (statusParam as StudentFunnelStatus)
     : null;
+  // ссылка «Студенты вуза (N)» из карточки вуза — /talent-pool?university=<id>
+  const universityParam = searchParams.get('university');
   const viewParam = searchParams.get('view');
   const view: ViewMode =
     viewParam === 'board' || viewParam === 'schedule' ? viewParam : 'registry';
@@ -247,13 +250,18 @@ export function TalentPoolPage(): ReactNode {
             rowKey="id"
             fetcher={listStudents}
             searchPlaceholder="Поиск по ФИО или email"
-            defaultFilters={funnelStatus ? { funnel_status: funnelStatus } : {}}
+            defaultFilters={registryDefaultFilters(funnelStatus, universityParam)}
             defaultSort={{ field: 'updated_at', order: 'desc' }}
             renderFilters={({ filters, setFilter }) => (
               <>
                 <UniversityCombobox
                   value={(filters.university_id as string) || null}
-                  onChange={(value) => setFilter('university_id', value ?? '')}
+                  onChange={(value) => {
+                    setFilter('university_id', value ?? '');
+                    // адрес держим в согласии с фильтром: смена сегмента воронки
+                    // пересоздаёт таблицу, и сброшенный вуз не должен вернуться из URL
+                    if (universityParam) setParam('university', value ?? null);
+                  }}
                 />
                 <ProgramCombobox
                   value={(filters.program_id as string) || null}

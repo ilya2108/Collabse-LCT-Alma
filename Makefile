@@ -25,6 +25,10 @@ BENCH_ARGS   ?=
 BENCH_URL     = $(subst postgresql://,postgresql+asyncpg://,$(BENCH_PG))/$(BENCH_DB)
 # интерпретатор backend (путь — относительно backend/): venv, если он есть
 BACKEND_PY   ?= $(if $(wildcard backend/.venv/bin/python),.venv/bin/python,python3)
+# make check: база интеграционных тестов backend (tests/db пересоздаёт её схему — crm_test*/*_test)
+# и Python окружений сервисов — как python-version в CI (код backend требует 3.12)
+ALMA_TEST_DB ?= crm_test
+CHECK_PYTHON ?= 3.12
 # «сейчас» демо-данных для demo-reset: пусто — момент запуска; ГГГГ-ММ-ДД — 09:00 МСК дня
 ANCHOR       ?=
 # k6: секрет клиента crm-loadtest (если не задан — из секрета кластера) и прогон сценария
@@ -36,7 +40,9 @@ K6_CHECK      = command -v k6 >/dev/null 2>&1 || \
         k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo demo-reset \
         demo-reset-local hosts stuck-check idempotency-purge demo-idempotency \
         bench-migration docs-arch load-test load-test-users load-test-reports load-test-nft logs \
-        clean vm-install vm-deploy vm-smoke vm-demo-reset llm-secret llm-smoke llm-smoke-k8s
+        clean vm-install vm-deploy vm-smoke vm-demo-reset llm-secret llm-smoke llm-smoke-k8s \
+        check check-python check-frontend check-backend check-notification check-llm-gateway \
+        check-lms-stub check-cms-stub
 
 help: ## список целей
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -53,6 +59,43 @@ dev-env: ## сгенерировать deploy/compose/.env, если его не
 
 dev-down: ## остановить compose-стек
 	$(COMPOSE) down
+
+## --- Проверки перед коммитом (повторяют CI: .github/workflows/ci.yml) ----------
+# Python — шаги «Тесты» и «Линтер» матрицы python-services с её флагами uv; uv run доводит
+# окружение сервиса до uv.lock. tests/db backend — на PostgreSQL localhost:5432 (crm/crm,
+# база ALMA_TEST_DB): без базы — ошибка, а не пропуск. Фронт — шаги job frontend после
+# `npm ci` (здесь не запускается: пересоздаёт node_modules). Цель на сервис — как job CI:
+# внутри стоп на первой ошибке; make -k check проверит все сервисы (fail-fast: false).
+define py_check
+	cd $(1) && $(2) $(UV) run --python $(CHECK_PYTHON) $(3) pytest -q
+	cd $(1) && $(UV) run --python $(CHECK_PYTHON) $(3) ruff check app tests
+endef
+
+check: check-python check-frontend ## все проверки CI: ruff и pytest 5 сервисов, tsc, ESLint, юнит-тесты, справка, сборка
+
+check-python: check-backend check-notification check-llm-gateway check-lms-stub check-cms-stub ## ruff и pytest всех Python-сервисов
+
+check-backend: ## pytest (tests/db на PostgreSQL обязательны) и ruff backend
+	$(call py_check,backend,ALMA_DB_TESTS=required ALMA_TEST_DB=$(ALMA_TEST_DB),--extra dev)
+
+check-notification:
+	$(call py_check,services/notification,,--group dev)
+
+check-llm-gateway:
+	$(call py_check,services/llm-gateway,,--group dev)
+
+check-lms-stub:
+	$(call py_check,services/lms-stub,,--extra dev)
+
+check-cms-stub:
+	$(call py_check,services/cms-stub,,--extra dev)
+
+check-frontend: ## фронт как в CI: tsc, ESLint (хуки React), юнит-тесты, справка, сборка
+	cd frontend && npm run typecheck
+	cd frontend && npm run lint
+	cd frontend && npm run test:unit
+	cd frontend && npm run docs:help
+	cd frontend && npm run build
 
 ## --- Сборка образов ----------------------------------------------------------
 build-images: ## собрать все образы crm/*:dev

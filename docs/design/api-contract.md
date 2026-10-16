@@ -626,7 +626,11 @@ workflow (§5).
 }
 ```
 
-Для B2C: `university_id` = null, `counterparty_id` — обязателен, `client_kind` = `person|company`
+Для B2C: `university_id` = null, `counterparty_id` — клиент заявки. При создании (`POST /requests`)
+вместо `counterparty_id` можно передать нового клиента: `client_kind` (`person|company`) + `client`
+`{full_name | company_name, email, phone, inn}`. Сервер находит клиента (физлицо — по email,
+юрлицо — по ИНН, без ИНН — по названию) или создаёт его, в ответе создания — `client_matched: true|false`.
+Оба поля сразу — 400. В ответе: `client_kind` = `person|company`
 (проекция `counterparty.kind`), `interaction_type_id` — тип взаимодействия из редактируемого
 справочника, `client` — сериализация контрагента:
 `{"full_name": "…", "email": "…", "phone": "…", "company_name": null, "inn": null}`.

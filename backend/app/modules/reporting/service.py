@@ -493,14 +493,17 @@ def _closed_at_expr(status: str) -> ColumnElement[Any]:
     """Момент закрытия заявки с исходом `status`: ПОСЛЕДНИЙ вход в терминальный этап с этим
     исходом по истории переходов. Не `deal.updated_at`: он меняется любой правкой карточки
     (сумма, ответственный, комментарий) — закрытая полгода назад заявка «завершалась» бы
-    заново. Строки перевода схемы (`system_migration`) — не закрытие. Заявки без строки
-    истории (ручная правка БД) — по `stage_entered_at` текущего этапа."""
+    заново. Строки перевода схемы (`system_migration`) — не закрытие; события LMS по уже
+    закрытой заявке (`integration`, from = to) этап не меняют — тоже не закрытие (как
+    `stage_entry_condition` у отчёта КАМов). Заявки без строки истории (ручная правка БД) —
+    по `stage_entered_at` текущего этапа."""
     return sa.func.coalesce(
         select(func.max(DealStageHistory.created_at))
         .join(WorkflowStage, WorkflowStage.id == DealStageHistory.to_stage_id)
         .where(
             DealStageHistory.deal_id == Deal.id,
             DealStageHistory.kind != "system_migration",
+            DealStageHistory.from_stage_id.is_distinct_from(DealStageHistory.to_stage_id),
             WorkflowStage.is_terminal.is_(True),
             WorkflowStage.terminal_outcome == status,
         )

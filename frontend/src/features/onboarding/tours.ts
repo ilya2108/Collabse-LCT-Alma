@@ -163,7 +163,7 @@ const HEAD_MAIN: TourConfig = {
       target: 'notif-thresholds',
       route: '/settings/notifications',
       title: 'Пороги эскалации',
-      text: 'Настройте, когда заявка считается зависшей и когда эскалировать.',
+      text: 'Где задаются пороги «зависания» и как включить эскалацию руководителю.',
     },
   ],
 };

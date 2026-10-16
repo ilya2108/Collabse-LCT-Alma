@@ -14,6 +14,7 @@ import { UserSelect } from '@/components/selects/EntitySelects';
 import { useOnboarding } from '@/features/onboarding';
 import { isApiError } from '@/shared/api/errors';
 import { assignRequest, getRequest } from '@/shared/api/endpoints/requests';
+import { getUniversity } from '@/shared/api/endpoints/universities';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { formatDateTime } from '@/shared/lib/format';
 import { toastSuccess } from '@/shared/lib/toast';
@@ -120,6 +121,15 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
   });
 
   const request = requestQuery.data;
+  // Имя вуза B2B-заявки: заявка отдаёт только university_id. Тот же запрос и ключ, что в
+  // RequestSidebar, — кэш общий, второго сетевого вызова нет (раньше в шапке стояло
+  // «Карточка вуза» вместо названия).
+  const universityId = request?.university_id ?? null;
+  const universityQuery = useQuery({
+    queryKey: ['university', universityId],
+    queryFn: ({ signal }) => getUniversity(universityId as string, signal),
+    enabled: Boolean(universityId) && !request?.university,
+  });
   // Права заявки — в её процессе (F2): своя заявка или право на чужие (write_any).
   const wf = request?.workflow_type ?? null;
   const own = Boolean(request && user && request.assignee?.id === user.id);
@@ -163,11 +173,14 @@ export function RequestCard({ requestId, inDrawer = false, onNavigateAway }: Req
 
   const clientLabel =
     request.workflow_type === 'b2b'
-      ? (request.university?.name ?? null)
+      ? (request.university?.name ?? universityQuery.data?.name ?? null)
       : (request.client?.company_name ?? request.client?.full_name ?? null);
 
   const header = (
-    <div className="min-w-0 flex-1 basis-full sm:basis-0">
+    // в Sheet шапка занимает всю ширину, кнопки уходят строкой ниже: иначе flex-1 с basis-0
+    // делил строку с кнопками, сетка фактов сжималась в узкую колонку (обрезанные имена,
+    // крошечный селект ответственного) и справа под кнопками оставалась пустота
+    <div className={inDrawer ? 'min-w-0 basis-full' : 'min-w-0 flex-1 basis-full sm:basis-0'}>
       <div className="flex flex-wrap items-center gap-2">
         {/* «назад» и заголовок — одна неразрывная группа: на 375 px длинное название
             переносится внутри группы, а не оставляет стрелку одну в строке (P1-5) */}

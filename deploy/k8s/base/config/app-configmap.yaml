@@ -28,8 +28,9 @@ data:
   AI_SUMMARY_PROVIDER: "gigachat"
   LLM_GATEWAY_URL: "http://llm-gateway:8040"
   BACKEND_BASE_URL: "http://backend:8000"
-  # сидирует app_setting['stuck_threshold_days_default']; фактические пороги
-  # per-workflow/per-этап живут в БД и настраиваются в админке/конструкторе
+  # расчётом не читается (app_setting['stuck_threshold_days_default'] сидирует seed.py,
+  # а у процесса порог задан всегда); фактические пороги per-workflow/per-этап живут в БД
+  # и меняются на этапах в конструкторе процессов
   STUCK_DEFAULT_DAYS: "14"
   # бюджет соединений PostgreSQL (max_connections=150, postgres/statefulset.yaml):
   # пул на процесс uvicorn → (maxReplicas 6 + surge 2) × 2 воркера × (4 + 2) = 96,

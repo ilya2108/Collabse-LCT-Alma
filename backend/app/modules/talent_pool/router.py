@@ -139,6 +139,7 @@ async def list_students(
     )
     counts = await talent.files_count_map(session, [s.id for s in students])
     items = [talent.serialize_student(s, files_count=counts.get(s.id, 0)) for s in students]
+    await talent.attach_ref_names(session, items, list(students))
     return list_envelope(items, total, params)
 
 

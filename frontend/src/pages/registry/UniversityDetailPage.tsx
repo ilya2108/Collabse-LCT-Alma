@@ -741,8 +741,9 @@ export function UniversityDetailPage(): ReactNode {
                 >
                   <GraduationCap className="size-4" aria-hidden="true" />
                   Студенты вуза
-                  {typeof university.students_count === 'number'
-                    ? ` (${university.students_count})`
+                  {/* счётчик приходит в aggregates карточки (UniversityOut), не в корне */}
+                  {typeof university.aggregates?.students_count === 'number'
+                    ? ` (${university.aggregates.students_count})`
                     : ''}
                 </Link>
               </div>

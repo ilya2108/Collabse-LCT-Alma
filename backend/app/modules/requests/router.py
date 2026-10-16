@@ -85,7 +85,11 @@ from app.modules.requests.serializers import (
     serialize_deal,
     serialize_history_row,
 )
-from app.modules.requests.service import available_transitions
+from app.modules.requests.service import (
+    available_transitions,
+    counterparty_audit_after,
+    find_or_create_counterparty,
+)
 from app.modules.workflow import service as workflow_service
 
 router = APIRouter(prefix="/requests", tags=["requests"])
@@ -391,13 +395,40 @@ async def create_request(
     if initial_stage is None:
         raise not_found("У воронки нет начального этапа")
 
-    fields = body.model_dump(exclude={"workflow_type"})
+    # client_kind/client — данные нового клиента B2C, а не колонки deal
+    fields = body.model_dump(exclude={"workflow_type", "client_kind", "client"})
     await _validate_refs(session, fields)
     assignee_id = fields.pop("assignee_id") or user.id
     if assignee_id != user.id:
         if not user.access.has("requests:assign_any", workflow.code):
             raise forbidden("KAM может назначить ответственным только себя")
         await _ensure_assignee_sees(session, assignee_id, workflow.code)
+
+    # B2C с новым клиентом из формы доски: найти в базе или создать контрагента
+    # (общий хелпер с лидами CMS); создание клиента — отдельная запись аудита без ПДн
+    client_matched: bool | None = None
+    if body.client is not None:
+        counterparty, created = await find_or_create_counterparty(
+            session,
+            client_kind=body.client_kind or "person",
+            full_name=body.client.full_name,
+            email=body.client.email,
+            phone=body.client.phone,
+            company_name=body.client.company_name,
+            inn=body.client.inn,
+        )
+        fields["counterparty_id"] = counterparty.id
+        client_matched = not created
+        if created:
+            await write_audit(
+                session,
+                actor_user_id=user.id,
+                action="counterparty.created",
+                entity_type="counterparty",
+                entity_id=counterparty.id,
+                after=counterparty_audit_after(counterparty, source="request_form"),
+                ip=client_ip(request),
+            )
 
     # workflow-engine.md §4.1 / checklist.md: ≥1 заявки на вуз — норма,
     # при создании 3-й активной — предупреждение, не запрет (как warning_duplicate договоров)
@@ -453,13 +484,16 @@ async def create_request(
         deal=deal,
         exclude_user_ids=(user.id,),
     )
+    audit_after: dict[str, Any] = {"title": deal.title, "workflow_type": deal.pipeline}
+    if deal.counterparty_id is not None:
+        audit_after["counterparty_id"] = str(deal.counterparty_id)
     await write_audit(
         session,
         actor_user_id=user.id,
         action="request.created",
         entity_type="deal",
         entity_id=deal.id,
-        after={"title": deal.title, "workflow_type": deal.pipeline},
+        after=audit_after,
         ip=client_ip(request),
     )
     await session.commit()
@@ -473,6 +507,9 @@ async def create_request(
     )
     if warning is not None:
         payload["warning_duplicate"] = warning
+    if client_matched is not None:
+        # true — клиент с таким email/ИНН уже был в базе, заявка привязана к нему
+        payload["client_matched"] = client_matched
     return payload
 
 

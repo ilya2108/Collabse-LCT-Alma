@@ -29,19 +29,14 @@ from app.core.events import (
     LMS_INBOUND_EVENTS,
 )
 from app.core.outbox import DirectRecipient, emit_event_notifications
-from app.core.pii import (
-    display_name_from_full_name,
-    get_pii_crypto,
-    mask_email,
-    mask_full_name,
-    mask_phone,
-)
+from app.core.pii import mask_email, mask_full_name, mask_phone
 from app.models.crm import Counterparty, Product, Program
 from app.models.deal import Deal, DealStageHistory
 from app.models.service import ExternalLink, IntegrationEvent
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
 from app.modules.integrations.schemas import InboundEnvelope, LeadBlock
+from app.modules.requests.service import find_or_create_counterparty
 
 logger = logging.getLogger("app.integrations")
 
@@ -234,50 +229,22 @@ async def handle_lms_event(session: AsyncSession, envelope: InboundEnvelope) -> 
 
 
 async def _find_or_create_counterparty(session: AsyncSession, lead: LeadBlock) -> Counterparty:
-    crypto = get_pii_crypto()
+    # поиск/создание — общий хелпер с формой создания заявки (requests.service);
+    # требования к лиду строже формы: у физлица email обязателен
     if lead.client_kind == "person":
         if not lead.full_name or not lead.email:
             raise unprocessable("Для физлица в lead обязательны full_name и email")
-        email_hmac = crypto.email_hmac(lead.email)
-        existing = (
-            await session.execute(select(Counterparty).where(Counterparty.email_hmac == email_hmac))
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-        counterparty = Counterparty(
-            kind="person",
-            display_name=display_name_from_full_name(lead.full_name),
-            full_name=lead.full_name,
-            email=lead.email,
-            phone=lead.phone,
-            email_hmac=email_hmac,
-            full_name_hmac=crypto.full_name_hmac(lead.full_name),
-        )
-        session.add(counterparty)
-        await session.flush()
-        return counterparty
-
-    if not lead.company_name:
+    elif not lead.company_name:
         raise unprocessable("Для юрлица в lead обязателен company_name")
-    stmt = select(Counterparty).where(Counterparty.kind == "legal_entity")
-    stmt = (
-        stmt.where(Counterparty.inn == lead.inn)
-        if lead.inn
-        else stmt.where(Counterparty.org_name == lead.company_name)
-    )
-    existing = (await session.execute(stmt)).scalars().first()
-    if existing is not None:
-        return existing
-    counterparty = Counterparty(
-        kind="legal_entity",
-        display_name=lead.company_name,
-        org_name=lead.company_name,
+    counterparty, _created = await find_or_create_counterparty(
+        session,
+        client_kind=lead.client_kind,
+        full_name=lead.full_name,
+        email=lead.email,
+        phone=lead.phone,
+        company_name=lead.company_name,
         inn=lead.inn,
-        org_email=lead.email,
-        org_phone=lead.phone,
     )
-    session.add(counterparty)
-    await session.flush()
     return counterparty
 
 

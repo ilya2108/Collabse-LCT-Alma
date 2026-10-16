@@ -590,7 +590,10 @@ async def bot_requests(
     now = _now()
     items = []
     for deal, stage, workflow in rows:
-        days = max((now - deal.stage_entered_at).days, 0)
+        # «зависла» — по точному времени, как SQL-условие выше и бейдж карточки;
+        # stuck_days — целые сутки для показа
+        elapsed = now - deal.stage_entered_at
+        days = max(elapsed.days, 0)
         threshold = (
             stage.stuck_threshold_days
             if stage.stuck_threshold_days is not None
@@ -612,7 +615,9 @@ async def bot_requests(
                     "color": stage.color,
                 },
                 "stuck_days": days,
-                "is_stuck": deal.status == "open" and not stage.is_terminal and days > threshold,
+                "is_stuck": deal.status == "open"
+                and not stage.is_terminal
+                and elapsed > timedelta(days=threshold),
             }
         )
     return items

@@ -48,14 +48,17 @@ export function getRequest(id: string, signal?: AbortSignal): Promise<RequestIte
 
 /**
  * Тело создания заявки (§4.1: статус всегда initial схемы, менять нельзя).
- * B2B: university_id обязателен. B2C: контрагент физ/юрлицо создаётся вместе
- * с заявкой — блок `client` (как в сериализации §4.2) + `client_kind` +
- * `interaction_type_id` из редактируемого справочника (data-model.md §4.4).
+ * B2B: university_id обязателен. B2C: существующий клиент — `counterparty_id`,
+ * новый — блок `client` (как в сериализации §4.2) + `client_kind`: сервер находит
+ * клиента в базе (физлицо — по email, юрлицо — по ИНН или названию) или создаёт его;
+ * `interaction_type_id` — из редактируемого справочника (data-model.md §4.4).
+ * Передаётся что-то одно: `counterparty_id` или `client`.
  */
 export interface CreateRequestPayload {
   workflow_type: WorkflowType;
   title: string;
   university_id?: string;
+  counterparty_id?: string;
   client_kind?: 'person' | 'company';
   interaction_type_id?: string;
   client?: {
@@ -73,8 +76,16 @@ export interface CreateRequestPayload {
   description?: string | null;
 }
 
-export function createRequest(payload: CreateRequestPayload): Promise<RequestItem> {
-  return api.post<RequestItem>('/requests', { body: payload });
+/** Ответ создания: заявка + подсказки сервера, которых нет в карточке. */
+export interface CreatedRequest extends RequestItem {
+  /** B2B: у вуза уже несколько активных заявок — не дубль ли это. */
+  warning_duplicate?: string;
+  /** B2C с `client`: true — клиент с таким email/ИНН уже был в базе, заявка привязана к нему. */
+  client_matched?: boolean;
+}
+
+export function createRequest(payload: CreateRequestPayload): Promise<CreatedRequest> {
+  return api.post<CreatedRequest>('/requests', { body: payload });
 }
 
 export interface UpdateRequestPayload {

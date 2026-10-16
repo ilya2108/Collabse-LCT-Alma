@@ -59,6 +59,8 @@ jobs:
         run: npm ci
       - name: Проверка типов
         run: npx tsc --noEmit
+      - name: Правила хуков React (ESLint, новые предупреждения запрещены)
+        run: npm run lint
       - name: Юнит-тесты (node:test)
         run: npm run test:unit
       - name: Справка (снимки, якоря, маршруты, формулировки)

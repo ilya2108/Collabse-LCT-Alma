@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -38,16 +38,20 @@ def stuck_info(deal: Deal, stage: WorkflowStage, workflow: Workflow) -> tuple[bo
     """(is_stuck, stuck_days) по каскаду порога stage → workflow (Р-5).
 
     Закрытые заявки и терминальные этапы не «зависают» — SLA-таймер не считается.
+    «Зависла» — строго по точному времени: `now − stage_entered_at > N суток`, как фильтр
+    доски `?stuck=true`, отчёты, «Просрочки» и бот (14,5 суток при норме 14 — зависла);
+    `stuck_days` — целые сутки, только для показа.
     """
     if deal.status != "open" or stage.is_terminal:
         return False, 0
-    days = max((_now() - deal.stage_entered_at).days, 0)
+    elapsed = _now() - deal.stage_entered_at
+    days = max(elapsed.days, 0)
     threshold = (
         stage.stuck_threshold_days
         if stage.stuck_threshold_days is not None
         else workflow.stuck_threshold_days
     )
-    return days > threshold, days
+    return elapsed > timedelta(days=threshold), days
 
 
 def client_kind_of(counterparty: Counterparty | None) -> str | None:

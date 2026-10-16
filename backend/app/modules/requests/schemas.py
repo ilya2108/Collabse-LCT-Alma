@@ -2,18 +2,69 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 Money = Annotated[Decimal, PlainSerializer(lambda v: format(v, "f"), return_type=str)]
 
 
 class _ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+# те же правила, что у формы создания заявки (CreateRequestDrawer: EMAIL_RE, INN_RE)
+_EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+_INN_RE = re.compile(r"\d{10}|\d{12}")
+
+
+class NewClientIn(_ApiModel):
+    """Новый клиент B2C из формы создания заявки — вместо `counterparty_id`.
+
+    Физлицо — `full_name` (email и телефон по желанию), юрлицо — `company_name` (ИНН,
+    email, телефон по желанию). Пустые строки — «не заполнено». Сервер ищет клиента в базе
+    (физлицо — по email, юрлицо — по ИНН, без ИНН — по названию) и создаёт нового, если не
+    нашёл; ПДн физлица шифруются при записи (Fernet + blind index).
+    """
+
+    full_name: str | None = Field(default=None, max_length=300)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=50)
+    company_name: str | None = Field(default=None, max_length=500)
+    inn: str | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def _check_email(cls, value: str | None) -> str | None:
+        if value is not None and not _EMAIL_RE.fullmatch(value):
+            raise PydanticCustomError("invalid_format", "Некорректный email")
+        return value
+
+    @field_validator("inn")
+    @classmethod
+    def _check_inn(cls, value: str | None) -> str | None:
+        if value is not None and not _INN_RE.fullmatch(value):
+            raise PydanticCustomError("invalid_format", "ИНН — 10 или 12 цифр")
+        return value
 
 
 class RequestCreate(_ApiModel):
@@ -29,13 +80,42 @@ class RequestCreate(_ApiModel):
     amount: Money | None = None
     currency: str = Field(default="RUB", min_length=3, max_length=3)
     description: str | None = None
+    # B2C: существующий клиент — `counterparty_id`, новый из формы — `client_kind` + `client`
+    # (без client_kind тип выводится по полям: есть company_name — юрлицо, иначе физлицо)
+    client_kind: Literal["person", "company"] | None = None
+    client: NewClientIn | None = None
 
     @model_validator(mode="after")
     def _check_client(self) -> RequestCreate:
-        if self.workflow_type == "b2b" and self.university_id is None:
-            raise ValueError("Для B2B-заявки обязателен вуз (university_id)")
-        if self.workflow_type == "b2c" and self.counterparty_id is None:
-            raise ValueError("Для B2C-заявки обязателен клиент (counterparty_id)")
+        if self.workflow_type == "b2b":
+            if self.university_id is None:
+                raise PydanticCustomError(
+                    "missing", "Для B2B-заявки обязателен вуз (university_id)"
+                )
+            if self.client is not None:
+                raise PydanticCustomError(
+                    "not_allowed", "Клиент (client) указывается только для B2C-заявки"
+                )
+            return self
+        if self.counterparty_id is None and self.client is None:
+            raise PydanticCustomError(
+                "missing", "Для B2C-заявки обязателен клиент (counterparty_id или client)"
+            )
+        if self.counterparty_id is not None and self.client is not None:
+            raise PydanticCustomError(
+                "conflict",
+                "Укажите либо существующего клиента (counterparty_id), "
+                "либо нового (client), но не оба сразу",
+            )
+        if self.client is not None:
+            if self.client_kind is None:
+                self.client_kind = "company" if self.client.company_name else "person"
+            if self.client_kind == "person" and self.client.full_name is None:
+                raise PydanticCustomError("missing", "Укажите ФИО клиента (client.full_name)")
+            if self.client_kind == "company" and self.client.company_name is None:
+                raise PydanticCustomError(
+                    "missing", "Укажите название организации (client.company_name)"
+                )
         return self
 
 
