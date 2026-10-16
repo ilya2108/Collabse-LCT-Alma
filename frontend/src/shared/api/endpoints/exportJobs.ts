@@ -16,7 +16,12 @@ export interface CreateExportJobPayload {
   format: ExportFormat;
   filters?: Record<string, unknown>;
   columns?: string[];
-  options?: { encoding?: 'utf-8' | 'cp1251'; csv_delimiter?: string };
+  options?: {
+    encoding?: 'utf-8' | 'cp1251';
+    csv_delimiter?: string;
+    /** report:sla, PDF: false — «Сводка без имён», true — «По КАМам». */
+    by_kam?: boolean;
+  };
 }
 
 export function createExportJob(payload: CreateExportJobPayload): Promise<ExportJob> {

@@ -32,6 +32,7 @@ from app.modules.internal.router import router as internal_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.reporting.interactions_router import router as interactions_router
 from app.modules.reporting.router import router as reporting_router
+from app.modules.reporting.sla_router import router as sla_router
 from app.modules.requests.router import router as requests_router
 from app.modules.talent_pool.router import router as talent_pool_router
 from app.modules.ui.router import router as ui_router
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     api.include_router(import_export_router)
     api.include_router(reporting_router)
     api.include_router(interactions_router)  # «Взаимодействия за период» (ТЗ ФТ4)
+    api.include_router(sla_router)  # «Просрочки» (api-contract.md §7.2.2)
     api.include_router(talent_pool_router)
     api.include_router(notifications_router)
     api.include_router(files_router)

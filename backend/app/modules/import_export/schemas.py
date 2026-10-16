@@ -43,6 +43,9 @@ class ApplyBody(_ApiModel):
 class ExportOptions(_ApiModel):
     encoding: Literal["utf-8", "cp1251"] = "utf-8"
     csv_delimiter: str = Field(default=";", min_length=1, max_length=1)
+    # report:sla, PDF: false — «Сводка без имён», true — «По КАМам»; прочие выгрузки поле
+    # не читают
+    by_kam: bool = False
 
 
 class ExportJobBody(_ApiModel):
