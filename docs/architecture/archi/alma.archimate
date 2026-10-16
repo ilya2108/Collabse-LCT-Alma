@@ -1,0 +1,1505 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<archimate:model xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:archimate="http://www.archimatetool.com/archimate" name="«Альма» — CRM взаимодействия с вузами" id="alma-model" version="4.9.0">
+  <folder name="Стратегия" id="alma-folder-strategy" type="strategy"/>
+  <folder name="Бизнес" id="alma-folder-business" type="business">
+    <element xsi:type="archimate:BusinessRole" name="КАМ" id="alma-role-kam">
+      <documentation>Ведёт свой портфель заявок и вузов; видит все заявки, правит свои</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Код роли" value="kam"/>
+      <property key="Прав в наборе" value="28"/>
+      <property key="Источник" value="backend/app/core/rbac_catalog.py"/>
+    </element>
+    <element xsi:type="archimate:BusinessRole" name="Руководитель КАМов" id="alma-role-head-kam">
+      <documentation>Все заявки и справочники, распределение заявок, правка схемы процесса через согласование</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Код роли" value="head_kam"/>
+      <property key="Прав в наборе" value="41"/>
+      <property key="Источник" value="backend/app/core/rbac_catalog.py"/>
+    </element>
+    <element xsi:type="archimate:BusinessRole" name="Администратор" id="alma-role-admin">
+      <documentation>Полный доступ. Права и область не редактируются — это защищает систему от потери управления</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Код роли" value="admin"/>
+      <property key="Прав в наборе" value="60"/>
+      <property key="Источник" value="backend/app/core/rbac_catalog.py"/>
+    </element>
+    <element xsi:type="archimate:BusinessRole" name="Наблюдатель" id="alma-role-observer">
+      <documentation>Только чтение: заявки, справочники, отчёты по всем КАМам, аудит; ПДн маскированы</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Код роли" value="observer"/>
+      <property key="Прав в наборе" value="14"/>
+      <property key="Источник" value="backend/app/core/rbac_catalog.py"/>
+    </element>
+    <element xsi:type="archimate:BusinessRole" name="Свои роли: «КАМ B2B», «КАМ B2C»" id="alma-role-custom">
+      <documentation>Пример ролей, собранных администратором без программиста: права КАМа в одном процессе (демо-сид). Любая своя роль — набор прав из каталога и область.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Код роли" value="kam_b2b, kam_b2c"/>
+      <property key="Источник" value="backend/app/tools/seed.py"/>
+    </element>
+    <element xsi:type="archimate:BusinessActor" name="Вуз-партнёр" id="alma-actor-university">
+      <documentation>Сторона взаимодействия: контакты вуза, заявки B2B, договоры и обучение.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:BusinessActor" name="Клиент или абитуриент" id="alma-actor-client">
+      <documentation>Физическое или юридическое лицо: заявки B2C, в том числе лиды с сайта через CMS.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Ведение вузов и контактов" id="alma-fn-universities">
+      <documentation>Карточки вузов, контакты ответственных лиц, регион, закреплённый КАМ.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="universities:write"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Ведение договоров, продуктов и программ" id="alma-fn-contracts">
+      <documentation>Договоры по схеме «1 договор — N продуктов» с лицензиями и файлами, каталог продуктов, программы обучения и их ручной приоритет.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="contracts:write, products:write, programs:write, programs:priority"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Обработка заявок B2B и B2C" id="alma-fn-requests">
+      <documentation>Заявки вузов (B2B) и физических и юридических лиц (B2C): создание, переходы по этапам процесса, комментарии с @упоминаниями, файлы, назначение ответственного.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="requests:write, requests:transition"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Управление процессами и согласование" id="alma-fn-workflow">
+      <documentation>Правка графа этапов в визуальном конструкторе. Опасные правки уходят на согласование администратору; после публикации открытые заявки переводятся на новую схему одной транзакцией.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="workflow:change, workflow:approve"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Работа с пулом талантов" id="alma-fn-talent">
+      <documentation>Студенты и воронка «кандидат → пул талантов», активности и расписание, запись студентов на активности. ПДн маскируются по умолчанию.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="students:write, activities:write, activities:participants"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Контроль активности КАМов и сроков" id="alma-fn-kam-control">
+      <documentation>Кто, когда и с какими вузами взаимодействовал, на каких этапах заявки останавливаются, какие этапы просрочены — по всем КАМам области роли.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="reports:all"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Аналитика и отчётность" id="alma-fn-analytics">
+      <documentation>Интерактивные панели с фильтрами и детализацией, выгрузка реестров и отчётов.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="reports:read, export:run"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Управление доступом: роли и права" id="alma-fn-access">
+      <documentation>Свои роли из каталога прав без программиста, область роли (процессы B2B и B2C, записи «все» или «только свои»), назначение ролей, руководители для эскалаций.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="admin:roles, admin:users_write"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Аудит и защита персональных данных" id="alma-fn-audit">
+      <documentation>Журнал действий пользователей, раскрытий ПДн и обмена с внешними системами.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="admin:audit"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Обмен данными с LMS и CMS" id="alma-fn-exchange">
+      <documentation>Двусторонний обмен с LMS и CMS: единый JSON-конверт с HMAC-подписью, outbox, повторные попытки и очередь недоставленных; администратор контролирует журнал и повторяет доставку.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="admin:integrations"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Загрузка данных из файлов" id="alma-fn-import">
+      <documentation>Диалоговый импорт XLSX, XLS, CSV и JSON: сопоставление колонок с шаблонами, устойчивость к кодировкам, построчный отчёт ошибок.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="import:run, import:dictionaries"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Оповещение и эскалация" id="alma-fn-notify">
+      <documentation>Уведомления в интерфейсе и в Telegram, правила и пороги, эскалация зависших заявок по каскаду «ответственный → руководитель».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="notifications:self, notification_rules:write"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Ведение справочников и настроек" id="alma-fn-settings">
+      <documentation>Справочники, ИТ-направления, фичефлаги и системные настройки.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="admin:dictionaries, admin:settings, admin:flags"/>
+    </element>
+    <element xsi:type="archimate:BusinessFunction" name="Адаптация и самообслуживание" id="alma-fn-selfservice">
+      <documentation>Встроенная справка, интерактивные туры по ролям, глобальный поиск, личные пресеты реестров — доступны каждому пользователю.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Права функции" value="все роли"/>
+    </element>
+    <element xsi:type="archimate:BusinessActor" name="Пользователи CRM (браузер, VPN)" id="alma-actor-users">
+      <documentation>КАМы, руководители, администраторы, наблюдатели и свои роли; работают из браузера внутри закрытого контура.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+  </folder>
+  <folder name="Приложения" id="alma-folder-application" type="application">
+    <element xsi:type="archimate:ApplicationService" name="Реестр вузов и контактов" id="alma-svc-universities">
+      <documentation>Реестр и карточка вуза: контакты, регион, ответственный КАМ, связанные договоры.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/universities*"/>
+      <property key="Права" value="universities:read, universities:write, universities:delete, contacts:delete"/>
+      <property key="Экран" value="/registry/universities"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Реестр договоров" id="alma-svc-contracts">
+      <documentation>Договор «1 договор — N продуктов», лицензии по продуктам, файлы договора.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/contracts*"/>
+      <property key="Права" value="contracts:read, contracts:write, contracts:delete, contracts:files_delete"/>
+      <property key="Экран" value="/registry/contracts"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Каталог продуктов" id="alma-svc-products">
+      <documentation>Каталог ИТ-продуктов и вендоров.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/products*"/>
+      <property key="Права" value="products:read, products:write, products:delete"/>
+      <property key="Экран" value="/registry/products"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Программы и ручной приоритет" id="alma-svc-programs">
+      <documentation>Программы обучения, их ручное ранжирование, востребованность по заявкам.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/programs*"/>
+      <property key="Права" value="programs:read, programs:write, programs:priority, programs:delete"/>
+      <property key="Экран" value="/registry/programs"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Реестр и доска заявок" id="alma-svc-board">
+      <documentation>Канбан по этапам процесса с подсветкой разрешённых переходов и реестр заявок.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/requests; /api/v1/requests/board"/>
+      <property key="Права" value="requests:read, requests:write"/>
+      <property key="Экран" value="/board"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Карточка заявки: комментарии, файлы" id="alma-svc-request-card">
+      <documentation>Карточка заявки: история переходов, комментарии с @упоминаниями, файлы по этапам, переоткрытие закрытых заявок.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/requests/{request_id}*"/>
+      <property key="Права" value="requests:read, requests:write, comments:write, requests:files, requests:reopen"/>
+      <property key="Экран" value="/requests/:id"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Переходы по графу этапов" id="alma-svc-transitions">
+      <documentation>Переход проверяется по живой схеме процесса: разрешённое ребро, роль, обязательный комментарий у возврата; история пишется в той же транзакции.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/requests/{request_id}/transitions"/>
+      <property key="Права" value="requests:transition"/>
+      <property key="Экран" value="/board"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Назначение и передача портфеля" id="alma-svc-assign">
+      <documentation>Взять заявку на себя, назначить ответственного, передать открытые заявки и вузы уходящего КАМа другому сотруднику одним действием.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/requests/{request_id}/assign; /api/v1/requests/transfer-portfolio"/>
+      <property key="Права" value="requests:assign, requests:assign_any, universities:assign"/>
+      <property key="Экран" value="/board"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Конструктор процессов" id="alma-svc-designer">
+      <documentation>Визуальный редактор графа этапов: ветвления, возвраты, пороги зависания, предпросмотр влияния правки на открытые заявки.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/workflows*"/>
+      <property key="Права" value="workflow:read, workflow:history, workflow:change"/>
+      <property key="Экран" value="/workflow"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Согласование изменений схемы" id="alma-svc-approvals">
+      <documentation>Пакет опасных правок уходит на согласование; публикация — после одобрения.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/workflows/changes/{change_id}/approve; /api/v1/workflows/changes/{change_id}/reject"/>
+      <property key="Права" value="workflow:approve"/>
+      <property key="Экран" value="/admin/approvals"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Перевод заявок на новую схему" id="alma-svc-migration">
+      <documentation>При публикации схемы открытые заявки удаляемых этапов переводятся одной транзакцией: один SQL-оператор на этап (modules/workflow/migration.py).</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/workflows/changes/{change_id}/approve"/>
+      <property key="Права" value="workflow:approve"/>
+      <property key="Экран" value="/admin/approvals"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Реестр студентов" id="alma-svc-students">
+      <documentation>Студенты и смена статуса по воронке «кандидат → пул талантов»; ПДн в БД зашифрованы, в интерфейсе маскированы.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/students*"/>
+      <property key="Права" value="students:read, students:write, students:files, students:delete"/>
+      <property key="Экран" value="/talent-pool"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Раскрытие ПДн с аудитом" id="alma-svc-reveal">
+      <documentation>Раскрытие персональных данных студента — только по праву и с записью в аудит.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/students/{student_id}/reveal"/>
+      <property key="Права" value="students:reveal"/>
+      <property key="Экран" value="/talent-pool/students/:id"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Активности и расписание" id="alma-svc-activities">
+      <documentation>Мероприятия и курсы с расписанием, запись студентов.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/activities*"/>
+      <property key="Права" value="activities:read, activities:write, activities:participants"/>
+      <property key="Экран" value="/talent-pool"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Аналитическая панель" id="alma-svc-dashboard">
+      <documentation>Воронка, нагрузка КАМов, зависшие заявки, покрытие вузов, востребованность программ, пул талантов, динамика; фильтры и экспорт PNG.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/reports/dashboard; /api/v1/reports/funnel; /api/v1/reports/kam-workload; /api/v1/reports/stuck; /api/v1/reports/universities-coverage; /api/v1/reports/programs-demand; /api/v1/reports/talent-pool-funnel; /api/v1/reports/dynamics"/>
+      <property key="Права" value="reports:read, reports:all"/>
+      <property key="Экран" value="/dashboard"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Отчёт «Активность КАМов»" id="alma-svc-kam-activity">
+      <documentation>Детализация «КАМ → вузы → заявки» и сводка для заказчика: KPI с дельтами, конверсия по этапам, где застревают заявки; выгрузка XLSX и PDF.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/reports/kam-activity*"/>
+      <property key="Права" value="reports:read, reports:all"/>
+      <property key="Экран" value="/reports/kam-activity"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Отчёт «Взаимодействия за период»" id="alma-svc-interactions">
+      <documentation>Взаимодействия КАМов с вузами за период по колонкам отчёта, с выгрузкой.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/reports/interactions"/>
+      <property key="Права" value="reports:read, reports:all"/>
+      <property key="Экран" value="/reports/kam-activity"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Экспорт XLSX, CSV, JSON, PDF" id="alma-svc-export">
+      <documentation>Выгрузка реестров и отчётов; ПДн маскируются по правам выгружающего.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/export/jobs*"/>
+      <property key="Права" value="export:run"/>
+      <property key="Экран" value="/dashboard"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Вход и профиль доступа" id="alma-svc-login">
+      <documentation>Вход через self-hosted Keycloak (OIDC + PKCE); профиль отдаёт роли, права и область по процессам. Каждая проверка права — на backend.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/auth/me"/>
+      <property key="Экран" value="/login"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Роли и права" id="alma-svc-roles">
+      <documentation>Редактор ролей: каталог прав по группам, зависимости прав, область роли; изменения действуют без перезахода.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/admin/roles*; /api/v1/admin/permissions; /api/v1/roles"/>
+      <property key="Права" value="admin:roles"/>
+      <property key="Экран" value="/admin/roles"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Пользователи и назначение ролей" id="alma-svc-users">
+      <documentation>Список пользователей, назначение ролей, руководители для эскалаций, синхронизация с Keycloak.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/admin/users*; /api/v1/admin/users/{user_id}/roles"/>
+      <property key="Права" value="admin:users, admin:users_write, admin:roles"/>
+      <property key="Экран" value="/admin/users"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Журнал аудита" id="alma-svc-audit">
+      <documentation>Журнал действий (append-only), в том числе раскрытий ПДн.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/admin/audit-log"/>
+      <property key="Права" value="admin:audit"/>
+      <property key="Экран" value="/admin/audit"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Приём событий LMS" id="alma-svc-lms-in">
+      <documentation>Вебхук LMS: JSON-конверт с HMAC-подписью, идемпотентность по event_id.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/integrations/lms/webhook"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Приём лидов CMS" id="alma-svc-cms-in">
+      <documentation>Вебхук CMS: лиды с сайта становятся заявками B2C.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/integrations/cms/webhook"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Отправка событий (outbox, DLQ)" id="alma-svc-outbox">
+      <documentation>Транзакционный outbox в PostgreSQL, ретраи 1 м → 5 м → 30 м → 2 ч → 6 ч, затем очередь недоставленных; транспорт — сменный адаптер.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/internal/jobs/outbox-relay"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Журнал обмена и повтор" id="alma-svc-intg-journal">
+      <documentation>Журнал событий обмена с LMS и CMS и ручной повтор доставки.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/admin/integration/events*"/>
+      <property key="Права" value="admin:audit, admin:integrations"/>
+      <property key="Экран" value="/admin/integrations"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Мастер импорта файлов" id="alma-svc-import">
+      <documentation>XLSX, XLS (BIFF), CSV и JSON: автоопределение кодировки, сопоставление колонок, проверка и применение с построчным отчётом ошибок.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/import/sessions*"/>
+      <property key="Права" value="import:run, import:dictionaries"/>
+      <property key="Экран" value="/import"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Уведомления в интерфейсе" id="alma-svc-inbox">
+      <documentation>Лента уведомлений пользователя и отметка о прочтении.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/notifications; /api/v1/notifications/read"/>
+      <property key="Права" value="notifications:self"/>
+      <property key="Экран" value="/settings/notifications"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Каналы и привязка Telegram" id="alma-svc-notify-settings">
+      <documentation>Личные настройки каналов, привязка Telegram по коду, тестовое сообщение.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/notifications/settings; /api/v1/notifications/channels; /api/v1/notifications/telegram/link-code"/>
+      <property key="Права" value="notifications:self"/>
+      <property key="Экран" value="/settings/notifications"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Правила уведомлений" id="alma-svc-rules">
+      <documentation>Правила рассылки по событиям и пороги эскалации.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/notifications/rules*"/>
+      <property key="Права" value="notification_rules:read, notification_rules:write"/>
+      <property key="Экран" value="/settings/notifications"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Telegram-бот" id="alma-svc-bot">
+      <documentation>Уведомления и команды бота строго по правам привязанного пользователя; вход сервиса — client credentials Keycloak.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/internal/bot/bind; /api/v1/internal/bot/users/{chat_id}/requests"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Эскалация зависших заявок" id="alma-svc-stuck">
+      <documentation>Ежечасная проверка порогов зависания (этап → процесс → глобальная настройка): уведомление ответственному при 1× порога, руководителю при 1,5×.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/internal/jobs/check-stuck-requests"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Справочники" id="alma-svc-dictionaries">
+      <documentation>Справочники системы с правкой в интерфейсе и импортом из файла.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/admin/dictionaries*"/>
+      <property key="Права" value="admin:dictionaries, import:dictionaries"/>
+      <property key="Экран" value="/admin/dictionaries"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="ИТ-направления" id="alma-svc-directions">
+      <documentation>Справочник ИТ-направлений для вузов, продуктов и отчётов.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/it-directions*"/>
+      <property key="Права" value="admin:dictionaries"/>
+      <property key="Экран" value="/admin/dictionaries"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Фичефлаги и настройки" id="alma-svc-flags">
+      <documentation>Включение функций без выкладки и системные пороги.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/admin/feature-flags*; /api/v1/admin/settings; /api/v1/flags"/>
+      <property key="Права" value="admin:flags, admin:settings"/>
+      <property key="Экран" value="/admin/feature-flags"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Файлы и вложения" id="alma-svc-files">
+      <documentation>Файлы заявок, договоров и студентов в MinIO; скачивание по правам.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/files/{file_id}/download"/>
+      <property key="Права" value="files:business, files:others"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Обновление экранов (SSE)" id="alma-svc-sse">
+      <documentation>Server-Sent Events: публикация схемы, переходы, комментарии и смена прав обновляют открытые экраны без перезагрузки.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/events/stream"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Глобальный поиск" id="alma-svc-search">
+      <documentation>Поиск по вузам, заявкам, договорам и другим сущностям в области прав.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/search"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Пресеты реестров" id="alma-svc-presets">
+      <documentation>Личные наборы колонок и фильтров реестров.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/ui/presets*"/>
+    </element>
+    <element xsi:type="archimate:ApplicationService" name="Встроенная справка и туры" id="alma-svc-help">
+      <documentation>Руководство пользователя и администратора внутри интерфейса, туры по ролям, контрольный список «Начало работы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="Экран" value="/help"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="LMS заказчика" id="alma-ext-lms">
+      <documentation>Система обучения: двусторонний обмен заявками, статусами и событиями обучения. На стенде её заменяет lms-stub.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="CMS-сайт заказчика" id="alma-ext-cms">
+      <documentation>Сайт: каталог программ и лиды. На стенде её заменяет cms-stub.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="Telegram Bot API" id="alma-ext-telegram">
+      <documentation>Доставка уведомлений и команды бота; доступен только из notification-service.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="Email (Exchange) и Max" id="alma-ext-channels">
+      <documentation>Каналы-заглушки notification-service: сообщение пишется в журнал, адаптер заменяется без смены кода ядра.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="frontend — интерфейс" id="alma-ac-frontend">
+      <documentation>SPA на React 18 и TypeScript: реестры, доска, конструктор процессов, панели ECharts, справка. Отдаётся nginx-unprivileged.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="frontend"/>
+      <property key="Технологии" value="React 18, TypeScript, Vite, Tailwind CSS v4, TanStack Query и Table, @xyflow/react, ECharts, keycloak-js"/>
+      <property key="Порт" value="8080 (Service 80)"/>
+      <property key="Манифест" value="deploy/k8s/base/frontend"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="backend — ядро CRM" id="alma-ac-backend">
+      <documentation>Модульный монолит FastAPI: REST /api/v1 со Swagger, SSE, outbox, задания CronJob. Один образ для API, миграций и засева.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend"/>
+      <property key="Технологии" value="Python 3.12, FastAPI, SQLAlchemy 2 (async), Alembic, Pydantic v2, Uvicorn"/>
+      <property key="Порт" value="8000"/>
+      <property key="Манифест" value="deploy/k8s/base/backend"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="lms-stub — заглушка LMS" id="alma-ac-lms-stub">
+      <documentation>Отдельный под с журналом обмена: принимает события CRM и шлёт вебхуки.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="services/lms-stub"/>
+      <property key="Технологии" value="FastAPI, SQLite"/>
+      <property key="Порт" value="8020"/>
+      <property key="Манифест" value="deploy/k8s/base/lms-stub"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="cms-stub — заглушка CMS" id="alma-ac-cms-stub">
+      <documentation>Отдельный под: демо-форма лида и журнал обмена.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="services/cms-stub"/>
+      <property key="Технологии" value="FastAPI, SQLite"/>
+      <property key="Порт" value="8030"/>
+      <property key="Манифест" value="deploy/k8s/base/cms-stub"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="Keycloak 26 — вход" id="alma-ac-keycloak">
+      <documentation>Self-hosted Keycloak, realm crm: OIDC + PKCE для интерфейса, client credentials для сервисов. Роли и права — в БД CRM, Keycloak отвечает за вход.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="deploy/keycloak"/>
+      <property key="Технологии" value="Keycloak 26 (start --import-realm)"/>
+      <property key="Порт" value="8080"/>
+      <property key="Манифест" value="deploy/k8s/base/keycloak"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="notification-service" id="alma-ac-notification">
+      <documentation>Служба уведомлений и Telegram-бот: HTTP-relay каналов и long-polling aiogram. Единственный под с выходом в интернет; токен бота видит только он.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="services/notification"/>
+      <property key="Технологии" value="FastAPI, aiogram 3"/>
+      <property key="Порт" value="8010"/>
+      <property key="Манифест" value="deploy/k8s/base/notification"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="auth — вход и профиль" id="alma-mod-auth">
+      <documentation>Профиль, роли и права из БД.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/auth"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="access — роли и права" id="alma-mod-access">
+      <documentation>Роли, каталог прав, назначение ролей; загрузка каталога из кода.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/access"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="workflow — движок процессов" id="alma-mod-workflow">
+      <documentation>Графы этапов, переходы, пакеты изменений, перевод заявок, пороги зависания.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/workflow"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="requests — заявки" id="alma-mod-requests">
+      <documentation>Заявки B2B и B2C, доска, комментарии, файлы, передача портфеля.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/requests"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="crm — вузы, договоры, каталог" id="alma-mod-crm">
+      <documentation>Вузы и контакты, договоры, продукты, программы, ИТ-направления.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/crm"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="import_export — импорт и экспорт" id="alma-mod-import-export">
+      <documentation>Мастер импорта, выгрузки XLSX/CSV/JSON/PDF, справочники.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/import_export"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="talent_pool — пул талантов" id="alma-mod-talent">
+      <documentation>Студенты с шифрованием ПДн, активности и расписание.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/talent_pool"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="reporting — отчёты" id="alma-mod-reporting">
+      <documentation>Агрегаты дашборда, отчёт «Активность КАМов», PDF (fpdf2) и XLSX.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/reporting"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="integrations — LMS и CMS" id="alma-mod-integrations">
+      <documentation>Вебхуки LMS и CMS, конверт с HMAC, outbox, журнал обмена.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/integrations"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="notifications — уведомления" id="alma-mod-notifications">
+      <documentation>Лента, правила, каналы, API бота, relay в notification-service.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/notifications"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="files — файлы" id="alma-mod-files">
+      <documentation>Хранение и выдача файлов в MinIO.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/files"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="admin — администрирование" id="alma-mod-admin">
+      <documentation>Пользователи, настройки, фичефлаги, журнал аудита.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/admin"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="ui — SSE, поиск, пресеты" id="alma-mod-ui">
+      <documentation>Поток событий SSE, поиск, пресеты.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/ui"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="internal — служебные задания" id="alma-mod-internal">
+      <documentation>Эндпоинты CronJob: зависшие заявки, очистки, relay outbox (X-Internal-Token).</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/modules/internal"/>
+    </element>
+    <element xsi:type="archimate:ApplicationComponent" name="core — сквозные механизмы" id="alma-mod-core">
+      <documentation>Ядро прав (require_permission), Idempotency-Key, outbox, SSE-хаб, кэш KeyDB, шифрование ПДн, аудит.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Каталог" value="backend/app/core"/>
+    </element>
+  </folder>
+  <folder name="Технологии" id="alma-folder-technology" type="technology">
+    <element xsi:type="archimate:Node" name="Kubernetes: namespace crm" id="alma-node-k8s">
+      <documentation>Кластер k3s на ВМ, k3d или minikube; манифесты — kustomize base и overlays. Default-deny NetworkPolicy, разрешения точка-точка между подами.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Манифесты" value="deploy/k8s"/>
+      <property key="Пространство имён" value="crm"/>
+    </element>
+    <element xsi:type="archimate:SystemSoftware" name="Ingress-контроллер" id="alma-sw-ingress">
+      <documentation>Traefik в k3s и k3d (на ВМ — с TLS от cert-manager), ingress-nginx в minikube: / → интерфейс, /api → ядро, отдельные хосты id, lms, cms и консоль MinIO.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Манифест" value="deploy/k8s/base/ingress"/>
+    </element>
+    <element xsi:type="archimate:SystemSoftware" name="PostgreSQL 16" id="alma-sw-postgres">
+      <documentation>БД crm и keycloak: данные CRM, роли и права, outbox, ключи идемпотентности; ПДн студентов — шифртекст.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Порт" value="5432"/>
+      <property key="Манифест" value="deploy/k8s/base/postgres"/>
+    </element>
+    <element xsi:type="archimate:SystemSoftware" name="KeyDB — кэш и pub/sub" id="alma-sw-keydb">
+      <documentation>Cache-aside crm:v1:*, рассылка событий SSE между репликами, идемпотентность отправки уведомлений; без персистентности.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Порт" value="6379"/>
+      <property key="Манифест" value="deploy/k8s/base/keydb"/>
+    </element>
+    <element xsi:type="archimate:SystemSoftware" name="MinIO — файлы (S3)" id="alma-sw-minio">
+      <documentation>Бакеты файлов, импортов и выгрузок.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Порт" value="9000, 9001"/>
+      <property key="Манифест" value="deploy/k8s/base/minio"/>
+    </element>
+    <element xsi:type="archimate:TechnologyProcess" name="CronJob: stuck-check, idempotency-purge, purge-deleted" id="alma-tp-cronjobs">
+      <documentation>stuck-check — ежечасно, idempotency-purge — ежечасно со сдвигом, purge-deleted — ночью; вызывают служебные эндпоинты ядра с X-Internal-Token. Шаблон demo-reset приостановлен и запускается вручную.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Манифест" value="deploy/k8s/base/cronjobs"/>
+    </element>
+    <element xsi:type="archimate:TechnologyProcess" name="Job: db-migrate, minio-init, seed-demo" id="alma-tp-jobs">
+      <documentation>Миграции Alembic до head, создание бакетов MinIO, засев демо-данных.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Манифест" value="deploy/k8s/base/jobs"/>
+    </element>
+    <element xsi:type="archimate:Artifact" name="crm/backend" id="alma-art-backend">
+      <documentation>Образ контейнера компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Dockerfile" value="backend/Dockerfile"/>
+    </element>
+    <element xsi:type="archimate:Artifact" name="crm/frontend" id="alma-art-frontend">
+      <documentation>Образ контейнера компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Dockerfile" value="frontend/Dockerfile"/>
+    </element>
+    <element xsi:type="archimate:Artifact" name="crm/notification" id="alma-art-notification">
+      <documentation>Образ контейнера компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Dockerfile" value="services/notification/Dockerfile"/>
+    </element>
+    <element xsi:type="archimate:Artifact" name="crm/lms-stub" id="alma-art-lms-stub">
+      <documentation>Образ контейнера компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Dockerfile" value="services/lms-stub/Dockerfile"/>
+    </element>
+    <element xsi:type="archimate:Artifact" name="crm/cms-stub" id="alma-art-cms-stub">
+      <documentation>Образ контейнера компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Dockerfile" value="services/cms-stub/Dockerfile"/>
+    </element>
+  </folder>
+  <folder name="Мотивация" id="alma-folder-motivation" type="motivation">
+    <element xsi:type="archimate:Constraint" name="Ядро без выхода в интернет" id="alma-con-no-egress">
+      <documentation>Default-deny NetworkPolicy, разрешения точка-точка между подами (deploy/k8s/base/networkpolicy).</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Constraint" name="Единственный egress — notification-service, порт 443" id="alma-con-single-egress">
+      <documentation>Токен Telegram-бота хранится только в этом поде; с ядром — только HTTP точка-точка.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Constraint" name="LMS и CMS на стенде — заглушки" id="alma-con-stubs">
+      <documentation>lms-stub и cms-stub говорят с ядром тем же JSON-конвертом с HMAC, что и реальные системы.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Constraint" name="KeyDB без персистентности" id="alma-con-cache">
+      <documentation>Сбой кэша деградирует в чтение из PostgreSQL.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Constraint" name="ПДн студентов — шифртекст" id="alma-con-pii">
+      <documentation>Fernet на уровне приложения и blind index HMAC для поиска (152-ФЗ).</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+  </folder>
+  <folder name="Реализация и миграция" id="alma-folder-implementation-migration" type="implementation_migration"/>
+  <folder name="Прочее" id="alma-folder-other" type="other">
+    <element xsi:type="archimate:Grouping" name="Роли пользователей" id="alma-grp-roles">
+      <documentation>Системные роли засевает миграция; свои роли администратор собирает из каталога прав на экране «Роли и права» и ограничивает процессами (B2B, B2C) и областью записей («все» или «только свои»).</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Внешние участники" id="alma-grp-actors">
+      <documentation>Стороны взаимодействия, с которыми работают пользователи CRM.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Бизнес-функции" id="alma-grp-functions">
+      <documentation>Что делают пользователи «Альмы». Назначение роли на функцию рассчитано по каталогу прав: роль выполняет функцию, если в её наборе есть хотя бы одно из прав функции (свойство «Права функции»).</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Реестры" id="alma-grp-svc-registries">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Процессы и заявки" id="alma-grp-svc-processes">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Пул талантов" id="alma-grp-svc-talent">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Отчёты и аналитика" id="alma-grp-svc-reports">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Роли и доступ" id="alma-grp-svc-access">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Интеграции и загрузка данных" id="alma-grp-svc-integrations">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Уведомления" id="alma-grp-svc-notifications">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Общие сервисы" id="alma-grp-svc-common">
+      <documentation>Группа прикладных сервисов «Альмы».</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Внешние системы (вне закрытого контура)" id="alma-grp-external">
+      <documentation>Системы заказчика и внешние каналы уведомлений.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="tier=app — приложения" id="alma-grp-tier-app">
+      <documentation>Интерфейс, ядро CRM и заглушки LMS/CMS.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Метка" value="tier=app"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="tier=iam — вход" id="alma-grp-tier-iam">
+      <documentation>Self-hosted Keycloak, realm crm.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Метка" value="tier=iam"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="tier=dmz — выход наружу" id="alma-grp-tier-dmz">
+      <documentation>notification-service; в целевой архитектуре — отдельный сегмент DMZ.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Метка" value="tier=dmz"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="tier=data — хранилища" id="alma-grp-tier-data">
+      <documentation>PostgreSQL, MinIO, KeyDB.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+      <property key="Метка" value="tier=data"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Задания Kubernetes" id="alma-grp-jobs">
+      <documentation>Плановые и разовые задания кластера.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Образы контейнеров" id="alma-grp-images">
+      <documentation>Собственные образы; собираются из Dockerfile каталога компонента.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+    <element xsi:type="archimate:Grouping" name="Условия и ограничения контура" id="alma-grp-constraints">
+      <documentation>Архитектурные ограничения, которые соблюдает развёртывание.</documentation>
+      <property key="Вид" value="Компонентная схема"/>
+    </element>
+  </folder>
+  <folder name="Связи" id="alma-folder-relations" type="relations">
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-roles--role-kam" source="alma-grp-roles" target="alma-role-kam"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-roles--role-head-kam" source="alma-grp-roles" target="alma-role-head-kam"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-roles--role-admin" source="alma-grp-roles" target="alma-role-admin"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-roles--role-observer" source="alma-grp-roles" target="alma-role-observer"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-roles--role-custom" source="alma-grp-roles" target="alma-role-custom"/>
+    <element xsi:type="archimate:SpecializationRelationship" id="alma-rel-s-role-custom--role-kam" source="alma-role-custom" target="alma-role-kam"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-actors--actor-university" source="alma-grp-actors" target="alma-actor-university"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-actor-university--fn-universities" source="alma-actor-university" target="alma-fn-universities"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-actor-university--fn-requests" source="alma-actor-university" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-actors--actor-client" source="alma-grp-actors" target="alma-actor-client"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-actor-client--fn-requests" source="alma-actor-client" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-actor-client--fn-exchange" source="alma-actor-client" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-universities" source="alma-grp-functions" target="alma-fn-universities"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-contracts" source="alma-grp-functions" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-requests" source="alma-grp-functions" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-workflow" source="alma-grp-functions" target="alma-fn-workflow"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-talent" source="alma-grp-functions" target="alma-fn-talent"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-kam-control" source="alma-grp-functions" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-analytics" source="alma-grp-functions" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-access" source="alma-grp-functions" target="alma-fn-access"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-audit" source="alma-grp-functions" target="alma-fn-audit"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-exchange" source="alma-grp-functions" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-import" source="alma-grp-functions" target="alma-fn-import"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-notify" source="alma-grp-functions" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-settings" source="alma-grp-functions" target="alma-fn-settings"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-functions--fn-selfservice" source="alma-grp-functions" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-universities" source="alma-role-kam" target="alma-fn-universities"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-contracts" source="alma-role-kam" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-requests" source="alma-role-kam" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-talent" source="alma-role-kam" target="alma-fn-talent"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-analytics" source="alma-role-kam" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-import" source="alma-role-kam" target="alma-fn-import"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-notify" source="alma-role-kam" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-kam--fn-selfservice" source="alma-role-kam" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-universities" source="alma-role-head-kam" target="alma-fn-universities"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-contracts" source="alma-role-head-kam" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-requests" source="alma-role-head-kam" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-workflow" source="alma-role-head-kam" target="alma-fn-workflow"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-talent" source="alma-role-head-kam" target="alma-fn-talent"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-kam-control" source="alma-role-head-kam" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-analytics" source="alma-role-head-kam" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-import" source="alma-role-head-kam" target="alma-fn-import"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-notify" source="alma-role-head-kam" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-head-kam--fn-selfservice" source="alma-role-head-kam" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-universities" source="alma-role-admin" target="alma-fn-universities"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-contracts" source="alma-role-admin" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-requests" source="alma-role-admin" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-workflow" source="alma-role-admin" target="alma-fn-workflow"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-talent" source="alma-role-admin" target="alma-fn-talent"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-kam-control" source="alma-role-admin" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-analytics" source="alma-role-admin" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-access" source="alma-role-admin" target="alma-fn-access"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-audit" source="alma-role-admin" target="alma-fn-audit"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-exchange" source="alma-role-admin" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-import" source="alma-role-admin" target="alma-fn-import"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-notify" source="alma-role-admin" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-settings" source="alma-role-admin" target="alma-fn-settings"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-admin--fn-selfservice" source="alma-role-admin" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-observer--fn-kam-control" source="alma-role-observer" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-observer--fn-analytics" source="alma-role-observer" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-observer--fn-audit" source="alma-role-observer" target="alma-fn-audit"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-observer--fn-notify" source="alma-role-observer" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-role-observer--fn-selfservice" source="alma-role-observer" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-registries--svc-universities" source="alma-grp-svc-registries" target="alma-svc-universities"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-universities--fn-universities" source="alma-svc-universities" target="alma-fn-universities"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-registries--svc-contracts" source="alma-grp-svc-registries" target="alma-svc-contracts"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-contracts--fn-contracts" source="alma-svc-contracts" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-registries--svc-products" source="alma-grp-svc-registries" target="alma-svc-products"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-products--fn-contracts" source="alma-svc-products" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-registries--svc-programs" source="alma-grp-svc-registries" target="alma-svc-programs"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-programs--fn-contracts" source="alma-svc-programs" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-board" source="alma-grp-svc-processes" target="alma-svc-board"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-board--fn-requests" source="alma-svc-board" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-request-card" source="alma-grp-svc-processes" target="alma-svc-request-card"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-request-card--fn-requests" source="alma-svc-request-card" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-transitions" source="alma-grp-svc-processes" target="alma-svc-transitions"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-transitions--fn-requests" source="alma-svc-transitions" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-assign" source="alma-grp-svc-processes" target="alma-svc-assign"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-assign--fn-requests" source="alma-svc-assign" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-designer" source="alma-grp-svc-processes" target="alma-svc-designer"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-designer--fn-workflow" source="alma-svc-designer" target="alma-fn-workflow"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-approvals" source="alma-grp-svc-processes" target="alma-svc-approvals"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-approvals--fn-workflow" source="alma-svc-approvals" target="alma-fn-workflow"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-processes--svc-migration" source="alma-grp-svc-processes" target="alma-svc-migration"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-migration--fn-workflow" source="alma-svc-migration" target="alma-fn-workflow"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-talent--svc-students" source="alma-grp-svc-talent" target="alma-svc-students"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-students--fn-talent" source="alma-svc-students" target="alma-fn-talent"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-talent--svc-reveal" source="alma-grp-svc-talent" target="alma-svc-reveal"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-reveal--fn-talent" source="alma-svc-reveal" target="alma-fn-talent"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-reveal--fn-audit" source="alma-svc-reveal" target="alma-fn-audit"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-talent--svc-activities" source="alma-grp-svc-talent" target="alma-svc-activities"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-activities--fn-talent" source="alma-svc-activities" target="alma-fn-talent"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-dashboard" source="alma-grp-svc-reports" target="alma-svc-dashboard"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-dashboard--fn-analytics" source="alma-svc-dashboard" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-kam-activity" source="alma-grp-svc-reports" target="alma-svc-kam-activity"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-kam-activity--fn-kam-control" source="alma-svc-kam-activity" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-interactions" source="alma-grp-svc-reports" target="alma-svc-interactions"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-interactions--fn-kam-control" source="alma-svc-interactions" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-interactions--fn-analytics" source="alma-svc-interactions" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-export" source="alma-grp-svc-reports" target="alma-svc-export"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-export--fn-analytics" source="alma-svc-export" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-access--svc-login" source="alma-grp-svc-access" target="alma-svc-login"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-login--fn-access" source="alma-svc-login" target="alma-fn-access"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-access--svc-roles" source="alma-grp-svc-access" target="alma-svc-roles"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-roles--fn-access" source="alma-svc-roles" target="alma-fn-access"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-access--svc-users" source="alma-grp-svc-access" target="alma-svc-users"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-users--fn-access" source="alma-svc-users" target="alma-fn-access"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-access--svc-audit" source="alma-grp-svc-access" target="alma-svc-audit"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-audit--fn-audit" source="alma-svc-audit" target="alma-fn-audit"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-integrations--svc-lms-in" source="alma-grp-svc-integrations" target="alma-svc-lms-in"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-lms-in--fn-exchange" source="alma-svc-lms-in" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-integrations--svc-cms-in" source="alma-grp-svc-integrations" target="alma-svc-cms-in"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-cms-in--fn-exchange" source="alma-svc-cms-in" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-integrations--svc-outbox" source="alma-grp-svc-integrations" target="alma-svc-outbox"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-outbox--fn-exchange" source="alma-svc-outbox" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-integrations--svc-intg-journal" source="alma-grp-svc-integrations" target="alma-svc-intg-journal"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-intg-journal--fn-exchange" source="alma-svc-intg-journal" target="alma-fn-exchange"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-integrations--svc-import" source="alma-grp-svc-integrations" target="alma-svc-import"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-import--fn-import" source="alma-svc-import" target="alma-fn-import"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-notifications--svc-inbox" source="alma-grp-svc-notifications" target="alma-svc-inbox"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-inbox--fn-notify" source="alma-svc-inbox" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-notifications--svc-notify-settings" source="alma-grp-svc-notifications" target="alma-svc-notify-settings"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-notify-settings--fn-notify" source="alma-svc-notify-settings" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-notifications--svc-rules" source="alma-grp-svc-notifications" target="alma-svc-rules"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-rules--fn-notify" source="alma-svc-rules" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-notifications--svc-bot" source="alma-grp-svc-notifications" target="alma-svc-bot"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-bot--fn-notify" source="alma-svc-bot" target="alma-fn-notify"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-notifications--svc-stuck" source="alma-grp-svc-notifications" target="alma-svc-stuck"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-stuck--fn-notify" source="alma-svc-stuck" target="alma-fn-notify"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-stuck--fn-kam-control" source="alma-svc-stuck" target="alma-fn-kam-control"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-dictionaries" source="alma-grp-svc-common" target="alma-svc-dictionaries"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-dictionaries--fn-settings" source="alma-svc-dictionaries" target="alma-fn-settings"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-directions" source="alma-grp-svc-common" target="alma-svc-directions"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-directions--fn-settings" source="alma-svc-directions" target="alma-fn-settings"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-flags" source="alma-grp-svc-common" target="alma-svc-flags"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-flags--fn-settings" source="alma-svc-flags" target="alma-fn-settings"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-files" source="alma-grp-svc-common" target="alma-svc-files"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-files--fn-requests" source="alma-svc-files" target="alma-fn-requests"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-files--fn-contracts" source="alma-svc-files" target="alma-fn-contracts"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-sse" source="alma-grp-svc-common" target="alma-svc-sse"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-sse--fn-requests" source="alma-svc-sse" target="alma-fn-requests"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-search" source="alma-grp-svc-common" target="alma-svc-search"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-search--fn-selfservice" source="alma-svc-search" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-presets" source="alma-grp-svc-common" target="alma-svc-presets"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-presets--fn-selfservice" source="alma-svc-presets" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-common--svc-help" source="alma-grp-svc-common" target="alma-svc-help"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-help--fn-selfservice" source="alma-svc-help" target="alma-fn-selfservice"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-lms" source="alma-grp-external" target="alma-ext-lms"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-cms" source="alma-grp-external" target="alma-ext-cms"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-telegram" source="alma-grp-external" target="alma-ext-telegram"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-external--ext-channels" source="alma-grp-external" target="alma-ext-channels"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-app" source="alma-node-k8s" target="alma-grp-tier-app"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-iam" source="alma-node-k8s" target="alma-grp-tier-iam"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-dmz" source="alma-node-k8s" target="alma-grp-tier-dmz"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-tier-data" source="alma-node-k8s" target="alma-grp-tier-data"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-node-k8s--sw-ingress" source="alma-node-k8s" target="alma-sw-ingress"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-app--sw-ingress" source="alma-grp-tier-app" target="alma-sw-ingress"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-app--ac-frontend" source="alma-grp-tier-app" target="alma-ac-frontend"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-app--ac-backend" source="alma-grp-tier-app" target="alma-ac-backend"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-app--ac-lms-stub" source="alma-grp-tier-app" target="alma-ac-lms-stub"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-app--ac-cms-stub" source="alma-grp-tier-app" target="alma-ac-cms-stub"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-iam--ac-keycloak" source="alma-grp-tier-iam" target="alma-ac-keycloak"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-dmz--ac-notification" source="alma-grp-tier-dmz" target="alma-ac-notification"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-auth" source="alma-ac-backend" target="alma-mod-auth"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-access" source="alma-ac-backend" target="alma-mod-access"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-workflow" source="alma-ac-backend" target="alma-mod-workflow"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-requests" source="alma-ac-backend" target="alma-mod-requests"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-crm" source="alma-ac-backend" target="alma-mod-crm"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-import-export" source="alma-ac-backend" target="alma-mod-import-export"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-talent" source="alma-ac-backend" target="alma-mod-talent"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-reporting" source="alma-ac-backend" target="alma-mod-reporting"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-integrations" source="alma-ac-backend" target="alma-mod-integrations"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-notifications" source="alma-ac-backend" target="alma-mod-notifications"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-files" source="alma-ac-backend" target="alma-mod-files"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-admin" source="alma-ac-backend" target="alma-mod-admin"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-ui" source="alma-ac-backend" target="alma-mod-ui"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-internal" source="alma-ac-backend" target="alma-mod-internal"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-ac-backend--mod-core" source="alma-ac-backend" target="alma-mod-core"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-node-k8s--sw-postgres" source="alma-node-k8s" target="alma-sw-postgres"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-data--sw-postgres" source="alma-grp-tier-data" target="alma-sw-postgres"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-node-k8s--sw-keydb" source="alma-node-k8s" target="alma-sw-keydb"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-data--sw-keydb" source="alma-grp-tier-data" target="alma-sw-keydb"/>
+    <element xsi:type="archimate:CompositionRelationship" id="alma-rel-c-node-k8s--sw-minio" source="alma-node-k8s" target="alma-sw-minio"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-tier-data--sw-minio" source="alma-grp-tier-data" target="alma-sw-minio"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-jobs" source="alma-node-k8s" target="alma-grp-jobs"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--tp-cronjobs" source="alma-node-k8s" target="alma-tp-cronjobs"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-jobs--tp-cronjobs" source="alma-grp-jobs" target="alma-tp-cronjobs"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--tp-jobs" source="alma-node-k8s" target="alma-tp-jobs"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-jobs--tp-jobs" source="alma-grp-jobs" target="alma-tp-jobs"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-node-k8s--grp-images" source="alma-node-k8s" target="alma-grp-images"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-backend" source="alma-node-k8s" target="alma-art-backend"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-backend" source="alma-grp-images" target="alma-art-backend"/>
+    <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-backend--ac-backend" source="alma-art-backend" target="alma-ac-backend"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-frontend" source="alma-node-k8s" target="alma-art-frontend"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-frontend" source="alma-grp-images" target="alma-art-frontend"/>
+    <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-frontend--ac-frontend" source="alma-art-frontend" target="alma-ac-frontend"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-notification" source="alma-node-k8s" target="alma-art-notification"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-notification" source="alma-grp-images" target="alma-art-notification"/>
+    <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-notification--ac-notification" source="alma-art-notification" target="alma-ac-notification"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-lms-stub" source="alma-node-k8s" target="alma-art-lms-stub"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-lms-stub" source="alma-grp-images" target="alma-art-lms-stub"/>
+    <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-lms-stub--ac-lms-stub" source="alma-art-lms-stub" target="alma-ac-lms-stub"/>
+    <element xsi:type="archimate:AssignmentRelationship" id="alma-rel-i-node-k8s--art-cms-stub" source="alma-node-k8s" target="alma-art-cms-stub"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-images--art-cms-stub" source="alma-grp-images" target="alma-art-cms-stub"/>
+    <element xsi:type="archimate:RealizationRelationship" name="образ" id="alma-rel-r-art-cms-stub--ac-cms-stub" source="alma-art-cms-stub" target="alma-ac-cms-stub"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-no-egress" source="alma-grp-constraints" target="alma-con-no-egress"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-no-egress--node-k8s" source="alma-con-no-egress" target="alma-node-k8s"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-single-egress" source="alma-grp-constraints" target="alma-con-single-egress"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-single-egress--ac-notification" source="alma-con-single-egress" target="alma-ac-notification"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-stubs" source="alma-grp-constraints" target="alma-con-stubs"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-stubs--ac-lms-stub" source="alma-con-stubs" target="alma-ac-lms-stub"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-cache" source="alma-grp-constraints" target="alma-con-cache"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-cache--sw-keydb" source="alma-con-cache" target="alma-sw-keydb"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-constraints--con-pii" source="alma-grp-constraints" target="alma-con-pii"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-pii--sw-postgres" source="alma-con-pii" target="alma-sw-postgres"/>
+    <element xsi:type="archimate:AssociationRelationship" id="alma-rel-o-con-stubs--ac-cms-stub" source="alma-con-stubs" target="alma-ac-cms-stub"/>
+    <element xsi:type="archimate:ServingRelationship" name="SPA в браузере" id="alma-rel-v-ac-frontend--actor-users" source="alma-ac-frontend" target="alma-actor-users"/>
+    <element xsi:type="archimate:ServingRelationship" name="/" id="alma-rel-v-sw-ingress--ac-frontend" source="alma-sw-ingress" target="alma-ac-frontend"/>
+    <element xsi:type="archimate:ServingRelationship" name="/api" id="alma-rel-v-sw-ingress--ac-backend" source="alma-sw-ingress" target="alma-ac-backend"/>
+    <element xsi:type="archimate:ServingRelationship" name="id.*" id="alma-rel-v-sw-ingress--ac-keycloak" source="alma-sw-ingress" target="alma-ac-keycloak"/>
+    <element xsi:type="archimate:ServingRelationship" name="lms.*" id="alma-rel-v-sw-ingress--ac-lms-stub" source="alma-sw-ingress" target="alma-ac-lms-stub"/>
+    <element xsi:type="archimate:ServingRelationship" name="cms.*" id="alma-rel-v-sw-ingress--ac-cms-stub" source="alma-sw-ingress" target="alma-ac-cms-stub"/>
+    <element xsi:type="archimate:ServingRelationship" name="minio.* (консоль)" id="alma-rel-v-sw-ingress--sw-minio" source="alma-sw-ingress" target="alma-sw-minio"/>
+    <element xsi:type="archimate:ServingRelationship" name="REST /api/v1, SSE" id="alma-rel-v-ac-backend--ac-frontend" source="alma-ac-backend" target="alma-ac-frontend"/>
+    <element xsi:type="archimate:ServingRelationship" name="OIDC + PKCE" id="alma-rel-v-ac-keycloak--ac-frontend" source="alma-ac-keycloak" target="alma-ac-frontend"/>
+    <element xsi:type="archimate:ServingRelationship" name="JWKS" id="alma-rel-v-ac-keycloak--ac-backend" source="alma-ac-keycloak" target="alma-ac-backend"/>
+    <element xsi:type="archimate:ServingRelationship" name="client credentials" id="alma-rel-v-ac-keycloak--ac-notification" source="alma-ac-keycloak" target="alma-ac-notification"/>
+    <element xsi:type="archimate:FlowRelationship" name="POST /api/v1/send, X-Internal-Token" id="alma-rel-f-ac-backend--ac-notification" source="alma-ac-backend" target="alma-ac-notification"/>
+    <element xsi:type="archimate:ServingRelationship" name="/internal/bot/* — права привязанного" id="alma-rel-v-ac-backend--ac-notification" source="alma-ac-backend" target="alma-ac-notification"/>
+    <element xsi:type="archimate:FlowRelationship" name="события CRM: JSON + HMAC, outbox" id="alma-rel-f-ac-backend--ac-lms-stub" source="alma-ac-backend" target="alma-ac-lms-stub"/>
+    <element xsi:type="archimate:FlowRelationship" name="вебхук /integrations/lms/webhook" id="alma-rel-f-ac-lms-stub--ac-backend" source="alma-ac-lms-stub" target="alma-ac-backend"/>
+    <element xsi:type="archimate:AssociationRelationship" name="заменяет на стенде" id="alma-rel-o-ac-lms-stub--ext-lms" source="alma-ac-lms-stub" target="alma-ext-lms"/>
+    <element xsi:type="archimate:FlowRelationship" name="события CRM: JSON + HMAC, outbox" id="alma-rel-f-ac-backend--ac-cms-stub" source="alma-ac-backend" target="alma-ac-cms-stub"/>
+    <element xsi:type="archimate:FlowRelationship" name="вебхук /integrations/cms/webhook" id="alma-rel-f-ac-cms-stub--ac-backend" source="alma-ac-cms-stub" target="alma-ac-backend"/>
+    <element xsi:type="archimate:AssociationRelationship" name="заменяет на стенде" id="alma-rel-o-ac-cms-stub--ext-cms" source="alma-ac-cms-stub" target="alma-ext-cms"/>
+    <element xsi:type="archimate:FlowRelationship" name="443, long-polling" id="alma-rel-f-ac-notification--ext-telegram" source="alma-ac-notification" target="alma-ext-telegram"/>
+    <element xsi:type="archimate:FlowRelationship" name="адаптеры-заглушки" id="alma-rel-f-ac-notification--ext-channels" source="alma-ac-notification" target="alma-ext-channels"/>
+    <element xsi:type="archimate:ServingRelationship" name="БД crm" id="alma-rel-v-sw-postgres--ac-backend" source="alma-sw-postgres" target="alma-ac-backend"/>
+    <element xsi:type="archimate:ServingRelationship" name="БД keycloak" id="alma-rel-v-sw-postgres--ac-keycloak" source="alma-sw-postgres" target="alma-ac-keycloak"/>
+    <element xsi:type="archimate:ServingRelationship" name="кэш, pub/sub SSE" id="alma-rel-v-sw-keydb--ac-backend" source="alma-sw-keydb" target="alma-ac-backend"/>
+    <element xsi:type="archimate:ServingRelationship" name="идемпотентность" id="alma-rel-v-sw-keydb--ac-notification" source="alma-sw-keydb" target="alma-ac-notification"/>
+    <element xsi:type="archimate:ServingRelationship" name="файлы, импорты, выгрузки" id="alma-rel-v-sw-minio--ac-backend" source="alma-sw-minio" target="alma-ac-backend"/>
+    <element xsi:type="archimate:TriggeringRelationship" name="POST /internal/jobs/*" id="alma-rel-t-tp-cronjobs--ac-backend" source="alma-tp-cronjobs" target="alma-ac-backend"/>
+    <element xsi:type="archimate:AssociationRelationship" name="миграции, засев" id="alma-rel-o-tp-jobs--sw-postgres" source="alma-tp-jobs" target="alma-sw-postgres"/>
+    <element xsi:type="archimate:AssociationRelationship" name="бакеты" id="alma-rel-o-tp-jobs--sw-minio" source="alma-tp-jobs" target="alma-sw-minio"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-crm--svc-universities" source="alma-mod-crm" target="alma-svc-universities"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-crm--svc-contracts" source="alma-mod-crm" target="alma-svc-contracts"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-files--svc-contracts" source="alma-mod-files" target="alma-svc-contracts"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-crm--svc-products" source="alma-mod-crm" target="alma-svc-products"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-crm--svc-programs" source="alma-mod-crm" target="alma-svc-programs"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-requests--svc-board" source="alma-mod-requests" target="alma-svc-board"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-requests--svc-request-card" source="alma-mod-requests" target="alma-svc-request-card"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-files--svc-request-card" source="alma-mod-files" target="alma-svc-request-card"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-workflow--svc-transitions" source="alma-mod-workflow" target="alma-svc-transitions"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-requests--svc-transitions" source="alma-mod-requests" target="alma-svc-transitions"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-requests--svc-assign" source="alma-mod-requests" target="alma-svc-assign"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-workflow--svc-designer" source="alma-mod-workflow" target="alma-svc-designer"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-workflow--svc-approvals" source="alma-mod-workflow" target="alma-svc-approvals"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-workflow--svc-migration" source="alma-mod-workflow" target="alma-svc-migration"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-talent--svc-students" source="alma-mod-talent" target="alma-svc-students"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-talent--svc-reveal" source="alma-mod-talent" target="alma-svc-reveal"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-talent--svc-activities" source="alma-mod-talent" target="alma-svc-activities"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-dashboard" source="alma-mod-reporting" target="alma-svc-dashboard"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-kam-activity" source="alma-mod-reporting" target="alma-svc-kam-activity"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-interactions" source="alma-mod-reporting" target="alma-svc-interactions"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-import-export--svc-export" source="alma-mod-import-export" target="alma-svc-export"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-auth--svc-login" source="alma-mod-auth" target="alma-svc-login"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-ac-keycloak--svc-login" source="alma-ac-keycloak" target="alma-svc-login"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-access--svc-roles" source="alma-mod-access" target="alma-svc-roles"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-admin--svc-users" source="alma-mod-admin" target="alma-svc-users"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-access--svc-users" source="alma-mod-access" target="alma-svc-users"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-admin--svc-audit" source="alma-mod-admin" target="alma-svc-audit"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-integrations--svc-lms-in" source="alma-mod-integrations" target="alma-svc-lms-in"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-integrations--svc-cms-in" source="alma-mod-integrations" target="alma-svc-cms-in"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-integrations--svc-outbox" source="alma-mod-integrations" target="alma-svc-outbox"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-internal--svc-outbox" source="alma-mod-internal" target="alma-svc-outbox"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-integrations--svc-intg-journal" source="alma-mod-integrations" target="alma-svc-intg-journal"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-import-export--svc-import" source="alma-mod-import-export" target="alma-svc-import"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-notifications--svc-inbox" source="alma-mod-notifications" target="alma-svc-inbox"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-notifications--svc-notify-settings" source="alma-mod-notifications" target="alma-svc-notify-settings"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-notifications--svc-rules" source="alma-mod-notifications" target="alma-svc-rules"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-ac-notification--svc-bot" source="alma-ac-notification" target="alma-svc-bot"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-notifications--svc-bot" source="alma-mod-notifications" target="alma-svc-bot"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-internal--svc-stuck" source="alma-mod-internal" target="alma-svc-stuck"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-workflow--svc-stuck" source="alma-mod-workflow" target="alma-svc-stuck"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-notifications--svc-stuck" source="alma-mod-notifications" target="alma-svc-stuck"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-import-export--svc-dictionaries" source="alma-mod-import-export" target="alma-svc-dictionaries"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-crm--svc-directions" source="alma-mod-crm" target="alma-svc-directions"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-admin--svc-flags" source="alma-mod-admin" target="alma-svc-flags"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-files--svc-files" source="alma-mod-files" target="alma-svc-files"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-ui--svc-sse" source="alma-mod-ui" target="alma-svc-sse"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-core--svc-sse" source="alma-mod-core" target="alma-svc-sse"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-ui--svc-search" source="alma-mod-ui" target="alma-svc-search"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-ui--svc-presets" source="alma-mod-ui" target="alma-svc-presets"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-ac-frontend--svc-help" source="alma-ac-frontend" target="alma-svc-help"/>
+  </folder>
+  <folder name="Виды" id="alma-folder-diagrams" type="diagrams">
+    <element xsi:type="archimate:ArchimateDiagramModel" name="Функциональная схема" id="alma-view-vf">
+      <child xsi:type="archimate:Note" id="alma-vf-note">
+        <bounds x="20" y="20" width="1750" height="52"/>
+        <content>Функциональная схема «Альмы»: роли выполняют бизнес-функции (назначения рассчитаны по каталогу прав backend/app/core/rbac_catalog.py), прикладные сервисы под функциями их обслуживают. Свойства сервисов — API, права и экран. Сгенерировано: docs/architecture/archi/build_archi.py.</content>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-roles" archimateElement="alma-grp-roles">
+        <bounds x="20" y="90" width="1085" height="100"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-role-kam" targetConnections="alma-vf-c-rel-s-role-custom--role-kam" archimateElement="alma-role-kam">
+          <bounds x="15" y="32" width="200" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-universities" source="alma-vf-role-kam" target="alma-vf-fn-universities" archimateRelationship="alma-rel-i-role-kam--fn-universities"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-contracts" source="alma-vf-role-kam" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-i-role-kam--fn-contracts"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-requests" source="alma-vf-role-kam" target="alma-vf-fn-requests" archimateRelationship="alma-rel-i-role-kam--fn-requests"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-talent" source="alma-vf-role-kam" target="alma-vf-fn-talent" archimateRelationship="alma-rel-i-role-kam--fn-talent"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-analytics" source="alma-vf-role-kam" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-i-role-kam--fn-analytics"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-import" source="alma-vf-role-kam" target="alma-vf-fn-import" archimateRelationship="alma-rel-i-role-kam--fn-import"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-notify" source="alma-vf-role-kam" target="alma-vf-fn-notify" archimateRelationship="alma-rel-i-role-kam--fn-notify"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-kam--fn-selfservice" source="alma-vf-role-kam" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-i-role-kam--fn-selfservice"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-role-head-kam" archimateElement="alma-role-head-kam">
+          <bounds x="230" y="32" width="200" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-universities" source="alma-vf-role-head-kam" target="alma-vf-fn-universities" archimateRelationship="alma-rel-i-role-head-kam--fn-universities"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-contracts" source="alma-vf-role-head-kam" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-i-role-head-kam--fn-contracts"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-requests" source="alma-vf-role-head-kam" target="alma-vf-fn-requests" archimateRelationship="alma-rel-i-role-head-kam--fn-requests"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-workflow" source="alma-vf-role-head-kam" target="alma-vf-fn-workflow" archimateRelationship="alma-rel-i-role-head-kam--fn-workflow"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-talent" source="alma-vf-role-head-kam" target="alma-vf-fn-talent" archimateRelationship="alma-rel-i-role-head-kam--fn-talent"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-kam-control" source="alma-vf-role-head-kam" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-i-role-head-kam--fn-kam-control"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-analytics" source="alma-vf-role-head-kam" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-i-role-head-kam--fn-analytics"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-import" source="alma-vf-role-head-kam" target="alma-vf-fn-import" archimateRelationship="alma-rel-i-role-head-kam--fn-import"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-notify" source="alma-vf-role-head-kam" target="alma-vf-fn-notify" archimateRelationship="alma-rel-i-role-head-kam--fn-notify"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-head-kam--fn-selfservice" source="alma-vf-role-head-kam" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-i-role-head-kam--fn-selfservice"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-role-admin" archimateElement="alma-role-admin">
+          <bounds x="445" y="32" width="200" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-universities" source="alma-vf-role-admin" target="alma-vf-fn-universities" archimateRelationship="alma-rel-i-role-admin--fn-universities"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-contracts" source="alma-vf-role-admin" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-i-role-admin--fn-contracts"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-requests" source="alma-vf-role-admin" target="alma-vf-fn-requests" archimateRelationship="alma-rel-i-role-admin--fn-requests"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-workflow" source="alma-vf-role-admin" target="alma-vf-fn-workflow" archimateRelationship="alma-rel-i-role-admin--fn-workflow"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-talent" source="alma-vf-role-admin" target="alma-vf-fn-talent" archimateRelationship="alma-rel-i-role-admin--fn-talent"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-kam-control" source="alma-vf-role-admin" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-i-role-admin--fn-kam-control"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-analytics" source="alma-vf-role-admin" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-i-role-admin--fn-analytics"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-access" source="alma-vf-role-admin" target="alma-vf-fn-access" archimateRelationship="alma-rel-i-role-admin--fn-access"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-audit" source="alma-vf-role-admin" target="alma-vf-fn-audit" archimateRelationship="alma-rel-i-role-admin--fn-audit"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-exchange" source="alma-vf-role-admin" target="alma-vf-fn-exchange" archimateRelationship="alma-rel-i-role-admin--fn-exchange"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-import" source="alma-vf-role-admin" target="alma-vf-fn-import" archimateRelationship="alma-rel-i-role-admin--fn-import"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-notify" source="alma-vf-role-admin" target="alma-vf-fn-notify" archimateRelationship="alma-rel-i-role-admin--fn-notify"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-settings" source="alma-vf-role-admin" target="alma-vf-fn-settings" archimateRelationship="alma-rel-i-role-admin--fn-settings"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-admin--fn-selfservice" source="alma-vf-role-admin" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-i-role-admin--fn-selfservice"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-role-observer" archimateElement="alma-role-observer">
+          <bounds x="660" y="32" width="200" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-observer--fn-kam-control" source="alma-vf-role-observer" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-i-role-observer--fn-kam-control"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-observer--fn-analytics" source="alma-vf-role-observer" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-i-role-observer--fn-analytics"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-observer--fn-audit" source="alma-vf-role-observer" target="alma-vf-fn-audit" archimateRelationship="alma-rel-i-role-observer--fn-audit"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-observer--fn-notify" source="alma-vf-role-observer" target="alma-vf-fn-notify" archimateRelationship="alma-rel-i-role-observer--fn-notify"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-i-role-observer--fn-selfservice" source="alma-vf-role-observer" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-i-role-observer--fn-selfservice"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-role-custom" archimateElement="alma-role-custom">
+          <bounds x="875" y="32" width="200" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-s-role-custom--role-kam" source="alma-vf-role-custom" target="alma-vf-role-kam" archimateRelationship="alma-rel-s-role-custom--role-kam"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-actors" archimateElement="alma-grp-actors">
+        <bounds x="1125" y="90" width="645" height="100"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-actor-university" archimateElement="alma-actor-university">
+          <bounds x="15" y="32" width="220" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-o-actor-university--fn-universities" source="alma-vf-actor-university" target="alma-vf-fn-universities" archimateRelationship="alma-rel-o-actor-university--fn-universities"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-o-actor-university--fn-requests" source="alma-vf-actor-university" target="alma-vf-fn-requests" archimateRelationship="alma-rel-o-actor-university--fn-requests"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-actor-client" archimateElement="alma-actor-client">
+          <bounds x="255" y="32" width="220" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-o-actor-client--fn-requests" source="alma-vf-actor-client" target="alma-vf-fn-requests" archimateRelationship="alma-rel-o-actor-client--fn-requests"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-o-actor-client--fn-exchange" source="alma-vf-actor-client" target="alma-vf-fn-exchange" archimateRelationship="alma-rel-o-actor-client--fn-exchange"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-functions" archimateElement="alma-grp-functions">
+        <bounds x="20" y="230" width="1750" height="170"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-universities" targetConnections="alma-vf-c-rel-o-actor-university--fn-universities alma-vf-c-rel-i-role-kam--fn-universities alma-vf-c-rel-i-role-head-kam--fn-universities alma-vf-c-rel-i-role-admin--fn-universities alma-vf-c-rel-v-svc-universities--fn-universities" archimateElement="alma-fn-universities">
+          <bounds x="10" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-contracts" targetConnections="alma-vf-c-rel-i-role-kam--fn-contracts alma-vf-c-rel-i-role-head-kam--fn-contracts alma-vf-c-rel-i-role-admin--fn-contracts alma-vf-c-rel-v-svc-contracts--fn-contracts alma-vf-c-rel-v-svc-products--fn-contracts alma-vf-c-rel-v-svc-programs--fn-contracts alma-vf-c-rel-v-svc-files--fn-contracts" archimateElement="alma-fn-contracts">
+          <bounds x="10" y="100" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-requests" targetConnections="alma-vf-c-rel-o-actor-university--fn-requests alma-vf-c-rel-o-actor-client--fn-requests alma-vf-c-rel-i-role-kam--fn-requests alma-vf-c-rel-i-role-head-kam--fn-requests alma-vf-c-rel-i-role-admin--fn-requests alma-vf-c-rel-v-svc-board--fn-requests alma-vf-c-rel-v-svc-request-card--fn-requests alma-vf-c-rel-v-svc-transitions--fn-requests alma-vf-c-rel-v-svc-assign--fn-requests alma-vf-c-rel-v-svc-files--fn-requests alma-vf-c-rel-v-svc-sse--fn-requests" archimateElement="alma-fn-requests">
+          <bounds x="230" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-workflow" targetConnections="alma-vf-c-rel-i-role-head-kam--fn-workflow alma-vf-c-rel-i-role-admin--fn-workflow alma-vf-c-rel-v-svc-designer--fn-workflow alma-vf-c-rel-v-svc-approvals--fn-workflow alma-vf-c-rel-v-svc-migration--fn-workflow" archimateElement="alma-fn-workflow">
+          <bounds x="230" y="100" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-talent" targetConnections="alma-vf-c-rel-i-role-kam--fn-talent alma-vf-c-rel-i-role-head-kam--fn-talent alma-vf-c-rel-i-role-admin--fn-talent alma-vf-c-rel-v-svc-students--fn-talent alma-vf-c-rel-v-svc-reveal--fn-talent alma-vf-c-rel-v-svc-activities--fn-talent" archimateElement="alma-fn-talent">
+          <bounds x="450" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-kam-control" targetConnections="alma-vf-c-rel-i-role-head-kam--fn-kam-control alma-vf-c-rel-i-role-admin--fn-kam-control alma-vf-c-rel-i-role-observer--fn-kam-control alma-vf-c-rel-v-svc-kam-activity--fn-kam-control alma-vf-c-rel-v-svc-interactions--fn-kam-control alma-vf-c-rel-v-svc-stuck--fn-kam-control" archimateElement="alma-fn-kam-control">
+          <bounds x="670" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-analytics" targetConnections="alma-vf-c-rel-i-role-kam--fn-analytics alma-vf-c-rel-i-role-head-kam--fn-analytics alma-vf-c-rel-i-role-admin--fn-analytics alma-vf-c-rel-i-role-observer--fn-analytics alma-vf-c-rel-v-svc-dashboard--fn-analytics alma-vf-c-rel-v-svc-interactions--fn-analytics alma-vf-c-rel-v-svc-export--fn-analytics" archimateElement="alma-fn-analytics">
+          <bounds x="670" y="100" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-access" targetConnections="alma-vf-c-rel-i-role-admin--fn-access alma-vf-c-rel-v-svc-login--fn-access alma-vf-c-rel-v-svc-roles--fn-access alma-vf-c-rel-v-svc-users--fn-access" archimateElement="alma-fn-access">
+          <bounds x="890" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-audit" targetConnections="alma-vf-c-rel-i-role-admin--fn-audit alma-vf-c-rel-i-role-observer--fn-audit alma-vf-c-rel-v-svc-reveal--fn-audit alma-vf-c-rel-v-svc-audit--fn-audit" archimateElement="alma-fn-audit">
+          <bounds x="890" y="100" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-exchange" targetConnections="alma-vf-c-rel-o-actor-client--fn-exchange alma-vf-c-rel-i-role-admin--fn-exchange alma-vf-c-rel-v-svc-lms-in--fn-exchange alma-vf-c-rel-v-svc-cms-in--fn-exchange alma-vf-c-rel-v-svc-outbox--fn-exchange alma-vf-c-rel-v-svc-intg-journal--fn-exchange" archimateElement="alma-fn-exchange">
+          <bounds x="1110" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-import" targetConnections="alma-vf-c-rel-i-role-kam--fn-import alma-vf-c-rel-i-role-head-kam--fn-import alma-vf-c-rel-i-role-admin--fn-import alma-vf-c-rel-v-svc-import--fn-import" archimateElement="alma-fn-import">
+          <bounds x="1110" y="100" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-notify" targetConnections="alma-vf-c-rel-i-role-kam--fn-notify alma-vf-c-rel-i-role-head-kam--fn-notify alma-vf-c-rel-i-role-admin--fn-notify alma-vf-c-rel-i-role-observer--fn-notify alma-vf-c-rel-v-svc-inbox--fn-notify alma-vf-c-rel-v-svc-notify-settings--fn-notify alma-vf-c-rel-v-svc-rules--fn-notify alma-vf-c-rel-v-svc-bot--fn-notify alma-vf-c-rel-v-svc-stuck--fn-notify" archimateElement="alma-fn-notify">
+          <bounds x="1330" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-settings" targetConnections="alma-vf-c-rel-i-role-admin--fn-settings alma-vf-c-rel-v-svc-dictionaries--fn-settings alma-vf-c-rel-v-svc-directions--fn-settings alma-vf-c-rel-v-svc-flags--fn-settings" archimateElement="alma-fn-settings">
+          <bounds x="1550" y="32" width="190" height="58"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-selfservice" targetConnections="alma-vf-c-rel-i-role-kam--fn-selfservice alma-vf-c-rel-i-role-head-kam--fn-selfservice alma-vf-c-rel-i-role-admin--fn-selfservice alma-vf-c-rel-i-role-observer--fn-selfservice alma-vf-c-rel-v-svc-search--fn-selfservice alma-vf-c-rel-v-svc-presets--fn-selfservice alma-vf-c-rel-v-svc-help--fn-selfservice" archimateElement="alma-fn-selfservice">
+          <bounds x="1550" y="100" width="190" height="58"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-registries" archimateElement="alma-grp-svc-registries">
+        <bounds x="20" y="440" width="210" height="297"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-universities" archimateElement="alma-svc-universities">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-universities--fn-universities" source="alma-vf-svc-universities" target="alma-vf-fn-universities" archimateRelationship="alma-rel-v-svc-universities--fn-universities"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-contracts" archimateElement="alma-svc-contracts">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-contracts--fn-contracts" source="alma-vf-svc-contracts" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-v-svc-contracts--fn-contracts"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-products" archimateElement="alma-svc-products">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-products--fn-contracts" source="alma-vf-svc-products" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-v-svc-products--fn-contracts"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-programs" archimateElement="alma-svc-programs">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-programs--fn-contracts" source="alma-vf-svc-programs" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-v-svc-programs--fn-contracts"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-processes" archimateElement="alma-grp-svc-processes">
+        <bounds x="240" y="440" width="210" height="492"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-board" archimateElement="alma-svc-board">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-board--fn-requests" source="alma-vf-svc-board" target="alma-vf-fn-requests" archimateRelationship="alma-rel-v-svc-board--fn-requests"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-request-card" archimateElement="alma-svc-request-card">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-request-card--fn-requests" source="alma-vf-svc-request-card" target="alma-vf-fn-requests" archimateRelationship="alma-rel-v-svc-request-card--fn-requests"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-transitions" archimateElement="alma-svc-transitions">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-transitions--fn-requests" source="alma-vf-svc-transitions" target="alma-vf-fn-requests" archimateRelationship="alma-rel-v-svc-transitions--fn-requests"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-assign" archimateElement="alma-svc-assign">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-assign--fn-requests" source="alma-vf-svc-assign" target="alma-vf-fn-requests" archimateRelationship="alma-rel-v-svc-assign--fn-requests"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-designer" archimateElement="alma-svc-designer">
+          <bounds x="10" y="292" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-designer--fn-workflow" source="alma-vf-svc-designer" target="alma-vf-fn-workflow" archimateRelationship="alma-rel-v-svc-designer--fn-workflow"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-approvals" archimateElement="alma-svc-approvals">
+          <bounds x="10" y="357" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-approvals--fn-workflow" source="alma-vf-svc-approvals" target="alma-vf-fn-workflow" archimateRelationship="alma-rel-v-svc-approvals--fn-workflow"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-migration" archimateElement="alma-svc-migration">
+          <bounds x="10" y="422" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-migration--fn-workflow" source="alma-vf-svc-migration" target="alma-vf-fn-workflow" archimateRelationship="alma-rel-v-svc-migration--fn-workflow"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-talent" archimateElement="alma-grp-svc-talent">
+        <bounds x="460" y="440" width="210" height="232"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-students" archimateElement="alma-svc-students">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-students--fn-talent" source="alma-vf-svc-students" target="alma-vf-fn-talent" archimateRelationship="alma-rel-v-svc-students--fn-talent"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-reveal" archimateElement="alma-svc-reveal">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-reveal--fn-talent" source="alma-vf-svc-reveal" target="alma-vf-fn-talent" archimateRelationship="alma-rel-v-svc-reveal--fn-talent"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-reveal--fn-audit" source="alma-vf-svc-reveal" target="alma-vf-fn-audit" archimateRelationship="alma-rel-v-svc-reveal--fn-audit"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-activities" archimateElement="alma-svc-activities">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-activities--fn-talent" source="alma-vf-svc-activities" target="alma-vf-fn-talent" archimateRelationship="alma-rel-v-svc-activities--fn-talent"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-reports" archimateElement="alma-grp-svc-reports">
+        <bounds x="680" y="440" width="210" height="297"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-dashboard" archimateElement="alma-svc-dashboard">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-dashboard--fn-analytics" source="alma-vf-svc-dashboard" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-dashboard--fn-analytics"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-kam-activity" archimateElement="alma-svc-kam-activity">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-kam-activity--fn-kam-control" source="alma-vf-svc-kam-activity" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-kam-activity--fn-kam-control"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-interactions" archimateElement="alma-svc-interactions">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-interactions--fn-kam-control" source="alma-vf-svc-interactions" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-interactions--fn-kam-control"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-interactions--fn-analytics" source="alma-vf-svc-interactions" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-interactions--fn-analytics"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-export" archimateElement="alma-svc-export">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-export--fn-analytics" source="alma-vf-svc-export" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-export--fn-analytics"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-access" archimateElement="alma-grp-svc-access">
+        <bounds x="900" y="440" width="210" height="297"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-login" archimateElement="alma-svc-login">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-login--fn-access" source="alma-vf-svc-login" target="alma-vf-fn-access" archimateRelationship="alma-rel-v-svc-login--fn-access"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-roles" archimateElement="alma-svc-roles">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-roles--fn-access" source="alma-vf-svc-roles" target="alma-vf-fn-access" archimateRelationship="alma-rel-v-svc-roles--fn-access"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-users" archimateElement="alma-svc-users">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-users--fn-access" source="alma-vf-svc-users" target="alma-vf-fn-access" archimateRelationship="alma-rel-v-svc-users--fn-access"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-audit" archimateElement="alma-svc-audit">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-audit--fn-audit" source="alma-vf-svc-audit" target="alma-vf-fn-audit" archimateRelationship="alma-rel-v-svc-audit--fn-audit"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-integrations" archimateElement="alma-grp-svc-integrations">
+        <bounds x="1120" y="440" width="210" height="362"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-lms-in" archimateElement="alma-svc-lms-in">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-lms-in--fn-exchange" source="alma-vf-svc-lms-in" target="alma-vf-fn-exchange" archimateRelationship="alma-rel-v-svc-lms-in--fn-exchange"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-cms-in" archimateElement="alma-svc-cms-in">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-cms-in--fn-exchange" source="alma-vf-svc-cms-in" target="alma-vf-fn-exchange" archimateRelationship="alma-rel-v-svc-cms-in--fn-exchange"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-outbox" archimateElement="alma-svc-outbox">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-outbox--fn-exchange" source="alma-vf-svc-outbox" target="alma-vf-fn-exchange" archimateRelationship="alma-rel-v-svc-outbox--fn-exchange"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-intg-journal" archimateElement="alma-svc-intg-journal">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-intg-journal--fn-exchange" source="alma-vf-svc-intg-journal" target="alma-vf-fn-exchange" archimateRelationship="alma-rel-v-svc-intg-journal--fn-exchange"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-import" archimateElement="alma-svc-import">
+          <bounds x="10" y="292" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-import--fn-import" source="alma-vf-svc-import" target="alma-vf-fn-import" archimateRelationship="alma-rel-v-svc-import--fn-import"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-notifications" archimateElement="alma-grp-svc-notifications">
+        <bounds x="1340" y="440" width="210" height="362"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-inbox" archimateElement="alma-svc-inbox">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-inbox--fn-notify" source="alma-vf-svc-inbox" target="alma-vf-fn-notify" archimateRelationship="alma-rel-v-svc-inbox--fn-notify"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-notify-settings" archimateElement="alma-svc-notify-settings">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-notify-settings--fn-notify" source="alma-vf-svc-notify-settings" target="alma-vf-fn-notify" archimateRelationship="alma-rel-v-svc-notify-settings--fn-notify"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-rules" archimateElement="alma-svc-rules">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-rules--fn-notify" source="alma-vf-svc-rules" target="alma-vf-fn-notify" archimateRelationship="alma-rel-v-svc-rules--fn-notify"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-bot" archimateElement="alma-svc-bot">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-bot--fn-notify" source="alma-vf-svc-bot" target="alma-vf-fn-notify" archimateRelationship="alma-rel-v-svc-bot--fn-notify"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-stuck" archimateElement="alma-svc-stuck">
+          <bounds x="10" y="292" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-stuck--fn-notify" source="alma-vf-svc-stuck" target="alma-vf-fn-notify" archimateRelationship="alma-rel-v-svc-stuck--fn-notify"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-stuck--fn-kam-control" source="alma-vf-svc-stuck" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-stuck--fn-kam-control"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-common" archimateElement="alma-grp-svc-common">
+        <bounds x="1560" y="440" width="210" height="557"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-dictionaries" archimateElement="alma-svc-dictionaries">
+          <bounds x="10" y="32" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-dictionaries--fn-settings" source="alma-vf-svc-dictionaries" target="alma-vf-fn-settings" archimateRelationship="alma-rel-v-svc-dictionaries--fn-settings"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-directions" archimateElement="alma-svc-directions">
+          <bounds x="10" y="97" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-directions--fn-settings" source="alma-vf-svc-directions" target="alma-vf-fn-settings" archimateRelationship="alma-rel-v-svc-directions--fn-settings"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-flags" archimateElement="alma-svc-flags">
+          <bounds x="10" y="162" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-flags--fn-settings" source="alma-vf-svc-flags" target="alma-vf-fn-settings" archimateRelationship="alma-rel-v-svc-flags--fn-settings"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-files" archimateElement="alma-svc-files">
+          <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-files--fn-requests" source="alma-vf-svc-files" target="alma-vf-fn-requests" archimateRelationship="alma-rel-v-svc-files--fn-requests"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-files--fn-contracts" source="alma-vf-svc-files" target="alma-vf-fn-contracts" archimateRelationship="alma-rel-v-svc-files--fn-contracts"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-sse" archimateElement="alma-svc-sse">
+          <bounds x="10" y="292" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-sse--fn-requests" source="alma-vf-svc-sse" target="alma-vf-fn-requests" archimateRelationship="alma-rel-v-svc-sse--fn-requests"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-search" archimateElement="alma-svc-search">
+          <bounds x="10" y="357" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-search--fn-selfservice" source="alma-vf-svc-search" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-v-svc-search--fn-selfservice"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-presets" archimateElement="alma-svc-presets">
+          <bounds x="10" y="422" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-presets--fn-selfservice" source="alma-vf-svc-presets" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-v-svc-presets--fn-selfservice"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-help" archimateElement="alma-svc-help">
+          <bounds x="10" y="487" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-help--fn-selfservice" source="alma-vf-svc-help" target="alma-vf-fn-selfservice" archimateRelationship="alma-rel-v-svc-help--fn-selfservice"/>
+        </child>
+      </child>
+    </element>
+    <element xsi:type="archimate:ArchimateDiagramModel" name="Компонентная схема" id="alma-view-vc">
+      <child xsi:type="archimate:Note" id="alma-vc-note">
+        <bounds x="20" y="20" width="1760" height="52"/>
+        <content>Компонентная схема «Альмы»: модули backend, сервисы-сателлиты, хранилища и Keycloak в кластере Kubernetes (namespace crm), зоны tier по меткам манифестов, образы и задания. Подписи связей — протоколы и маршруты. Сгенерировано: docs/architecture/archi/build_archi.py.</content>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vc-actor-users" targetConnections="alma-vc-c-rel-v-ac-frontend--actor-users" archimateElement="alma-actor-users">
+        <bounds x="20" y="90" width="240" height="55"/>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-external" archimateElement="alma-grp-external">
+        <bounds x="700" y="80" width="1080" height="100"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-lms" targetConnections="alma-vc-c-rel-o-ac-lms-stub--ext-lms" archimateElement="alma-ext-lms">
+          <bounds x="20" y="32" width="245" height="55"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-cms" targetConnections="alma-vc-c-rel-o-ac-cms-stub--ext-cms" archimateElement="alma-ext-cms">
+          <bounds x="282" y="32" width="245" height="55"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-telegram" targetConnections="alma-vc-c-rel-f-ac-notification--ext-telegram" archimateElement="alma-ext-telegram">
+          <bounds x="544" y="32" width="245" height="55"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-ext-channels" targetConnections="alma-vc-c-rel-f-ac-notification--ext-channels" archimateElement="alma-ext-channels">
+          <bounds x="806" y="32" width="245" height="55"/>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vc-node-k8s" targetConnections="alma-vc-c-rel-o-con-no-egress--node-k8s" archimateElement="alma-node-k8s">
+        <bounds x="20" y="220" width="1760" height="570"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-app" archimateElement="alma-grp-tier-app">
+          <bounds x="20" y="40" width="1180" height="390"/>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-sw-ingress" archimateElement="alma-sw-ingress">
+            <bounds x="20" y="35" width="220" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--ac-frontend" source="alma-vc-sw-ingress" target="alma-vc-ac-frontend" archimateRelationship="alma-rel-v-sw-ingress--ac-frontend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--ac-backend" source="alma-vc-sw-ingress" target="alma-vc-ac-backend" archimateRelationship="alma-rel-v-sw-ingress--ac-backend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--ac-keycloak" source="alma-vc-sw-ingress" target="alma-vc-ac-keycloak" archimateRelationship="alma-rel-v-sw-ingress--ac-keycloak"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--ac-lms-stub" source="alma-vc-sw-ingress" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-v-sw-ingress--ac-lms-stub"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--ac-cms-stub" source="alma-vc-sw-ingress" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-v-sw-ingress--ac-cms-stub"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-ingress--sw-minio" source="alma-vc-sw-ingress" target="alma-vc-sw-minio" archimateRelationship="alma-rel-v-sw-ingress--sw-minio"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-frontend" targetConnections="alma-vc-c-rel-r-art-frontend--ac-frontend alma-vc-c-rel-v-sw-ingress--ac-frontend alma-vc-c-rel-v-ac-backend--ac-frontend alma-vc-c-rel-v-ac-keycloak--ac-frontend" archimateElement="alma-ac-frontend">
+            <bounds x="280" y="35" width="260" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-frontend--actor-users" source="alma-vc-ac-frontend" target="alma-vc-actor-users" archimateRelationship="alma-rel-v-ac-frontend--actor-users"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-backend" targetConnections="alma-vc-c-rel-r-art-backend--ac-backend alma-vc-c-rel-v-sw-ingress--ac-backend alma-vc-c-rel-v-ac-keycloak--ac-backend alma-vc-c-rel-f-ac-lms-stub--ac-backend alma-vc-c-rel-f-ac-cms-stub--ac-backend alma-vc-c-rel-v-sw-postgres--ac-backend alma-vc-c-rel-v-sw-keydb--ac-backend alma-vc-c-rel-v-sw-minio--ac-backend alma-vc-c-rel-t-tp-cronjobs--ac-backend" archimateElement="alma-ac-backend">
+            <bounds x="20" y="110" width="905" height="255"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-backend--ac-frontend" source="alma-vc-ac-backend" target="alma-vc-ac-frontend" archimateRelationship="alma-rel-v-ac-backend--ac-frontend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-notification" source="alma-vc-ac-backend" target="alma-vc-ac-notification" archimateRelationship="alma-rel-f-ac-backend--ac-notification"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-backend--ac-notification" source="alma-vc-ac-backend" target="alma-vc-ac-notification" archimateRelationship="alma-rel-v-ac-backend--ac-notification"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-lms-stub" source="alma-vc-ac-backend" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-f-ac-backend--ac-lms-stub"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-backend--ac-cms-stub" source="alma-vc-ac-backend" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-f-ac-backend--ac-cms-stub"/>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-auth" archimateElement="alma-mod-auth">
+              <bounds x="15" y="40" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-access" archimateElement="alma-mod-access">
+              <bounds x="191" y="40" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-workflow" archimateElement="alma-mod-workflow">
+              <bounds x="367" y="40" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-requests" archimateElement="alma-mod-requests">
+              <bounds x="543" y="40" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-crm" archimateElement="alma-mod-crm">
+              <bounds x="719" y="40" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-import-export" archimateElement="alma-mod-import-export">
+              <bounds x="15" y="108" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-talent" archimateElement="alma-mod-talent">
+              <bounds x="191" y="108" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-reporting" archimateElement="alma-mod-reporting">
+              <bounds x="367" y="108" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-integrations" archimateElement="alma-mod-integrations">
+              <bounds x="543" y="108" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-notifications" archimateElement="alma-mod-notifications">
+              <bounds x="719" y="108" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-files" archimateElement="alma-mod-files">
+              <bounds x="15" y="176" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-admin" archimateElement="alma-mod-admin">
+              <bounds x="191" y="176" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-ui" archimateElement="alma-mod-ui">
+              <bounds x="367" y="176" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-internal" archimateElement="alma-mod-internal">
+              <bounds x="543" y="176" width="165" height="55"/>
+            </child>
+            <child xsi:type="archimate:DiagramObject" id="alma-vc-mod-core" archimateElement="alma-mod-core">
+              <bounds x="719" y="176" width="165" height="55"/>
+            </child>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-lms-stub" targetConnections="alma-vc-c-rel-r-art-lms-stub--ac-lms-stub alma-vc-c-rel-o-con-stubs--ac-lms-stub alma-vc-c-rel-v-sw-ingress--ac-lms-stub alma-vc-c-rel-f-ac-backend--ac-lms-stub" archimateElement="alma-ac-lms-stub">
+            <bounds x="960" y="110" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-lms-stub--ac-backend" source="alma-vc-ac-lms-stub" target="alma-vc-ac-backend" archimateRelationship="alma-rel-f-ac-lms-stub--ac-backend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-ac-lms-stub--ext-lms" source="alma-vc-ac-lms-stub" target="alma-vc-ext-lms" archimateRelationship="alma-rel-o-ac-lms-stub--ext-lms"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-cms-stub" targetConnections="alma-vc-c-rel-r-art-cms-stub--ac-cms-stub alma-vc-c-rel-o-con-stubs--ac-cms-stub alma-vc-c-rel-v-sw-ingress--ac-cms-stub alma-vc-c-rel-f-ac-backend--ac-cms-stub" archimateElement="alma-ac-cms-stub">
+            <bounds x="960" y="200" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-cms-stub--ac-backend" source="alma-vc-ac-cms-stub" target="alma-vc-ac-backend" archimateRelationship="alma-rel-f-ac-cms-stub--ac-backend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-ac-cms-stub--ext-cms" source="alma-vc-ac-cms-stub" target="alma-vc-ext-cms" archimateRelationship="alma-rel-o-ac-cms-stub--ext-cms"/>
+          </child>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-iam" archimateElement="alma-grp-tier-iam">
+          <bounds x="1220" y="40" width="250" height="100"/>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-keycloak" targetConnections="alma-vc-c-rel-v-sw-ingress--ac-keycloak alma-vc-c-rel-v-sw-postgres--ac-keycloak" archimateElement="alma-ac-keycloak">
+            <bounds x="20" y="32" width="210" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-keycloak--ac-frontend" source="alma-vc-ac-keycloak" target="alma-vc-ac-frontend" archimateRelationship="alma-rel-v-ac-keycloak--ac-frontend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-keycloak--ac-backend" source="alma-vc-ac-keycloak" target="alma-vc-ac-backend" archimateRelationship="alma-rel-v-ac-keycloak--ac-backend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-ac-keycloak--ac-notification" source="alma-vc-ac-keycloak" target="alma-vc-ac-notification" archimateRelationship="alma-rel-v-ac-keycloak--ac-notification"/>
+          </child>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-dmz" archimateElement="alma-grp-tier-dmz">
+          <bounds x="1490" y="40" width="250" height="100"/>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-ac-notification" targetConnections="alma-vc-c-rel-r-art-notification--ac-notification alma-vc-c-rel-o-con-single-egress--ac-notification alma-vc-c-rel-v-ac-keycloak--ac-notification alma-vc-c-rel-f-ac-backend--ac-notification alma-vc-c-rel-v-ac-backend--ac-notification alma-vc-c-rel-v-sw-keydb--ac-notification" archimateElement="alma-ac-notification">
+            <bounds x="20" y="32" width="210" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-notification--ext-telegram" source="alma-vc-ac-notification" target="alma-vc-ext-telegram" archimateRelationship="alma-rel-f-ac-notification--ext-telegram"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-f-ac-notification--ext-channels" source="alma-vc-ac-notification" target="alma-vc-ext-channels" archimateRelationship="alma-rel-f-ac-notification--ext-channels"/>
+          </child>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-tier-data" archimateElement="alma-grp-tier-data">
+          <bounds x="1220" y="160" width="520" height="100"/>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-sw-postgres" targetConnections="alma-vc-c-rel-o-con-pii--sw-postgres alma-vc-c-rel-o-tp-jobs--sw-postgres" archimateElement="alma-sw-postgres">
+            <bounds x="15" y="32" width="158" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-postgres--ac-backend" source="alma-vc-sw-postgres" target="alma-vc-ac-backend" archimateRelationship="alma-rel-v-sw-postgres--ac-backend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-postgres--ac-keycloak" source="alma-vc-sw-postgres" target="alma-vc-ac-keycloak" archimateRelationship="alma-rel-v-sw-postgres--ac-keycloak"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-sw-keydb" targetConnections="alma-vc-c-rel-o-con-cache--sw-keydb" archimateElement="alma-sw-keydb">
+            <bounds x="183" y="32" width="158" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-keydb--ac-backend" source="alma-vc-sw-keydb" target="alma-vc-ac-backend" archimateRelationship="alma-rel-v-sw-keydb--ac-backend"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-keydb--ac-notification" source="alma-vc-sw-keydb" target="alma-vc-ac-notification" archimateRelationship="alma-rel-v-sw-keydb--ac-notification"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-sw-minio" targetConnections="alma-vc-c-rel-v-sw-ingress--sw-minio alma-vc-c-rel-o-tp-jobs--sw-minio" archimateElement="alma-sw-minio">
+            <bounds x="351" y="32" width="158" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-v-sw-minio--ac-backend" source="alma-vc-sw-minio" target="alma-vc-ac-backend" archimateRelationship="alma-rel-v-sw-minio--ac-backend"/>
+          </child>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-jobs" archimateElement="alma-grp-jobs">
+          <bounds x="1220" y="280" width="520" height="110"/>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-tp-cronjobs" archimateElement="alma-tp-cronjobs">
+            <bounds x="15" y="32" width="240" height="65"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-t-tp-cronjobs--ac-backend" source="alma-vc-tp-cronjobs" target="alma-vc-ac-backend" archimateRelationship="alma-rel-t-tp-cronjobs--ac-backend"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-tp-jobs" archimateElement="alma-tp-jobs">
+            <bounds x="265" y="32" width="240" height="65"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-tp-jobs--sw-postgres" source="alma-vc-tp-jobs" target="alma-vc-sw-postgres" archimateRelationship="alma-rel-o-tp-jobs--sw-postgres"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-tp-jobs--sw-minio" source="alma-vc-tp-jobs" target="alma-vc-sw-minio" archimateRelationship="alma-rel-o-tp-jobs--sw-minio"/>
+          </child>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-images" archimateElement="alma-grp-images">
+          <bounds x="20" y="450" width="1720" height="100"/>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-backend" archimateElement="alma-art-backend">
+            <bounds x="20" y="32" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-backend--ac-backend" source="alma-vc-art-backend" target="alma-vc-ac-backend" archimateRelationship="alma-rel-r-art-backend--ac-backend"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-frontend" archimateElement="alma-art-frontend">
+            <bounds x="240" y="32" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-frontend--ac-frontend" source="alma-vc-art-frontend" target="alma-vc-ac-frontend" archimateRelationship="alma-rel-r-art-frontend--ac-frontend"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-notification" archimateElement="alma-art-notification">
+            <bounds x="460" y="32" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-notification--ac-notification" source="alma-vc-art-notification" target="alma-vc-ac-notification" archimateRelationship="alma-rel-r-art-notification--ac-notification"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-lms-stub" archimateElement="alma-art-lms-stub">
+            <bounds x="680" y="32" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-lms-stub--ac-lms-stub" source="alma-vc-art-lms-stub" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-r-art-lms-stub--ac-lms-stub"/>
+          </child>
+          <child xsi:type="archimate:DiagramObject" id="alma-vc-art-cms-stub" archimateElement="alma-art-cms-stub">
+            <bounds x="900" y="32" width="200" height="55"/>
+            <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-r-art-cms-stub--ac-cms-stub" source="alma-vc-art-cms-stub" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-r-art-cms-stub--ac-cms-stub"/>
+          </child>
+        </child>
+      </child>
+      <child xsi:type="archimate:DiagramObject" id="alma-vc-grp-constraints" archimateElement="alma-grp-constraints">
+        <bounds x="20" y="820" width="1760" height="100"/>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-con-no-egress" archimateElement="alma-con-no-egress">
+          <bounds x="20" y="32" width="330" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-no-egress--node-k8s" source="alma-vc-con-no-egress" target="alma-vc-node-k8s" archimateRelationship="alma-rel-o-con-no-egress--node-k8s"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-con-single-egress" archimateElement="alma-con-single-egress">
+          <bounds x="366" y="32" width="330" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-single-egress--ac-notification" source="alma-vc-con-single-egress" target="alma-vc-ac-notification" archimateRelationship="alma-rel-o-con-single-egress--ac-notification"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-con-stubs" archimateElement="alma-con-stubs">
+          <bounds x="712" y="32" width="330" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-stubs--ac-lms-stub" source="alma-vc-con-stubs" target="alma-vc-ac-lms-stub" archimateRelationship="alma-rel-o-con-stubs--ac-lms-stub"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-stubs--ac-cms-stub" source="alma-vc-con-stubs" target="alma-vc-ac-cms-stub" archimateRelationship="alma-rel-o-con-stubs--ac-cms-stub"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-con-cache" archimateElement="alma-con-cache">
+          <bounds x="1058" y="32" width="330" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-cache--sw-keydb" source="alma-vc-con-cache" target="alma-vc-sw-keydb" archimateRelationship="alma-rel-o-con-cache--sw-keydb"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vc-con-pii" archimateElement="alma-con-pii">
+          <bounds x="1404" y="32" width="330" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vc-c-rel-o-con-pii--sw-postgres" source="alma-vc-con-pii" target="alma-vc-sw-postgres" archimateRelationship="alma-rel-o-con-pii--sw-postgres"/>
+        </child>
+      </child>
+    </element>
+  </folder>
+  <purpose>Функциональная и компонентная архитектура «Альмы» (ЛЦТ-2026) в нотации ArchiMate 3.1. Модель сгенерирована скриптом docs/architecture/archi/build_archi.py из данных репозитория; назначения ролей на бизнес-функции рассчитаны по каталогу прав backend/app/core/rbac_catalog.py.</purpose>
+  <property key="Нотация" value="ArchiMate 3.1"/>
+  <property key="Генератор" value="docs/architecture/archi/build_archi.py"/>
+  <property key="Каталог прав" value="backend/app/core/rbac_catalog.py"/>
+  <property key="Виды" value="Функциональная схема; Компонентная схема"/>
+</archimate:model>

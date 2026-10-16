@@ -4,19 +4,21 @@
 > фиксирует сквозные решения и разрешённые противоречия. При любом конфликте между
 > документами действует иерархия авторитетности из §2 этого документа.
 >
-> Источник требований — `PLAN.md` (решения кейсодержателя, Q&A 16.09.2026).
-> Чек-лист «не прикопаться» — §8: **каждое** решение кейсодержателя из PLAN.md §2–4
-> построчно трассировано на место в системе.
+> Источник требований — техническое задание кейса и решения кейсодержателя из протокола
+> Q&A 16.09.2026 (протокол в репозиторий не входит). Чек-лист «не прикопаться» — §8:
+> **каждое** решение кейсодержателя построчно трассировано на место в системе; сводное
+> соответствие пунктам ТЗ — `docs/evidence/compliance.md`.
 
 Состав проектной документации:
 
 | Документ | Зона ответственности |
 |---|---|
-| `docs/design/data-model.md` | PostgreSQL 16: 35 таблиц, DDL, роли и права в БД, шифрование ПДн, ключи идемпотентности, KeyDB-ключи, seed |
+| `docs/design/data-model.md` | PostgreSQL 16: 37 таблиц, DDL, миграции 0001–0008, роли и права в БД, шифрование ПДн, ключи идемпотентности, KeyDB-ключи, seed и сброс стенда |
 | `docs/design/api-contract.md` | REST `/api/v1`, Idempotency-Key, каталог прав и доступ к эндпоинтам, импорт/экспорт, отчёты, интеграционный конверт |
 | `docs/design/workflow-engine.md` | Семантика движка: графы, миграции и массовый перенос заявок, локи, SLA, инварианты |
 | `docs/design/deployment.md` | k8s (kustomize base + overlays), compose, секреты, NetworkPolicy, k6 |
-| `docs/design/ux.md` | Экраны, интерфейс по правам, «Роли и права», отчёт «Активность КАМов», тема AntD, конструктор, демо-сценарий |
+| `docs/design/ux.md` | Экраны, интерфейс по правам, «Роли и права», отчёт «Активность КАМов», адаптив от 375 px, встроенная справка, конструктор, демо-сценарий (визуальный слой — `redesign.md`: Tailwind CSS v4 + shadcn/ui, токены ДС РТК — `brand-rt.md`) |
+| `docs/design/tz-14-steps.md` | 14 шагов базового процесса: какой шаг каким этапом или механизмом закрыт |
 | `docs/evidence/` | Замеры и проверки: нагрузка, k8s, импорт/экспорт, соответствие требованиям, массовый перенос заявок |
 
 ---
@@ -28,13 +30,17 @@ workflow-графа с ветвлениями, возвратами и согл�
 на новую схему «на лету» одной транзакцией, перенос заявок удаляемого этапа — один
 SQL-оператор на этап. Роли и права настраиваются в интерфейсе без программиста: каталог из
 61 права, область роли — процессы B2B/B2C и записи «все / только свои». Вокруг ядра: договоры
-«1 договор — N продуктов», ручное ранжирование программ, диалоговый импорт XLSX/XLS/CSV/JSON с
-интерактивным маппингом и устойчивостью к кодировкам, интерактивные дашборды ECharts с
-экспортом, отчёт «Активность КАМов» с выгрузкой XLSX и PDF, Talent Pool студентов с
+«1 договор — N продуктов» с лицензиями на ИТ-продукты, справочник ИТ-направлений, ручное
+ранжирование программ и востребованность по трём показателям, диалоговый импорт
+XLSX/XLS/CSV/JSON с интерактивным маппингом и устойчивостью к кодировкам (включая составную
+«Таблицу КАМов»), интерактивные дашборды ECharts с мультифильтрами и экспортом PNG/PDF/XLSX,
+отчёт «Активность КАМов» с выгрузкой XLSX и PDF и «Взаимодействия за период» по выбранным
+колонкам, файлы в статусах заявки (10 форматов), Talent Pool студентов с
 шифрованием ПДн (152-ФЗ), двусторонние интеграции с LMS/CMS на заглушках через единый
 JSON-конверт и outbox, Telegram-бот нотификаций с авторизацией через self-hosted Keycloak и
 эскалацией «зависших» заявок по k8s CronJob. Мутации API идемпотентны по заголовку
-`Idempotency-Key`. Всё разворачивается в Kubernetes (minikube/k3d, k3s на VPS) в закрытом контуре:
+`Idempotency-Key`. Интерфейс — адаптивный веб от 375 px со встроенной справкой (`/help`).
+Всё разворачивается в Kubernetes (minikube/k3d, k3s на VPS) в закрытом контуре:
 default-deny NetworkPolicy, единственный egress наружу — notification-service (DMZ).
 
 ## 2. Иерархия авторитетности документов (правило разрешения конфликтов)
@@ -62,6 +68,9 @@ default-deny NetworkPolicy, единственный egress наружу — not
 | `app_role` (+ `app_role_permission`) | `/roles`, `/admin/roles` | «роль» |
 | `app_permission.code` | `permissions` в `/auth/me`, `/admin/permissions` | «право» |
 | `app_role.workflow_types`, `record_scope` | `access.workflow_types`, `access.records` в `/auth/me` | «Процессы» и «Заявки: все заявки процесса / только где пользователь — ответственный» в редакторе роли |
+| `it_direction` (+ `program.direction_id`, `product_direction`) | `/it-directions`, `direction_id`, `direction_ids` | «ИТ-направление» |
+| `file_object.stage_history_id` | `files[].stage_history_id`, `file_ids` перехода | «файл в статусе» под переходом в истории |
+| `contract_product.license_*`, `transfer_status` | `licenses` в карточке договора | блок «Лицензии» |
 
 ### 2.2 Роли и права
 
@@ -94,7 +103,7 @@ default-deny NetworkPolicy, единственный egress наружу — not
 `crm-loadtest` (Direct Access Grants — только нагрузочное).
 Эскалации — по `app_user.manager_id`.
 Преднастроенные пользователи realm: `admin@demo`, `head@demo`, `kam1@demo`, `kam2@demo`,
-`observer@demo` — публикуются в README (требование PLAN §2).
+`observer@demo` — публикуются в README (решение кейсодержателя).
 
 ---
 
@@ -133,7 +142,7 @@ flowchart TB
     subgraph k8s["Kubernetes, namespace crm (default-deny NetworkPolicy)"]
         ING["Ingress: crm.local (/ и /api),\nid.crm.local, lms/cms/minio.crm.local"]
 
-        FE["frontend\nReact 18 + TS + Vite, AntD 5,\nReact Flow, ECharts, keycloak-js\nnginx-unprivileged :8080 (Svc :80)"]
+        FE["frontend\nReact 18 + TS + Vite, Tailwind v4 + shadcn/ui,\nReact Flow, ECharts, keycloak-js\nnginx-unprivileged :8080 (Svc :80)"]
 
         subgraph BE["backend :8000 — модульный монолит (FastAPI, SQLAlchemy 2 async, Alembic, Pydantic v2)"]
             M1["auth/iam"] --- M11["access (роли и права)"] --- M2["workflow"] --- M3["requests"]
@@ -150,7 +159,7 @@ flowchart TB
         S3[("MinIO :9000/9001\ncrm-files / crm-imports / crm-exports")]
         KD[("KeyDB :6379\ncache-aside crm:v1:*, emptyDir")]
 
-        CRON["CronJobs: stuck-check (0 * * * *),\nidempotency-purge (15 * * * *), purge-deleted (30 3 * * *)\ncurl → /internal/jobs/*"]
+        CRON["CronJobs: stuck-check (0 * * * *),\nidempotency-purge (15 * * * *), purge-deleted (30 3 * * *)\ncurl → /internal/jobs/*;\ndemo-reset — шаблон, suspend: true"]
         JOBS["Jobs: db-migrate, minio-init, seed-demo"]
     end
     TGAPI["Telegram Bot API (интернет)"]
@@ -178,11 +187,11 @@ flowchart TB
 | `auth` (iam) | `app_user` (upsert по `keycloak_sub`, роли не перезаписывает) | `/auth/me` (роли, права, область по процессам) | api-contract §2, §12 |
 | `access` (роли и права) | `app_role`, `app_permission`, `app_role_permission` | `/roles`, `/admin/permissions`, `/admin/roles*`, `PUT /admin/users/{id}/roles` | data-model §3, api-contract §10.5, §12 |
 | `workflow` | `workflow`, `workflow_stage`, `workflow_transition`, `workflow_change_request` | `/workflows*`, `/requests/{id}/transitions`, `/internal/jobs/check-stuck-requests` | workflow-engine.md |
-| `requests` | `deal`, `deal_stage_history`, `deal_comment` | `/requests*` (CRUD, board, history, comments, files, reopen) | api-contract §4 |
-| `crm` (справочники/договоры) | `university`, `university_contact`, `counterparty`, `interaction_type`, `product`, `program`, `contract`, `contract_product` | `/universities*`, `/contracts*`, `/products*`, `/programs*` (+priority) | api-contract §3 |
-| `import_export` | `import_session`, `import_row_error` | `/import/sessions*`, `/export/jobs*`, `/admin/dictionaries*` | api-contract §6–7, §10.1 |
+| `requests` | `deal`, `deal_stage_history`, `deal_comment` | `/requests*` (CRUD, board, history, comments, files в статусах, reopen), `/requests/transfer-portfolio` | api-contract §4 |
+| `crm` (справочники/договоры) | `university`, `university_contact`, `counterparty`, `interaction_type`, `product`, `program`, `contract`, `contract_product`, `it_direction`, `product_direction` | `/universities*`, `/contracts*`, `/products*`, `/programs*` (+priority), `/it-directions*` | api-contract §3 |
+| `import_export` | `import_session`, `import_row_error` | `/import/sessions*` (включая `kam_catalog`), `/export/jobs*` (включая `report:interactions`), `/admin/dictionaries*` | api-contract §6–7, §10.1 |
 | `talent_pool` | `student`, `student_status_history`, `federal_project`, `activity`, `activity_schedule`, `student_activity` | `/students*` (+reveal), `/activities*` | api-contract §8 |
-| `reporting` | — (читает всё в области зрителя) | `/reports/*` (+ `/reports/dashboard`, `/reports/kam-activity`, `/reports/kam-activity/summary`); PDF (fpdf2, шрифты DejaVu) и многолистовой XLSX отчёта КАМов — через `/export/jobs` | api-contract §7.2, §7.2.1 |
+| `reporting` | — (читает всё в области зрителя) | `/reports/*` (+ `/reports/dashboard`, `/reports/kam-activity`, `/reports/kam-activity/summary`, `/reports/interactions`); PDF (fpdf2, шрифты DejaVu) и многолистовой XLSX отчёта КАМов, XLSX/PDF взаимодействий — через `/export/jobs` | api-contract §7.2, §7.2.1 |
 | `integrations` | `integration_event`, `external_link` | `/integrations/{lms,cms}/webhook`, `/admin/integration/*`, relay | api-contract §13 |
 | `notifications` | `notification_rule`, `notification`, `app_setting` | `/notifications*`, `/internal/bot/*`, relay → :8010 | api-contract §9 |
 | `files` | `file_object` | `/files/{id}/download`, вложения сущностей | data-model §9.2 |
@@ -247,7 +256,7 @@ flowchart TB
 | Р-2 | Имя сущности заявки | БД `deal` ↔ API `/requests` ↔ UI «заявка» — мост §2.1, никто не переименовывает |
 | Р-3 | Модель изменения workflow (draft-снапшот vs пакет операций) | **Пакет операций** `POST /workflows/{id}/changes` + таблица `workflow_change_request`; черновик конструктора — клиентский (localStorage); опасные операции (`rename_status`, `delete_status`) — всегда pending + `confirm_name` (посимвольный ввод имени) + approve правом `workflow:approve` (по умолчанию только admin); апрув = атомарное применение (окна «одобрено-не применено» нет). Автор с `workflow:approve` может одобрить свой пакет — approve и есть второй шаг |
 | Р-4 | Guard-условия переходов: форсировать или нет | `condition` — **подсказка** (JSON-DSL, backend аннотирует доступные переходы); жёстко форсируются только граф + `allowed_roles` + `requires_comment`. Переходы делают только люди |
-| Р-5 | Единица порога зависания (часы vs дни), дефолт (7 vs 14) | **Дни**, дефолт **14** («1–2 недели»), диапазон 1–60; каскад rule → stage → workflow → app_setting |
+| Р-5 | Единица порога зависания (часы vs дни), дефолт (7 vs 14) | **Дни**, дефолт **14** («1–2 недели»); порог процесса и общая настройка — 1–60, порог этапа — 1–365 (миграция 0006: долгие этапы обучения, в сиде у `in_learning` — 120); каскад rule → stage → workflow → app_setting |
 | Р-6 | Механика эскалации (роль-иерархия vs manager_id; маркеры на deal vs dedup) | Двухступенчатая: порог → ответственный; **1.5×порога → `manager_id`**; повтор не чаще `repeat_every_days` (3); состояние — в `notification.dedup_key` (+KeyDB-guard), колонок-маркеров на `deal` нет |
 | Р-7 | CronJob: имя, расписание, endpoint | `stuck-check`, ежечасно `0 * * * *`, `POST /api/v1/internal/jobs/check-stuck-requests`, `X-Internal-Token`; compose-паритет — `make stuck-check` (ofelia не берём) |
 | Р-8 | TG-код: формат/TTL/хранение | 6 цифр, TTL 10 мин, KeyDB `crm:v1:tg:link:{code}`, `GETDEL`; привязка в `app_user` (отдельной таблицы нет); бот бьёт в `POST /internal/bot/bind` |
@@ -272,6 +281,12 @@ flowchart TB
 | Р-27 | Транспорт интеграций | **Только HTTP + HMAC** поверх outbox `integration_event`; режим KeyDB Streams убран (эфемерная шина теряет события при рестарте, вторая очередь рядом с outbox — dual-write). `integration_mode` принимает только `http`. Шина заказчика — новая реализация `IntegrationTransport`, `event_id` — ключ сообщения |
 | Р-28 | Массовый перенос заявок при удалении этапа | Один SQL-оператор на этап (CTE `UPDATE … RETURNING` → `INSERT` истории) под эксклюзивным локом воронки; одно сводное уведомление на получателя вместо уведомления на заявку; переход ждёт не дольше 10 с, применение — 30 с, затем 409 `workflow_busy`. 10 000 заявок: лок ≈0,6 с вместо 25 с; 50 000: ≈2,9 с вместо 130 с (`docs/evidence/migration-benchmark.md`) |
 | Р-29 | Отчёт «Активность КАМов»: что считать активностью | Собственные действия ответственного КАМа в периоде: ручной переход, комментарий, файл заявки, мероприятие с вузом; системные переходы (перенос схемы, LMS, импорт) и действия других пользователей не считаются. Этап — на конец периода, восстановленный по `deal_stage_history`. Область — права `reports:read` / `reports:all` (api-contract §7.2.1) |
+| Р-30 | Когда заявка «вошла в этап» и «закрылась» | Вход в этап — строка истории со сменой этапа и `kind <> 'system_migration'`: перевод схемы и события LMS вход не сдвигают, отчёт КАМов совпадает с доской. Закрытие — последний вход в терминальный этап по истории, а не `deal.updated_at`; одно определение у KPI дашборда, динамики и отчёта КАМов («Завершено» — `won`, «Отказ» — отдельно) |
+| Р-31 | Файлы в статусах | Файл заявки привязан к строке `deal_stage_history` (`file_object.stage_history_id`, 0006): к переходу — в той же транзакции, что переход; при загрузке из вкладки «Файлы» — к указанному прошлому переходу или ко входу в текущий этап. Белый список 10 форматов со сверкой расширения и сигнатуры, тип содержимого задаёт сервер. Отвергнуто: отдельная таблица «файлы этапа» (дублирует историю) |
+| Р-32 | ИТ-направления | Справочник `it_direction` (0007): у программы одно направление, у продукта несколько (M:N). Направление записи — программы, без него — продукта; фильтр через `EXISTS` без размножения строк. Отвергнуто: направление как атрибут продукта (у продукта их несколько) и как синоним продукта |
+| Р-33 | Смена ответственного за вуз | Отдельное право `universities:assign` (0006) у руководителя и администратора; сравнивается значение `kam_user_id`, а не наличие поля; аудит `university.kam_changed`. Передача портфеля КАМа — одна ручка с `dry_run`, аудит по каждой заявке и вузу |
+| Р-34 | «Таблица КАМов» и лицензии | Составной импорт `kam_catalog`: договор ищется по номеру (upsert), строка `contract_product` хранит лицензию (дата подписания, срок, окончание, статус передачи, 0008). Отвергнуто: отдельная таблица лицензий (лицензия — это и есть «договор × продукт») |
+| Р-35 | Сброс демо-стенда | `seed --reset` от якорной даты одной транзакцией (Job из приостановленного CronJob-шаблона `demo-reset`); пользователи, роли, настройки и аудит сохраняются. Отвергнуто: `TRUNCATE app_user` (теряются `keycloak_sub` и привязки Telegram) |
 
 ---
 
@@ -289,16 +304,17 @@ flowchart TB
   (`cryptography`/Fernet — аудитированная библиотека, работает офлайн) закрывает требования
   «XLS + битые кодировки» и 152-ФЗ без экзотики; `fpdf2` — PDF-отчёты на чистом Python со
   встроенными шрифтами DejaVu, без системных бинарников.
-- **React 18 + TS + Vite + Ant Design 5**: энтерпрайз-паттерны CRM (таблицы, формы, Drawer)
-  из коробки, русская локаль; **@xyflow/react** — стандарт де-факто визуальных редакторов
+- **React 18 + TS + Vite + Tailwind CSS v4 + shadcn/ui (Radix)**: доступные примитивы и
+  собственная токен-система под ДС «Ростелекома» (`redesign.md`, `brand-rt.md`), таблицы —
+  TanStack Table, формы — react-hook-form + zod; **@xyflow/react** — стандарт де-факто визуальных редакторов
   графов → конструктор workflow (кор №1) без велосипедов; **Apache ECharts** — интерактивные
-  дашборды со встроенным PNG-экспортом (`getDataURL`) — дословно требование «экспорт в
-  растровые форматы», офлайн, без CDN; **keycloak-js (OIDC + PKCE)** — официальный адаптер
+  дашборды со встроенным PNG-экспортом (`getDataURL`); PDF всей панели собирается в браузере
+  из тех же растров, без сторонних библиотек — офлайн, без CDN; **keycloak-js (OIDC + PKCE)** — официальный адаптер
   self-hosted Keycloak (только вход; роли и права интерфейс берёт из `/auth/me`).
 
 ### 7.2 Почему модульный монолит + полноценный Kubernetes
 
-PLAN §2 допускает «монолит с feature-флагами или микросервисы (+minikube/k3s)». Мы берём
+Решения кейсодержателя допускают «монолит с feature-флагами или микросервисы (+minikube/k3s)». Мы берём
 модульный монолит и **всё равно** полноценный k8s — лучшее из обоих:
 
 1. **Транзакционность кор-требования.** «Изменение workflow на лету: заявки сопоставляются,
@@ -336,21 +352,21 @@ PLAN §2 допускает «монолит с feature-флагами или м
 | Псевдонимизация: `display_name` «Фамилия И.О.» для списков/кэша/сортировки | data-model §8.3 |
 | Маскирование по умолчанию + явное раскрытие с аудитом (60 с) | api-contract §8.3, ux §12.2 |
 | Ключи только в k8s Secret `crm-pii`, видимы только backend/jobs; генерация при установке, в git не попадают | deployment §3.7 |
-| ПДн не попадают: в KeyDB, логи (фильтр), `audit_log`/`import_row_error` (маскирование), бэкапы (шифртекст), интеграционные события, Telegram | data-model §8.5 |
+| ПДн не попадают: в KeyDB, логи приложения (значения ПДн не пишет ни один вызов логгера; журнал доступа uvicorn пишет query-строку — в контуре заказчика маскировать), `audit_log`/`import_row_error` (маскирование), интеграционные события; в Telegram — только псевдоним «Фамилия И.О.»; дамп БД содержал бы только шифртекст (резервного копирования в прототипе нет — план развития) | data-model §8.5 |
 | Сохранённые ответы мутаций (`Idempotency-Key`): Fernet-шифртекст, тело запроса не хранится (только SHA-256), TTL 24 ч и почасовая очистка CronJob `idempotency-purge`; ротация ключей их перешифровывает | data-model §8.5, §9.6 |
 | Доступ к ПДн — по правам роли: раскрытие студента (`students:reveal`, с аудитом), контакты физлиц B2C (`clients:pii`), файлы (`files:business`) | data-model §3.3, §8.3 |
-| Право на забвение: мягкое удаление + физическая очистка CronJob'ом через 30 дней | api-contract §8.1, §11.2 |
+| Право на забвение: `DELETE /students/{id}` удаляет студента физически и сразу (аудит `student.deleted`); удалённые файлы и комментарии физически удаляет CronJob `purge-deleted` через 30 дней | api-contract §8.1, §11.2 |
 | Закрытый контур: default-deny NetworkPolicy, у ядра нет egress в интернет ни по коду, ни по сети; notification — прообраз DMZ | deployment §3.11 |
 | Нет CDN: шрифты/иконки/JS в бандле; файлы — только через backend (proxy) | ux §1.1, api-contract §3.2 |
-| Безопасность библиотек: пины версий, `uv.lock`/`npm ci`, `pip-audit`/`npm audit` в CI | deployment §9 |
+| Безопасность библиотек: пины версий, `uv.lock`/`npm ci`; автоматическое сканирование уязвимостей в CI не подключено | deployment §9 |
 
 ---
 
 ## 8. Чек-лист «не прикопаться»: решения кейсодержателя → реализация
 
-### 8.1 PLAN.md §2 — построчно
+### 8.1 Общие решения кейсодержателя (Q&A 16.09.2026) — построчно
 
-| № | Решение кейсодержателя (PLAN §2) | Где реализовано |
+| № | Решение кейсодержателя | Где реализовано |
 |---|---|---|
 | W1 | Два workflow: B2B (вузы) и B2C (физлица + юрлица) — отдельные процессы | 2 строки `workflow` (b2b/b2c), `deal.pipeline` + CHECK клиента (data-model §5–6); переключатель доски B2B/B2C (ux §7.1); seed обоих графов (workflow-engine §4–5) |
 | W2 | В B2C — возможность добавлять новые варианты взаимодействия | Редактируемый справочник `interaction_type` (data-model §4.4) + конструктор добавляет этапы/ветки без кода (workflow-engine §5.2, ux §10); демо-шаг 2 |
@@ -373,33 +389,33 @@ PLAN §2 допускает «монолит с feature-флагами или м
 | I5 | Обогащение из открытых источников — только разовая предзагрузка, без runtime-интернета; загрузка через диалоговое окно в админке (JSON/таблицы) | `/admin/dictionaries` + тот же мастер импорта (`dictionary:*`) и JSON-POST (api-contract §10.1, ux §14.2); у ядра нет egress по NetworkPolicy — «двойной ответ» (deployment §3.11) |
 | E1 | Поддержка XLSX **и XLS** (старый Excel); устойчивость к битым кодировкам при загрузке/выгрузке | `openpyxl`/`xlrd 2.x` по magic bytes; charset-normalizer с перебором 5 кодировок; экспорт CSV utf-8(BOM)/cp1251, разделитель `;` (api-contract §6.2, §7.1); демо-шаг 4 «чиним кракозябры селектом» (ux §11.2) |
 | E2 | Маппинг полей — интерактивный диалоговый менеджер | 5-шаговая сессия импорта, `suggested_mapping` + ручной маппер + шаблоны, построчный отчёт ошибок XLSX (api-contract §6, ux §11) |
-| E3 | Отчёты: интерактивные дашборды (фильтры, теги) с экспортом в растровые/файловые форматы; Grafana или своё | Своё: ECharts-дашборд с drill-down по URL (ux §6), JSON-агрегаты `/reports/*` (api-contract §7.2), PNG на фронте (`getDataURL`), XLSX/CSV/PDF через `/export/jobs`; отчёт «Активность КАМов» — детализация и сводка, выгрузка XLSX и PDF (api-contract §7.2.1, ux §6.4, Р-29) |
-| D1 | PostgreSQL + MinIO S3 — одобренная схема | PG 16 (35 таблиц) + MinIO (3 бакета), `file_object` с ключами связи; StatefulSet+PVC (data-model, deployment §3.4) |
+| E3 | Отчёты: интерактивные дашборды (фильтры, теги) с экспортом в растровые/файловые форматы; Grafana или своё | Своё: ECharts-дашборд с drill-down по URL и мультифильтрами (ux §6), JSON-агрегаты `/reports/*` (api-contract §7.2), PNG графика с шапкой и PDF всей панели на фронте, XLSX/CSV/PDF через `/export/jobs`; отчёт «Активность КАМов» — детализация, сводка и «Взаимодействия за период» по выбранным колонкам, выгрузка XLSX и PDF (api-contract §7.2.1, ux §6.4, Р-29, Р-30) |
+| D1 | PostgreSQL + MinIO S3 — одобренная схема | PG 16 (37 таблиц) + MinIO (3 бакета), `file_object` с ключами связи; StatefulSet+PVC (data-model, deployment §3.4) |
 | D2 | Студенты пофамильно: ФИО + email (минимальная персуха); шифрование/обезличивание в БД | `student.full_name_enc/email_enc` (Fernet) + HMAC blind index + `display_name`-псевдонимизация (data-model §7–8); маскирование+reveal (§7.4 выше) |
-| D3 | Проверять безопасность библиотек; всё в закрытом контуре | Пины, lock-файлы, pip-audit/npm audit; без CDN; NetworkPolicy default-deny (§7.4) |
+| D3 | Проверять безопасность библиотек; всё в закрытом контуре | Пины, lock-файлы; без CDN; NetworkPolicy default-deny (§7.4) |
 | D4 | ЭЦП тестировать не нужно | В системе отсутствует — осознанно (нет соответствующих API/таблиц) |
 | N1 | Монолит с feature-флагами или микросервисы; для микросервисов — minikube/k3s | Модульный монолит + фичефлаги + **полноценный k8s с overlay'ями minikube, k3d (k3s) и vm (k3s на VPS)** — перекрываем требование в обе стороны (§7.2, deployment §1, §4) |
 | N2 | Кэш KeyDB (легковеснее Redis): карточки, документы, страницы; оффлайн-режим не делаем | Cache-aside таблица ключей/TTL (data-model §10): `deal:{id}` — карточки, `deal:list/dash` — страницы, presigned-доступ — документы; оффлайн-режима нет |
-| N3 | Нагрузка: свой отчёт нагрузочного тестирования; план масштабирования на 300+ (реплики/балансировка) | k6-сценарий 300→400 VU с thresholds, HPA 2→6, расчёт ёмкости и `docs/evidence/load-report.md` (deployment §8) |
+| N3 | Нагрузка: свой отчёт нагрузочного тестирования; план масштабирования на 300+ (реплики/балансировка) | k6-сценарий 300→400 VU с thresholds (прогон 16.09: p95 90,7 мс, p99 1,07 с — превышение на 7%), HPA 2→6, расчёт ёмкости и бюджет соединений PostgreSQL, `docs/evidence/load-report.md` (deployment §8); профили НФТ «50 пользователей» и «10 отчётов» подготовлены, прогон — впереди |
 | N4 | Диаграммы: C4/BPMN, связей, программно-аппаратная, БД | C4 контекст+контейнеры (этот документ §3–4), ERD ×5 (data-model §2), sequence/state/flowchart в api-contract/workflow-engine/ux, топология и DMZ-контур (deployment §3.2, §3.11) |
 | N5 | Мобильная версия — адаптивный веб-интерфейс от 375 px; доступ с мобильных через VPN | Адаптивный веб-интерфейс от 375 px, канбан scroll-snap, тач-drag (ux §4.3); мобильного приложения нет |
 | N6 | LLM — только если реально дополняет и работает офлайн; не приоритет | Не делаем; фичефлаг `llm_features` выключен с подписью «в закрытом контуре — выключено» (ux §14.3) |
-| N7 | Ранжирование программ: ручное изменение приоритетов КАМами/админами; автоформула — бонус | `priority_rank` + drag/▲▼ + audit (data-model §4.5, api-contract §3.4, ux §9.4); режим «по заявкам» — read-only бонус за флагом `auto_ranking` |
-| N8 | Встроенный мессенджер: в идеале да, заглушки допустимы | Комментарии заявки: @упоминания, вложения из MinIO, SSE-realtime (data-model §6.3, ux §8.1) |
-| N9 | Figma — плюс, не обязателен; брендбук — «рюшечки», главное юзерфрендли и гибкость | Дизайн-система токенов AntD, юзерфрендли-принципы «ноль тупиков», пресеты таблиц (ux §1–2, §4.2); Figma — по остаточному принципу |
+| N7 | Ранжирование программ: ручное изменение приоритетов КАМами/админами; автоформула — бонус | `priority_rank` + drag/▲▼ + audit (data-model §4.5, api-contract §3.4, ux §9.4); востребованность — три показателя (заявки на обучение, обучающиеся, параллельные потоки), при флаге `auto_ranking` — справочный индекс 0–100 рядом с ручным приоритетом (api-contract §7.2) |
+| N8 | Встроенный мессенджер: в идеале да, заглушки допустимы | Комментарии заявки: @упоминания, SSE-realtime; файлы (MinIO) прикладываются к заявке и к переходу, не к комментарию (data-model §6.3, ux §8.1) |
+| N9 | Figma — плюс, не обязателен; брендбук — «рюшечки», главное юзерфрендли и гибкость | Токен-система Tailwind v4 + shadcn/ui под ДС «Ростелекома» (redesign.md, brand-rt.md), юзерфрендли-принципы «ноль тупиков», пресеты таблиц, туры и встроенная справка (ux §1–2, §4.2); Figma — по остаточному принципу |
 
-### 8.2 PLAN.md §3 — Telegram-бот
+### 8.2 Решения кейсодержателя: Telegram-бот
 
 | Решение | Где реализовано |
 |---|---|
 | Notification Service с абстракцией каналов: Telegram (реальный), Max/Email — подключаемые (заглушки, но с настройкой) | services/notification: адаптеры каналов; `/notifications/channels` со статусами active/stub; настройки в UI (api-contract §9.1, ux §13.1) |
 | Авторизация бота через тот же Keycloak: `/start <one-time code>`, связка chat_id с пользователем и ролями | Код 6 цифр TTL 10 мин (KeyDB GETDEL) → бот под client credentials `crm-notification` → `POST /internal/bot/bind` → `app_user.tg_chat_id` (api-contract §9.2, sequence в ux §13.3) |
 | Команды бота отдают данные строго по ролевой модели | `/internal/bot/users/{chat_id}/*`: backend резолвит chat_id → user и применяет его права и область заявок; непривязанный — отказ (api-contract §9.3) |
-| События: переходы по этапам; «зависшие» с настраиваемым порогом 1–2 недели; эскалация ответственному и вышестоящей роли (руководителю КАМа) | Реестр событий §5.3; порог 14 дней (1–60, каскад); ступень 1 — ответственный, ступень 2 (1.5×) — manager_id (workflow-engine §8, Р-5/Р-6) |
+| События: переходы по этапам; «зависшие» с настраиваемым порогом 1–2 недели; эскалация ответственному и вышестоящей роли (руководителю КАМа) | Реестр событий §5.3; порог 14 дней (процесс — 1–60, этап — 1–365, каскад); ступень 1 — ответственный, ступень 2 (1.5×) — manager_id (workflow-engine §8, Р-5/Р-6) |
 | Адресация: по нику ТГ, по email или по роли — настраиваемо | `notification_rule.recipient_type`: responsible / manager_of_responsible / role / user / tg_username / email (data-model §9.4) |
 | Закрытый контур: notification-gateway в DMZ (точка-точка), отразить на диаграмме | NetworkPolicy: notification — единственный egress наружу; Mermaid-диаграмма DMZ-контура (deployment §3.11); §4 этого документа |
 
-### 8.3 PLAN.md §4 — Talent Pool
+### 8.3 Решения кейсодержателя: Talent Pool
 
 | Решение | Где реализовано |
 |---|---|
@@ -410,7 +426,7 @@ PLAN §2 допускает «монолит с feature-флагами или м
 | Выгрузки и фильтры для КАМов/админов; уведомления по talent pool | Фильтры/пресеты/экспорт (ux §12.1); `student.talent_pool_added` → notification (data-model §9.4) |
 | Позиционирование: доп. функционал сверх ТЗ | Отдельный шаг демо (№5) + отчёт `talent-pool-funnel` на дашборде |
 
-### 8.4 PLAN.md §6 — «Не делаем» (осознанные отсутствия)
+### 8.4 «Не делаем» (осознанные отсутствия)
 
 Оффлайн-режим, мобильное приложение, ЭЦП, runtime-обогащение из интернета, версионирование
 workflow — **отсутствуют в схеме БД, API и UI намеренно**; каждое отсутствие опирается на
@@ -443,7 +459,7 @@ deploy/scripts/           # генерация секретов и .env, син�
 deploy/keycloak/          # realm-crm.json + import-realm.sh
 docs/design/              # этот пакет документов
 docs/evidence/            # замеры и проверки: нагрузка, k8s, импорт/экспорт, перенос заявок
-docs/manual/              # руководство пользователя
+docs/manual/              # руководства пользователя и администратора (HTML + PDF из текста встроенной справки)
 docs/presentation/        # презентация
 docs/screenshots/         # снимки экранов
 README.md  Makefile  LICENSE
@@ -453,7 +469,8 @@ README.md  Makefile  LICENSE
 
 Поминутный 5-минутный сценарий (8 шагов, три окна ролей + телефон) — ux §15; демо-данные —
 идемпотентный `make seed`/`make demo` (включая заведомо зависшие заявки и XLS-файл в cp1251
-с битыми строками); 3-минутный сценарий движка — workflow-engine §11.
+с битыми строками), перед показом — `make demo-reset ANCHOR=ГГГГ-ММ-ДД` (Р-35);
+3-минутный сценарий движка — workflow-engine §11.
 
 ---
 

@@ -1,9 +1,11 @@
 # Workflow Engine — проектная спецификация
 
-> Кор-функционал №1 (PLAN.md, раздел 6). Документ самодостаточен: по нему пишется код
+> Кор-функционал №1 (решения кейсодержателя, Q&A 16.09.2026). Документ самодостаточен: по нему пишется код
 > модуля `backend/app/modules/workflow/` без дополнительных вопросов. Разделы сверены с
 > реализацией: пакетный перенос заявок (§6.3–6.4, §6.8), блокировки и ограниченное
-> ожидание (§6.5), права на конструктор и роли переходов из каталога БД (§6.9).
+> ожидание (§6.5), права на конструктор и роли переходов из каталога БД (§6.9), файлы в
+> статусах и комментарий на любом переходе (§9, §9.1), порог этапа до 365 дней (§4.2, §8.1).
+> Как 14 шагов базового процесса ТЗ ложатся на этапы и механизмы движка — `tz-14-steps.md`.
 >
 > Источники правды: **схема БД — `data-model.md` §5–6** (таблицы `workflow`, `workflow_stage`,
 > `workflow_transition`, `workflow_change_request`, `deal`, `deal_stage_history`);
@@ -19,9 +21,9 @@
 > Проверка «зависших» заявок — k8s CronJob `stuck-check` (ежечасно), дергающий внутренний
 > endpoint бэкенда.
 
-## 0. Трассировка на решения кейсодержателя (раздел 2 PLAN.md)
+## 0. Трассировка на решения кейсодержателя (Q&A 16.09.2026)
 
-| Решение кейсодержателя (PLAN.md §2) | Где покрыто |
+| Решение кейсодержателя | Где покрыто |
 |---|---|
 | Два workflow: B2B (вузы) и B2C (физлица + юрлица), отдельные процессы | §4, §5; область ролей по процессам — §6.9 |
 | В B2C — возможность добавлять новые варианты взаимодействия | §5.2 (конструктор добавляет этапы/ветки без кода + справочник `interaction_type`) |
@@ -227,9 +229,12 @@ seed-графов несут `[kam, head_kam, admin]`.)
 (`seed_demo_roles`): права системной роли kam, один процесс. Сид идемпотентно добавляет их коды
 в `allowed_roles` переходов своего процесса, где уже есть `kam`, и сбрасывает кэш схем.
 
-Пороги seed: `new` — 7 дней, промежуточные — 14, `in_learning` и терминальные — NULL
-(наследуют/не проверяются). Договорённость: **«порог выключен» на нетерминальном этапе
-моделируется большим значением (60)**, NULL значит ровно одно — «взять порог workflow».
+Пороги seed: `new` — 7 дней, промежуточные — 14, `in_learning` — 120 (обучение длится
+месяцами: с порогом 14 этап ложно «зависал» бы), терминальные — NULL (не проверяются).
+Порог этапа — 1–365 дней (миграция 0006), порог процесса — 1–60. Договорённость: **«порог
+выключен» на нетерминальном этапе моделируется большим значением (до 365)**, NULL значит ровно
+одно — «взять порог workflow». Цвета этапов сида — палитра с контрастом текста не ниже 4,5:1;
+сид при повторном запуске обновляет цвета и пороги этапов.
 
 ## 5. Предустановленный workflow B2C (физлица + юрлица)
 
@@ -701,8 +706,9 @@ KeyDB pub/sub `crm:v1:events`). Публикация SSE — after_commit. Пр�
 
 - Порог: каскад `notification_rule.params.threshold_days` → `workflow_stage.stuck_threshold_days`
   → `workflow.stuck_threshold_days` (дефолт 14) → `app_setting['stuck_threshold_days_default']`
-  (14, диапазон 1–60). «1–2 недели» кейсодержателя = дефолт 14, редактируется в конструкторе
-  (на этапе) и в админке (на workflow/глобально).
+  (14). Диапазоны: этап — 1–365 (долгие этапы обучения и сопровождения, миграция 0006),
+  процесс и общая настройка — 1–60. «1–2 недели» кейсодержателя = дефолт 14, редактируется в
+  конструкторе (на этапе) и в админке (на workflow/глобально).
 - Эскалация двухступенчатая: **ступень 1** (порог) — ответственному; **ступень 2**
   (порог × 1.5, округление вверх до дней) — руководителю (`app_user.manager_id`).
 - Повторные напоминания — не чаще `repeat_every_days` (дефолт 3): уникальный
@@ -765,14 +771,17 @@ async def check_stuck_requests() -> StuckReport:
 | `GET /workflows/{id}/changes`, `GET /workflows/changes/{id}` | `workflow:history` (admin, head_kam, observer) | Списки/карточка изменений; у применённого — `migration_report` |
 | `POST /workflows/changes/{id}/approve` / `.../reject` | `workflow:approve` (admin) | Атомарное применение §6.4 / отклонение с причиной; approve — `409 workflow_busy` (пакет остаётся `pending`), `409 conflict` «Пакет уже обработан», `400 workflow_invalid_schema`, `422 unprocessable` |
 | `GET /requests/{id}/transitions` | `requests:read` (все) | Рёбра из текущего этапа: RBAC-фильтр + аннотация `condition`; элементы `{transition_id, to_status_id, name, kind, requires_comment, available, unavailable_reason}` — карточка и канбан рисуют действия строго из этого списка |
-| `POST /requests/{id}/transitions` | `requests:transition` (admin, head_kam, kam) | `{to_status_id, comment?, version}`; 409 `workflow_invalid_transition` (ребра нет / заявка уже не в from-этапе — фронт перечитывает), 400 `validation_error` (нет обязательного comment), 403, 409 `stale_version`, 409 `workflow_busy` + `Retry-After: 2` |
+| `POST /requests/{id}/transitions` | `requests:transition` (admin, head_kam, kam) | `{to_status_id, comment?, version, file_ids?}`: комментарий до 4000 символов на любом переходе (обязателен для возвратов и `requires_comment`), до 10 файлов заявки, загруженных с `pending_transition=true` (право `requests:files`) — привязываются к строке истории перехода в той же транзакции; 409 `workflow_invalid_transition` (ребра нет / заявка уже не в from-этапе — фронт перечитывает), 400 `validation_error` (нет обязательного comment; `file_ids` — чужие, удалённые или уже привязанные файлы), 403, 409 `stale_version`, 409 `workflow_busy` + `Retry-After: 2` |
 | `POST /requests/{id}/reopen` | `requests:reopen` (admin) | Переоткрытие из терминала (§3.1); 409 `workflow_busy` |
 | `POST /internal/jobs/check-stuck-requests` | X-Internal-Token | §8.2 |
 
 ### 9.1. `transition_deal` — псевдокод
 
 ```python
-async def transition_deal(session, *, deal_id, to_status_id, actor, comment, version) -> Deal:
+async def transition_deal(session, *, deal_id, to_status_id, actor, comment, version,
+                          files=()) -> Deal:
+    # files — вложения перехода, уже проверенные роутером (`file_ids`: свои, не удалены,
+    # не привязаны, право requests:files); комментарий ≤ 4000 символов — схема запроса
     # порядок локов строго «advisory → row», как в apply_change (§6.5)
     workflow_id = await scalar(select(Deal.workflow_id).where(Deal.id == deal_id))
     require(workflow_id is not None, 404)
@@ -799,8 +808,11 @@ async def transition_deal(session, *, deal_id, to_status_id, actor, comment, ver
     deal.stage_entered_at = now(); deal.last_activity_at = now()
     if to_stage.is_terminal: deal.status = to_stage.terminal_outcome  # won | lost
     elif deal.status != "open": deal.status = "open"                  # возврат из терминала
-    add_history(deal, from_=from_stage, to=to_stage, transition=tr,
-                kind="manual", is_return=tr.is_return, actor=actor, comment=comment)
+    history = add_history(deal, from_=from_stage, to=to_stage, transition=tr,
+                          kind="manual", is_return=tr.is_return, actor=actor, comment=comment)
+    for f in files:                                   # «файлы в статусах» (0006)
+        f.stage_history_id = history.id                # в той же транзакции, что переход
+    if files: audit("request.files_attached", deal, file_ids=[f.id for f in files])
     emit_notification("request.transitioned", deal, actor, comment)   # outbox
     if to_stage.triggers_lms_handover:
         emit_integration("crm.request.handed_over", deal)             # outbox
@@ -848,12 +860,15 @@ async def transition_deal(session, *, deal_id, to_status_id, actor, comment, ver
 ## 12. Файловая раскладка модуля
 
 ```
+backend/app/models/workflow.py   # SQLAlchemy: Workflow, WorkflowStage, WorkflowTransition,
+                                 #   WorkflowChangeRequest (DDL — data-model.md §5)
+
 backend/app/modules/workflow/
-├── models.py          # SQLAlchemy: Workflow, WorkflowStage, WorkflowTransition,
-│                      #   WorkflowChangeRequest (DDL — data-model.md §5)
+├── serializers.py     # схема в формат API: stage → status, sort_order → position (§5.1)
 ├── schemas.py         # Pydantic v2: GraphOut, StatusIn/Out, TransitionIn/Out, OperationIn
 │                      #   (discriminated union по "op"), ChangeRequestOut (+ migration_report),
-│                      #   MigrationReport, MigrationTimings, ConditionDSL
+│                      #   MigrationReport, MigrationTimings, ConditionDSL;
+│                      #   MAX_STAGE_STUCK_DAYS = 365 (порог этапа)
 ├── graph.py           # validate_graph (V-1..V-7, мягкий V-7), check_operation_roles
 │                      #   (строгий V-7), apply_operations, достижимость (BFS), V-8
 ├── conditions.py      # evaluate_condition(DSL, RequestContext) — аннотация переходов
@@ -875,7 +890,9 @@ backend/tests/
 └── db/
     ├── test_workflow_bulk_migration.py        # перенос, сводки, эквивалентность, откаты
     ├── test_workflow_migration_concurrency.py # гонки на настоящих COMMIT (§6.5)
-    └── test_workflow_rbac_db.py               # роли в переходах, уровни конструктора
+    ├── test_workflow_rbac_db.py               # роли в переходах, уровни конструктора
+    ├── test_kam_activity_stage_entry_db.py    # вход в этап: перевод схемы и LMS не обнуляют дни
+    └── test_request_files_portfolio_db.py     # файлы в статусах, передача портфеля
 ```
 
 Общие для монолита: `app/core/outbox.py` (emit + relay-таски notification/integration,

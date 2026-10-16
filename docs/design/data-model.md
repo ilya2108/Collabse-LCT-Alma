@@ -6,7 +6,9 @@ CRM для работы с вузами (ЛЦТ 2026). Документ — ис
 
 Связанные документы: `docs/design/OVERVIEW.md` (сводная архитектура, терминологический мост),
 `docs/design/deployment.md` (деплой), `docs/design/api-contract.md` (REST-контракты),
-`docs/design/workflow-engine.md` (движок), `PLAN.md` (решения кейсодержателя — раздел 12 ниже даёт построчную трассировку).
+`docs/design/workflow-engine.md` (движок). Требования — техническое задание кейса и решения
+кейсодержателя из протокола Q&A 16.09.2026 (в репозиторий не входит); раздел 12 ниже даёт
+построчную трассировку.
 Каталог прав и наборы системных ролей определяет код `backend/app/core/rbac_catalog.py`;
 раздел 3 описывает, как он хранится в БД.
 
@@ -19,8 +21,8 @@ CRM для работы с вузами (ЛЦТ 2026). Документ — ис
    работает через API backend'а, заглушки держат состояние в памяти/файлах.
 2. **PK** — `uuid DEFAULT gen_random_uuid()` у всех сущностей. Исключения: `audit_log` —
    `bigint identity` (монотонный append-only); `app_permission` — код права (`'requests:write'`);
-   связки и «ключ — значение» с естественным ключом — `contract_product`, `student_activity`,
-   `external_link`, `app_role_permission`, `app_setting`. UUID безопасны для внешних
+   связки и «ключ — значение» с естественным ключом — `contract_product`, `product_direction`,
+   `student_activity`, `external_link`, `app_role_permission`, `app_setting`. UUID безопасны для внешних
    JSON-контрактов LMS/CMS (нет перебора id) и для ключей S3.
 3. **Время** — везде `timestamptz`, хранение в UTC. Колонки `created_at timestamptz NOT NULL DEFAULT now()`
    и `updated_at timestamptz NOT NULL DEFAULT now()` (обновляется приложением через SQLAlchemy `onupdate`).
@@ -55,6 +57,9 @@ erDiagram
     PRODUCT ||--o{ CONTRACT_PRODUCT : ""
     PRODUCT ||--o{ PROGRAM : "программы"
     UNIVERSITY ||--o{ PROGRAM : "сетевые программы"
+    IT_DIRECTION ||--o{ PROGRAM : "направление программы (N:1)"
+    PRODUCT ||--o{ PRODUCT_DIRECTION : ""
+    IT_DIRECTION ||--o{ PRODUCT_DIRECTION : "направления продукта (M:N)"
 
     UNIVERSITY {
         uuid id PK
@@ -90,8 +95,20 @@ erDiagram
         uuid id PK
         uuid product_id FK
         uuid university_id FK
+        uuid direction_id FK "ИТ-направление, nullable"
         text name
         int priority_rank "ручное ранжирование"
+    }
+    IT_DIRECTION {
+        uuid id PK
+        text code UK "без учёта регистра"
+        text name UK "без учёта регистра"
+        int sort_order
+        bool is_active "мягкое удаление"
+    }
+    PRODUCT_DIRECTION {
+        uuid product_id PK, FK
+        uuid direction_id PK, FK
     }
     CONTRACT {
         uuid id PK
@@ -107,6 +124,10 @@ erDiagram
         uuid product_id PK, FK
         uuid added_by FK
         timestamptz added_at
+        date license_signed_at "лицензия"
+        smallint license_term_years
+        date license_valid_to
+        text transfer_status "статус передачи"
     }
 ```
 
@@ -269,6 +290,7 @@ erDiagram
     APP_USER ||--o{ IMPORT_SESSION : "инициатор"
     IMPORT_SESSION ||--o{ IMPORT_ROW_ERROR : ""
     IMPORT_SESSION ||--|| FILE_OBJECT : "исходный файл в MinIO"
+    DEAL_STAGE_HISTORY ||--o{ FILE_OBJECT : "файлы в статусах (0006)"
     APP_USER ||--o{ AUDIT_LOG : "actor"
 
     APP_USER {
@@ -316,6 +338,7 @@ erDiagram
         text original_name
         text entity_type
         uuid entity_id
+        uuid stage_history_id FK "переход заявки, nullable"
         text sha256
     }
     IMPORT_SESSION {
@@ -536,8 +559,8 @@ CREATE INDEX ix_app_role_permission_code ON app_role_permission (permission_code
 
 | Код | Название | Прав по умолчанию | Особенности |
 |---|---|---:|---|
-| `admin` | Администратор | 59 | все права, кроме `requests:kam`; `is_locked` — права и область не меняются, роль не удаляется |
-| `head_kam` | Руководитель КАМов | 40 | права КАМа без `requests:kam` + чужие заявки и назначение ответственных, пакеты изменений схемы (публикует admin), правка чужих вузов и договоров, продукты и активности, отчёты по всем КАМам, просмотр правил уведомлений и списка пользователей |
+| `admin` | Администратор | 60 | все права, кроме `requests:kam`; `is_locked` — права и область не меняются, роль не удаляется |
+| `head_kam` | Руководитель КАМов | 41 | права КАМа без `requests:kam` + чужие заявки и назначение ответственных, пакеты изменений схемы (публикует admin), правка чужих вузов и договоров, назначение ответственного КАМа за вуз (`universities:assign`), продукты и активности, отчёты по всем КАМам, просмотр правил уведомлений и списка пользователей |
 | `kam` | КАМ | 28 | свой портфель: видит все заявки, правит свои; `requests:kam` — попадает в отчёты по КАМам и выбор КАМа |
 | `observer` | Наблюдатель | 14 | только чтение, отчёты по всем КАМам, журнал аудита; ПДн маскированы, раскрытия нет |
 
@@ -755,6 +778,7 @@ CREATE TABLE program (
     published_to_cms    boolean NOT NULL DEFAULT false,  -- флаг публикации каталога в CMS;
                                                          -- внешние id (cms_external_id, lms_course_id) — в external_link
     priority_rank       int NOT NULL DEFAULT 1000,   -- ручное ранжирование, меньше = выше
+    direction_id        uuid REFERENCES it_direction(id) ON DELETE RESTRICT,  -- ИТ-направление (0007), nullable
     priority_updated_by uuid REFERENCES app_user(id),
     priority_updated_at timestamptz,
     is_active           boolean NOT NULL DEFAULT true,
@@ -763,7 +787,44 @@ CREATE TABLE program (
 );
 CREATE INDEX ix_program_product  ON program (product_id);
 CREATE INDEX ix_program_priority ON program (priority_rank) WHERE is_active;
+CREATE INDEX ix_program_direction ON program (direction_id) WHERE direction_id IS NOT NULL;  -- 0007
 ```
+
+#### 4.5.1 `it_direction` и `product_direction` — ИТ-направления (миграция 0007)
+
+Каталог ИТ-направлений обучения (DevOps, QA, анализ данных, ML и ИИ…). У программы — одно
+направление (`program.direction_id`, необязательное), у продукта — несколько (M:N
+`product_direction`). Удаление направления — мягкое (`is_active = false`): на него ссылаются
+программы, продукты и отчёты прошлых периодов; деактивация запрещена, пока на направлении есть
+активная программа (`409`). Правит справочник право `admin:dictionaries`, читают все роли.
+
+```sql
+CREATE TABLE it_direction (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    code        text NOT NULL CHECK (btrim(code) <> ''),
+    name        text NOT NULL CHECK (btrim(name) <> ''),
+    description text,
+    sort_order  int  NOT NULL DEFAULT 100,   -- порядок в списках и фильтрах
+    is_active   boolean NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uq_it_direction_code ON it_direction (lower(code));
+CREATE UNIQUE INDEX uq_it_direction_name ON it_direction (lower(name));
+
+CREATE TABLE product_direction (
+    product_id   uuid NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    direction_id uuid NOT NULL REFERENCES it_direction(id) ON DELETE RESTRICT,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (product_id, direction_id)
+);
+CREATE INDEX ix_product_direction_direction ON product_direction (direction_id);
+```
+
+**Направление записи** — одно правило для фильтров, колонок и отчётов (`crm/directions.py`):
+направление программы записи; если его нет — направления ИТ-продукта записи (свой продукт
+заявки или студента, без него — продукт программы). Фильтр `direction_id` проверяется через
+`EXISTS`, без размножения строк (api-contract.md §3.3a).
 
 ### 4.6 `contract` и `contract_product` — «1 договор — N продуктов, продукты расширяются»
 
@@ -876,7 +937,7 @@ CREATE TABLE workflow_stage (
     is_initial           boolean NOT NULL DEFAULT false,
     is_terminal          boolean NOT NULL DEFAULT false,
     terminal_outcome     text CHECK (terminal_outcome IN ('won', 'lost')),
-    stuck_threshold_days int CHECK (stuck_threshold_days IS NULL OR stuck_threshold_days BETWEEN 1 AND 60),
+    stuck_threshold_days int CHECK (stuck_threshold_days IS NULL OR stuck_threshold_days BETWEEN 1 AND 365),  -- 0006: было 1–60
     triggers_lms_handover boolean NOT NULL DEFAULT false, -- вход в этап шлёт crm.request.handed_over в LMS
     color                text,                    -- hex для канбана/конструктора
     ui_position          jsonb,                   -- {"x": 120, "y": 240}
@@ -1388,15 +1449,16 @@ Keycloak в том же закрытом контуре), в CRM — рабоч�
 
 ### 8.5 Гигиена ПДн вне таблиц
 
-- **Логи** приложения не содержат расшифрованных значений (фильтр логгера маскирует
-  `full_name`/`email` в структурированных логах).
+- **Логи** приложения не содержат значений ПДн: их не пишет ни один вызов логгера (фильтра-маскировщика нет).
+  Журнал доступа uvicorn пишет query-строку, а точный поиск студента по email идёт в ней (`GET /students?q=`) — в контуре заказчика журнал доступа маскируют или отключают (`--no-access-log`).
 - **`audit_log.before/after`** и **`import_row_error.raw_data`**: значения полей, замапленных на
   ПДн-колонки, маскируются до записи: `i***@example.com`, `И*** И.И.`.
 - **Ключи идемпотентности** (9.6): ответ мутации хранится Fernet-шифртекстом, тело запроса не
   хранится вовсе — только его SHA-256. Строки живут 24 ч, затем их удаляет CronJob
   `idempotency-purge`. Ответ, который не расшифровывается (ключ выведен из ротации), не
   проигрывается: повтор получает 409 `idempotency_replay_unavailable`.
-- **Бэкапы БД** содержат только шифртекст — восстановление без Secret не раскрывает ПДн.
+- **Дамп БД** содержит только шифртекст — восстановление без Secret не раскрывает ПДн.
+  Регулярного резервного копирования в прототипе нет (CronJob `pg_dump` — в плане развития).
 - **KeyDB** никогда не содержит расшифрованных ПДн (раздел 9): кэшируются только
   `display_name`-представления.
 - **Telegram-нотификации** по студентам содержат `display_name`, не полные ФИО/email.
@@ -1506,11 +1568,22 @@ CREATE TABLE file_object (
     entity_id     uuid,
     uploaded_by   uuid REFERENCES app_user(id),
     created_at    timestamptz NOT NULL DEFAULT now(),
-    deleted_at    timestamptz            -- soft delete; объект в MinIO чистит фоновая задача
+    deleted_at    timestamptz,           -- soft delete; объект в MinIO чистит фоновая задача
+    stage_history_id uuid REFERENCES deal_stage_history(id) ON DELETE SET NULL  -- 0006: файл в статусе
 );
 CREATE UNIQUE INDEX uq_file_object_s3_key ON file_object (s3_bucket, s3_key);
 CREATE INDEX ix_file_object_entity ON file_object (entity_type, entity_id) WHERE deleted_at IS NULL;
+CREATE INDEX ix_file_object_stage_history ON file_object (stage_history_id)
+    WHERE stage_history_id IS NOT NULL;  -- 0006
 ```
+
+**Файлы в статусах (миграция 0006).** Файл заявки (`entity_type='deal'`) привязан к строке
+`deal_stage_history`: к переходу, на котором его приложили (`file_ids` перехода — в той же
+транзакции, что и переход), либо ко входу в этап, в котором его загрузили из вкладки «Файлы».
+Бэкфилл миграции привязал уже загруженные файлы к последней строке истории заявки не позже
+загрузки. Вложения заявки проходят белый список из 10 форматов (PNG, JPEG, PDF, ZIP, GZIP,
+RAR, DOC, DOCX, XLS, XLSX) со сверкой расширения и сигнатуры; тип содержимого задаёт сервер
+(api-contract.md §4.5).
 
 Доступ к файлам — только через backend (`GET /files/{id}/download`, по умолчанию proxy-поток,
 либо presigned URL с TTL 10 минут). Проверка прав: файлы договоров, студентов, заявок и
@@ -1818,7 +1891,7 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
 | `crm:v1:dict:products`, `crm:v1:dict:programs`, `crm:v1:dict:interaction_types`, `crm:v1:dict:federal_projects` | справочники для селектов; программы — с `priority_rank` (порядок в выдаче) | 10 мин | `DEL` при CRUD, смене приоритета |
 | `crm:v1:deal:{id}` | карточка заявки (JSON API-ответа; клиент — `display_name`) | 5 мин | `DEL` при любой записи в заявку: переход, правка, комментарий |
 | `crm:v1:deal:list:{hash}` | страница списка/канбана (hash = sha1 канонизированных фильтров + область RBAC, 3.4) | 60 с | по TTL (списки волатильны, точечная инвалидация не окупается) |
-| `crm:v1:dash:{code}:{hash}` | агрегаты отчётов (`code` — код отчёта, в т. ч. `kam-activity` и `kam-activity-summary`); `hash` = sha1 параметров и области RBAC (`DealScope.cache_key()`, 3.4) | 60 с | по TTL |
+| `crm:v1:dash:{code}:{hash}` | агрегаты отчётов (`code` — код отчёта, в т. ч. `kam-activity`, `kam-activity-summary` и `interactions`); `hash` = sha1 параметров (списки id фильтров) и области RBAC (`DealScope.cache_key()`, 3.4), у `programs-demand` и `dashboard` — ещё состояние фичефлага `auto_ranking` | 60 с | по TTL; `seed --reset` чистит `dash:*` |
 | `crm:v1:tg:link:{code}` | one-time код привязки бота → `user_id` (код — 6 цифр) | 10 мин | `GETDEL` при использовании (атомарная одноразовость) |
 | `crm:v1:rl:tg:{chat_id}` | rate-limit команд бота (`INCR` + `EXPIRE`) | 60 с | по TTL |
 | `crm:v1:intg:seen:{event_id}` | быстрая дедупликация интеграционных событий (`SET NX`) | 7 сут | по TTL (истина — `uq_integration_event_event_id` в PG) |
@@ -1862,7 +1935,7 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
    - `b2b` «Взаимодействие с вузами»: `new` Новая → `first_contact` Первичный контакт →
      `negotiation` Переговоры → `contract_prep` Подготовка договора →
      `contract_signed` Договор подписан → `in_learning` Передано в обучение
-     (`triggers_lms_handover=true`) → `completed` Завершена (terminal, won);
+     (`triggers_lms_handover=true`, порог зависания 120 дней) → `completed` Завершена (terminal, won);
      `rejected` Отказ (terminal, lost).
      Ветвления: из `first_contact`, `negotiation`, `contract_prep` — в `rejected`
      (`requires_comment`). Возврат: `contract_prep → negotiation` (`is_return`, «Вернуть в переговоры»).
@@ -1880,19 +1953,29 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
    (`universities:assign`). Демо-сид
    сверяет каталог с кодом (`seed_rbac_catalog`) и добавляет демо-роли «КАМ B2B» (`kam_b2b`) и
    «КАМ B2C» (`kam_b2c`) с их кодами в `allowed_roles` переходов (3.3).
-6. **Демо-домен**: 5–10 вузов, 3 продукта, 6 программ (с приоритетами), 2 договора
-   (один — с 3 продуктами: демонстрация «1 договор — N продуктов»), 15–20 заявок по обеим
-   воронкам с историей переходов (включая одну «зависшую» старше порога — для демо эскалации),
-   20 студентов по всем статусам воронки, 2 федпроекта, 4 активности с расписанием.
+6. **Демо-домен**: 8 базовых вузов, 3 продукта, 6 программ (с приоритетами), 2 договора
+   (один — с 3 продуктами: демонстрация «1 договор — N продуктов»), 18 заявок по обеим
+   воронкам с историей переходов (включая «зависшие» старше порога — для демо эскалации),
+   20 студентов по всем статусам воронки, 2 федпроекта, 4 активности с расписанием;
+   10 ИТ-направлений (4.5.1) с привязкой всех демо-программ (по одному направлению) и
+   продуктов (по нескольку).
 7. **История активности КАМов** (`app/tools/seed_activity.py`, вызывается из демо-сида) — данные
    для отчёта «Активность КАМов»: 18 дополнительных КАМов (`kam03…kam20@demo`, зеркала без учётки
-   Keycloak — войти под ними нельзя), 48 закреплённых вузов, заявки обеих воронок с историей
-   переходов, комментарии, файлы, прошедшие мероприятия с вузами. План детерминированный
-   (фиксированное зерно), повторный запуск ничего не дублирует.
+   Keycloak — войти под ними нельзя), 48 закреплённых вузов (всего на стенде 56), заявки обеих
+   воронок с историей переходов (закрытия — 3–20 дней назад, зависших не больше трети
+   открытых), договоры вузов, подписавших договор по истории, комментарии, файлы, прошедшие
+   мероприятия с вузами. План детерминированный (фиксированное зерно), повторный запуск ничего
+   не дублирует.
+8. **Сброс к показу** — `python -m app.tools.seed --reset [--anchor ГГГГ-ММ-ДД]`
+   (`make demo-reset`, deployment.md §3.8): одной транзакцией очищает доменные таблицы (без
+   каскада) и пересевает их от якорной даты (`DEMO_ANCHOR_DATE`, 09:00 МСК). Сохраняются
+   `app_user` (`keycloak_sub`, привязки Telegram), каталог ролей и прав, настройки (кроме
+   ключей сида), строки `workflow` и `audit_log`; системные роли возвращаются к набору из
+   кода, демо-роли — к правам КАМа, прочие свои роли удаляются. Аудит — `stand.demo_reset`.
 
 ---
 
-## 12. Трассировка на решения кейсодержателя (PLAN.md, раздел 2–4)
+## 12. Трассировка на решения кейсодержателя (Q&A 16.09.2026) и требования ТЗ
 
 | Решение кейсодержателя | Где покрыто в модели |
 |---|---|
@@ -1928,20 +2011,32 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
 | Файлы студентов (резюме, сертификаты) в MinIO | `file_object.entity_type='student'` (9.2) |
 | Уведомления по talent pool | `event_type='student.talent_pool_added'` (9.4) |
 
+Требования ТЗ, закрытые схемой в октябре 2026 (своими словами; сводное соответствие ТЗ —
+`docs/evidence/compliance.md`):
+
+| Требование ТЗ | Где покрыто в модели |
+|---|---|
+| Каталог ИТ-направлений рядом с каталогами вузов, продуктов и ответственных | `it_direction`, `program.direction_id`, `product_direction` (4.5.1, миграция 0007) |
+| Файлы в статусах заявки | `file_object.stage_history_id` → `deal_stage_history` (9.2, миграция 0006) |
+| Смена ответственных за вузы — полномочие руководителя | право `universities:assign` (3.3, миграция 0006), аудит `university.kam_changed` (9.5) |
+| Загрузка таблицы КАМов: договор, ИТ-продукт, лицензия, статус передачи | лицензия в строке `contract_product` (4.6), `import_session.entity_type='kam_catalog'` (9.1, миграция 0008) |
+| Долгие этапы базового процесса (обучение, сопровождение) не «зависают» ложно | порог этапа `workflow_stage.stuck_threshold_days` 1–365 (5.1, миграция 0006) |
+
 ---
 
 ## 13. Сводка объектов
 
-35 таблиц (31 из начальной миграции + `idempotency_key` + три таблицы ролей и прав) и одно
-расширение — `pg_trgm`; `gen_random_uuid()` встроен в PostgreSQL 13+. Модели —
-`backend/app/models/` (регистрация всех 35 — `app/models/__init__.py`). Домены:
+37 таблиц (31 из начальной миграции + `idempotency_key` + три таблицы ролей и прав + две
+таблицы ИТ-направлений) и одно расширение — `pg_trgm`; `gen_random_uuid()` встроен в
+PostgreSQL 13+. Модели — `backend/app/models/` (регистрация всех 37 — `app/models/__init__.py`).
+Домены:
 
 | Домен | Таблицы |
 |---|---|
 | Пользователи | `app_user` |
 | Роли и права | `app_role`, `app_permission`, `app_role_permission` |
 | Организации/клиенты | `university`, `university_contact`, `counterparty`, `interaction_type` |
-| Каталог/договоры | `product`, `program`, `contract`, `contract_product` |
+| Каталог/договоры | `product`, `program`, `contract`, `contract_product` (с лицензиями), `it_direction`, `product_direction` |
 | Workflow | `workflow`, `workflow_stage`, `workflow_transition`, `workflow_change_request` |
 | Заявки | `deal`, `deal_stage_history`, `deal_comment` |
 | Talent pool | `student`, `student_status_history`, `federal_project`, `activity`, `activity_schedule`, `student_activity` |
@@ -1961,6 +2056,9 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
 | `0003` idempotency keys | таблица `idempotency_key` (9.6); `app_setting['integration_mode']` → `http` (не откатывается: `stream` эффекта не имел) |
 | `0004` rbac roles and permissions | `app_permission`, `app_role`, `app_role_permission`, индекс `ix_deal_pipeline_responsible`; засев 60 прав и 4 системных ролей; чистка `app_user.roles` от кодов вне каталога (3.6) |
 | `0005` kam activity indexes | только индексы: `ix_deal_responsible_created`, `ix_activity_university`, `ix_activity_responsible` (6.1, 7.3) |
+| `0006` files in statuses and kam assign | `file_object.stage_history_id` + частичный индекс и бэкфилл по истории (9.2); право `universities:assign` и его выдача ролям с `crm:write_any` и `admin` (3.3); CHECK порога этапа 1–365 (5.1); даунгрейд приводит пороги больше 60 к 60 |
+| `0007` it directions | таблицы `it_direction`, `product_direction`, колонка `program.direction_id` с индексом (4.5.1); описание права `admin:dictionaries`; новых прав нет |
+| `0008` contract product license | поля лицензии в `contract_product` с CHECK и частичным индексом по дате окончания (4.6); `kam_catalog` в CHECK `import_session.entity_type` (9.1); даунгрейд удаляет сессии `kam_catalog` |
 
 Обратимость `upgrade head → downgrade base → upgrade head` проверяет `tests/db/test_db_smoke.py`;
 тесты с БД создают схему настоящими миграциями, а не `create_all`.
@@ -1970,4 +2068,6 @@ CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
 workflow-блок → `deal`-блок → talent-pool-блок → сервисные (`file_object` до `import_session`;
 `import_session` до `student.import_session_id` — этот FK добавляется отдельным `ALTER` после
 создания обеих таблиц, либо `use_alter=True` в SQLAlchemy). Таблицы ролей (0004) ссылаются на
-`app_user` (`created_by`, `updated_by`); `idempotency_key` (0003) внешних ключей не имеет.
+`app_user` (`created_by`, `updated_by`); `idempotency_key` (0003) внешних ключей не имеет;
+`it_direction` (0007) создаётся до `program.direction_id` и `product_direction`, которые на неё
+ссылаются.

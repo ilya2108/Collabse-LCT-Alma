@@ -11,36 +11,39 @@
 |---|---|---|
 | `auth` | зеркало Keycloak (`app_user`), профиль с ролями и эффективными правами по процессам | `GET /auth/me` |
 | `access` | каталог прав и ролей, свои роли, назначение ролей пользователям, разграничение B2B/B2C и «все / только свои» | `GET /roles`, `/admin/permissions`, `/admin/roles*`, `PUT /admin/users/{id}/roles` |
-| `crm` | вузы, контакты, договоры «1 договор — N продуктов», продукты, программы + ручное ранжирование | `/universities*`, `/contracts*`, `/products*`, `/programs*` (+`/priority`, `/priorities/reorder`) |
+| `crm` | вузы (смена ответственного КАМа — право `universities:assign`, аудит `university.kam_changed`), контакты, договоры «1 договор — N продуктов» с лицензиями в строках `contract_product`, продукты, программы + ручное ранжирование, справочник ИТ-направлений и правило «направление записи» (`crm/directions.py`) | `/universities*`, `/contracts*`, `/products*`, `/programs*` (+`/priority`, `/priorities/reorder`), `/it-directions*` |
 | `workflow` | схемы B2B/B2C, пакеты операций с апрувом (`confirm_name` для опасных), атомарный пакетный перенос заявок со сводными уведомлениями, advisory-локи с ограниченным ожиданием, проверка зависших | `/workflows*`, `/workflows/{id}/impact-preview`, `changes/approve\|reject` |
-| `requests` | заявки: CRUD, канбан, переходы (граф+права+комментарий форсируются), история, комментарии, файлы, reopen | `/requests*`, `/requests/{id}/files*` |
-| `import_export` | 5-шаговый импорт (XLSX/XLS/CSV/JSON, кодировки `utf-8-sig→utf-8→cp1251→koi8-r→cp866`), экспорт (включая `report:kam-activity` в XLSX/PDF), справочники админки | `/import/sessions*`, `/export/jobs*`, `/admin/dictionaries*` |
+| `requests` | заявки: CRUD, канбан с мультифильтрами (IN), переходы (граф + права + комментарий до 4000 символов + до 10 файлов в той же транзакции), история с файлами под своим переходом, комментарии, файлы в статусах (белый список 10 форматов с проверкой сигнатуры), reopen, передача портфеля КАМа (`dry_run`) | `/requests*`, `/requests/{id}/files*`, `/requests/transfer-portfolio` |
+| `import_export` | 5-шаговый импорт (XLSX/XLS/CSV/JSON, кодировки `utf-8-sig→utf-8→cp1251→koi8-r→cp866`, объединённые ячейки, файл без строки заголовков), составной импорт «Таблица КАМов» (`kam_catalog`), экспорт (фильтры строкой или списком, `report:kam-activity` и `report:interactions` в XLSX/PDF), справочники админки | `/import/sessions*`, `/export/jobs*`, `/admin/dictionaries*` |
 | `talent_pool` | студенты (Fernet + HMAC blind index, маскирование всегда, `/reveal` под аудит), воронка, файлы, активности | `/students*`, `/activities*` |
-| `reporting` | 8 JSON-агрегатов дашборда + отчёт «Активность КАМов» (детализация и сводка, PDF на fpdf2, многолистовой XLSX); кэш KeyDB 60 с, область отчётов `report_scope` | `/reports/*`, `/reports/kam-activity`, `/reports/kam-activity/summary` |
+| `reporting` | 8 JSON-агрегатов дашборда (фильтры — списки id, `IN` во всех секциях) + отчёт «Активность КАМов» (детализация и сводка, PDF на fpdf2, многолистовой XLSX) + «Взаимодействия за период» по выбранным колонкам; кэш KeyDB 60 с, область отчётов `report_scope` | `/reports/*`, `/reports/kam-activity`, `/reports/kam-activity/summary`, `/reports/interactions` |
 | `integrations` | конверт IntegrationEvent, транспорт `IntegrationTransport` (HTTP + HMAC), вебхуки HMAC, DLQ + ручной retry | `/integrations/{lms,cms}/webhook`, `/admin/integration/*` |
 | `notifications` | настройки каналов/событий, in-app лента + маркеры прочтения, тест-отправка, привязка Telegram (код 6 цифр TTL 10 мин, KeyDB GETDEL), CRUD правил `notification_rule`, данные для команд бота | `/notifications*`, `/notifications/rules*`, `/internal/bot/*` |
-| `files` | MinIO: 3 бакета, ключ `{entity_type}/{entity_id}/{file_id}/{safe_name}`, proxy/presigned; файл заявки — только в зоне видимости заявки | `GET /files/{id}/download` |
+| `files` | MinIO: 3 бакета, ключ `{entity_type}/{entity_id}/{file_id}/{safe_name}`, proxy/presigned; белый список вложений заявки (`check_attachment_format`); файл заявки — только в зоне видимости заявки | `GET /files/{id}/download` |
 | `admin` | пользователи (manager_id для эскалаций, синк профилей из Keycloak — роли не трогает), настройки (`integration_mode` — только `http`), фичефлаги (SSE `flags.updated`), аудит | `/admin/users*`, `/admin/settings`, `/admin/feature-flags*`, `/admin/audit-log` |
 | `ui` | SSE realtime (fan-out KeyDB pub/sub `crm:v1:events`), пресеты таблиц, глобальный поиск, флаги | `GET /events/stream`, `/ui/presets*`, `/search`, `/flags` |
 | `internal` | CronJob-джобы под `X-Internal-Token` | `/internal/jobs/check-stuck-requests`, `purge-deleted`, `purge-idempotency-keys`, `outbox-relay` |
 
 Сквозное в `app/core/`: конфиг из env, единый формат ошибок
-`{error:{code,message,details,trace_id}}`, JWT/JWKS и `require_permission`, каталог
+`{error:{code,message,details,trace_id}}` с закрытым каталогом кодов (`errors.py`,
+`ERROR_CODES`) и его описанием в OpenAPI (`openapi.py`: `ErrorEnvelope` у всех
+4xx/5xx, ошибка валидации — `400 validation_error`), JWT/JWKS и `require_permission`, каталог
 прав (`rbac_catalog`) и модель доступа (`access`: права по процессам, `DealScope`),
 PII-криптография, KeyDB cache-aside с деградацией в PG, middleware Idempotency-Key с
 хранилищем в PG, три транзакционных outbox'а (notification / integration_event /
-audit_log) + фоновый relay и сменный транспорт интеграций, SSE-хаб. OpenAPI — 150
-методов.
+audit_log) + фоновый relay и сменный транспорт интеграций, SSE-хаб. OpenAPI — 157
+методов, у 86 мутирующих — заголовок `Idempotency-Key`.
 
 ## Роли и права
 
-- **Права — код.** `core/rbac_catalog.py`: 60 прав в 8 группах. 18 прав — «с
+- **Права — код.** `core/rbac_catalog.py`: 61 право в 8 группах. 18 прав — «с
   областью»: действуют только в процессах роли (B2B, B2C) и с её областью записей
   (`all` / `own`), остальные общие (справочники, админка). У прав есть зависимости
   (`requires`): редактор не даст сохранить правку без просмотра.
 - **Роли — данные.** Таблицы `app_role` / `app_role_permission` (миграция 0004
-  засевает каталог из кода). Системные роли: admin — 59 прав, заблокирована от
-  правки; head_kam — 40; kam — 28; observer — 14. Наборы подобраны так, что доступ
+  засевает каталог из кода, 0006 добавляет `universities:assign`). Системные роли:
+  admin — 60 прав, заблокирована от правки; head_kam — 41; kam — 28; observer — 14.
+  Наборы подобраны так, что доступ
   базовых ролей к каждому эндпоинту совпал с прежней матрицей —
   регрессия `tests/test_access_matrix.py`. Свои роли — `POST /admin/roles`;
   удалить роль, пока она назначена или указана в переходах процессов, нельзя
@@ -114,15 +117,35 @@ audit_log) + фоновый relay и сменный транспорт инте�
 - Взаимодействие — собственное действие ответственного КАМа в периоде: ручной
   переход, комментарий, файл заявки, мероприятие с вузом. Системные переходы
   (перенос схемы, LMS, импорт) и действия других пользователей не считаются. Этап
-  остановки восстанавливается по `deal_stage_history` на конец периода.
+  остановки восстанавливается по `deal_stage_history` на конец периода; «дни на
+  этапе» и «зависла» — от входа в этап (строки с `kind = 'system_migration'` и без
+  смены этапа вход не сдвигают), для текущего периода — `deal.stage_entered_at`.
+- Фильтры — несколько КАМов, вузов и ИТ-направлений; у «Взаимодействий за период»
+  (`reporting/interactions.py`, `GET /reports/interactions`) ещё продукты, программы
+  и этап на конец периода. Колонки ТЗ (вуз, ИТ-направление, ИТ-продукт, статус работы
+  с вузом, ответственный) — по умолчанию, остальные — по выбору; API отдаёт до 5 000
+  строк, выгрузка — все.
 - Область — `report_scope(viewer)`: процессы ролей с `reports:read`, «все КАМы» —
   только с `reports:all`; КАМы отчёта — роли с правом `requests:kam`.
 - Выгрузка — `POST /export/jobs {entity_type: "report:kam-activity"}`:
   XLSX «Сводка / КАМы / Вузы / Заявки / Динамика», PDF (`reporting/pdf.py`, fpdf2,
-  шрифты DejaVu в `reporting/fonts/`), CSV/JSON — лист «Заявки». PDF отчёта флагом
-  `report_pdf` не закрыт.
+  шрифты DejaVu в `reporting/fonts/`), CSV/JSON — лист «Заявки»;
+  `report:interactions` с `columns` — XLSX, PDF, CSV, JSON
+  (`reporting/interactions_export.py`). PDF отчётов флагом `report_pdf` не закрыт.
 - Индексы под отчёт — миграция 0005. Демо-история ~20 КАМов —
   `python -m app.tools.seed_activity`, основной сид вызывает её сам.
+
+## Демо-сид и сброс стенда
+
+- `python -m app.tools.seed` — идемпотентный сид: процессы, справочники (в том числе
+  10 ИТ-направлений), 56 вузов, заявки обеих воронок с историей, студенты, история
+  активности 20 КАМов (2 с учёткой Keycloak и 18 зеркал без входа).
+- `python -m app.tools.seed --reset [--anchor ГГГГ-ММ-ДД]` (`make demo-reset`) —
+  одной транзакцией очищает доменные таблицы и пересевает их от якорной даты
+  (`DEMO_ANCHOR_DATE`, 09:00 МСК); пользователи, каталог ролей и прав, настройки,
+  строки процессов и журнал аудита сохраняются, роли возвращаются к исходным,
+  кэши отчётов в KeyDB и файлы удалённых строк в MinIO чистятся, аудит —
+  `stand.demo_reset`.
 
 ## Нотификации и Telegram-бот
 
@@ -167,13 +190,15 @@ app/
                # (права), access (роли, права по процессам, DealScope), pii, cache (KeyDB),
                # idempotency (+ idempotency_store), outbox (+relay), integration_transport,
                # sse, events (реестр событий), audit, pagination
-  models/      # 35 таблиц по data-model.md (optimistic locking — системная xmin)
+  models/      # 37 таблиц по data-model.md (optimistic locking — системная xmin)
   modules/     # см. таблицу выше
-  tools/       # seed (+ seed_activity), check_migrations, rekey (ротация PII),
+  tools/       # seed (+ seed_activity, --reset), check_migrations, rekey (ротация PII),
                # rbac (аварийный admin), bench_migration (замер переноса заявок)
 alembic/       # 0001 начальная схема (raw DDL из data-model.md + pg_trgm),
                # 0002 маскирование ПДн лидов, 0003 idempotency_key,
-               # 0004 роли и права, 0005 индексы отчёта «Активность КАМов»
+               # 0004 роли и права, 0005 индексы отчёта «Активность КАМов»,
+               # 0006 файлы в статусах, право universities:assign, порог этапа до 365,
+               # 0007 ИТ-направления, 0008 лицензии в contract_product и kam_catalog
 tests/         # юнит-тесты без инфраструктуры (KeyDB-деградация проверяется)
   db/          # интеграционные тесты на PostgreSQL: схема из миграций, фабрики данных
 ```
@@ -211,11 +236,13 @@ OpenAPI — `http://localhost:8000/api/v1/docs`.
 | `IDEMPOTENCY_ENABLED`, `IDEMPOTENCY_TTL_HOURS` (24), `IDEMPOTENCY_LEASE_SECONDS` (60) | Idempotency-Key: включение, срок хранения ответов, аренда ключа на время обработки |
 | `IDEMPOTENCY_MAX_REQUEST_BYTES`, `IDEMPOTENCY_MAX_RESPONSE_BYTES` | лимиты тела запроса (60 МБ) и сохраняемого ответа (1 МБ) |
 | `RBAC_CATALOG_TTL_SECONDS` | TTL кэша каталога ролей в процессе (5 с) |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | пул соединений на процесс uvicorn (4 + 2): 6 подов × 2 воркера × 6 = 72 при `max_connections=150` (`tests/test_connection_budget.py`) |
+| `DEMO_ANCHOR_DATE` | «сейчас» демо-данных для `seed --reset` (ГГГГ-ММ-ДД — 09:00 МСК) |
 
 ## Проверки
 
 ```bash
-./.venv/bin/python -m pytest -q                    # 1 448 тестов (1 311 юнит + 137 tests/db)
+./.venv/bin/python -m pytest -q                    # 1 819 тестов (1 620 юнит + 199 tests/db)
 ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без PostgreSQL — ошибка
 ./.venv/bin/python -m ruff check app tests
 ./.venv/bin/python -m app.tools.check_migrations   # exit 0 = схема на head
@@ -232,7 +259,7 @@ ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без 
 ошибку. Два режима изоляции: `db_session` — тест во внешней транзакции, `commit()`
 сервисов фиксирует SAVEPOINT; `db_committed_sessionmaker` — настоящие COMMIT на
 отдельных соединениях (гонки, advisory-локи), после теста таблицы очищаются, данные
-миграций восстанавливаются. Полный прогон — около минуты.
+миграций восстанавливаются. Полный прогон с PostgreSQL — около 80 секунд.
 
 ## Статус стадий
 
@@ -253,12 +280,19 @@ ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без 
 - **B4** — модуль нотификаций целиком (настройки, лента, тест, правила, Telegram-бот,
   internal bot API), админка (пользователи + синк Keycloak, настройки, фичефлаги
   с SSE `flags.updated`, аудит с фильтром `action` — чип «Раскрытия ПДн» в UI),
-  UI-инфраструктура (пресеты, глобальный поиск, `/flags`). Реестр эндпоинтов
-  api-contract.md §15 закрыт полностью; сверх реестра — CRUD
-  `/notifications/rules` (требование стадии, путей в §15 нет).
+  UI-инфраструктура (пресеты, глобальный поиск, `/flags`), CRUD
+  `/notifications/rules`. Реестр эндпоинтов api-contract.md §15 совпадает с
+  OpenAPI приложения.
 - **B5** — роли и права в БД Альмы (каталог 60 прав, свои роли, B2B/B2C и «только
   свои», аварийный `grant-admin`); отчёт «Активность КАМов» (детализация, сводка,
   PDF/XLSX) и файлы заявки; пакетный перенос заявок со сводными уведомлениями,
   ограниченным ожиданием локов и бенчмарком; сквозной Idempotency-Key в PG;
   транспорт интеграций — сменный адаптер (`integration_mode` только `http`);
   интеграционные тесты на настоящем PostgreSQL и в CI.
+- **B6** — отчётный контур и сущности ТЗ: фильтры аналитики списками во всех
+  секциях (выгрузка — 422 вместо 500), «Завершено» по входу в терминальный этап,
+  востребованность программ по трём показателям, «Взаимодействия за период» с
+  выбором колонок и PDF; файлы в статусах (0006); право `universities:assign` и
+  передача портфеля КАМа; справочник ИТ-направлений (0007); импорт «Таблица КАМов» с
+  лицензиями (0008); единый `ErrorEnvelope` в OpenAPI и закрытый каталог кодов
+  ошибок; бюджет соединений PostgreSQL; `seed --reset` для сброса стенда.

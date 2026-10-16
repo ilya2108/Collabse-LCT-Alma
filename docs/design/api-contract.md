@@ -1,8 +1,10 @@
 # Контракт REST API бэкенда CRM + интеграционные контракты
 
 Документ — часть проектной документации решения ЛЦТ 2026 «CRM для работы с вузами».
-Источник требований: `PLAN.md` (раздел 2 — решения кейсодержателя). В конце документа —
-таблица трассировки «решение кейсодержателя → раздел контракта».
+Источник требований — техническое задание кейса и решения кейсодержателя из протокола Q&A
+16.09.2026 (протокол в репозиторий не входит). В конце документа — таблица трассировки
+«решение кейсодержателя → раздел контракта» и требования ТЗ, закрытые в октябре (§14).
+Последняя сверка реестра §15 с OpenAPI приложения — 16.10.2026: 157 методов, все в реестре.
 
 Статус: **зафиксирован**. По этому документу пишется код backend (FastAPI), frontend (React),
 notification-service, lms-stub, cms-stub без дополнительных вопросов.
@@ -370,9 +372,9 @@ header-параметр `Idempotency-Key` и описания ответов `40
 | Метод/путь | Описание | Роли (write) |
 |---|---|---|
 | `GET /universities` | Список. Фильтры: `search` (название/ИНН/город), `region`, `kam_user_id`, `has_active_contract` (bool) | все |
-| `POST /universities` | Создать | admin, head_kam, kam |
+| `POST /universities` | Создать; без права `universities:assign` — только без ответственного или на себя | admin, head_kam, kam |
 | `GET /universities/{id}` | Карточка (+агрегаты: счётчики договоров/заявок/студентов) | все |
-| `PATCH /universities/{id}` | Изменить (c `version`) | admin, head_kam, kam (свои — см. §12.2) |
+| `PATCH /universities/{id}` | Изменить (c `version`). Смена `kam_user_id` — только с правом `universities:assign` (сравнивается значение, а не наличие поля), аудит `university.kam_changed` | admin, head_kam, kam (свои — см. §12.2; ответственного КАМ не меняет) |
 | `DELETE /universities/{id}` | Деактивация (`is_active=false`), запрещено при активных заявках → `409 conflict` | admin |
 | `GET /universities/{id}/contacts` | Контактные лица вуза | все |
 | `POST /universities/{id}/contacts` | Добавить контакт | admin, head_kam, kam |
@@ -456,8 +458,6 @@ header-параметр `Idempotency-Key` и описания ответов `40
 
 Владелец договора — вуз **или** контрагент (ровно один из `university_id`/`counterparty_id`,
 CHECK в БД).
-```json
-```
 
 Файл (ответ загрузки; общий формат файлов для всего API — договоры, студенты, отчёты импорта):
 
@@ -664,7 +664,7 @@ Idempotency-Key: 9d1f…
   отказ движка не оставляет привязки, переход не фиксируется без своих файлов.
 - Переход обновляет `status_updated_at` (сбрасывает счётчик «зависания»).
 - Побочные эффекты (в одной транзакции + outbox, §13.7): запись в историю; событие в
-  notification-service (§11.3); если целевой статус имеет флаг `triggers_lms_handover` —
+  notification-service (§9.4); если целевой статус имеет флаг `triggers_lms_handover` —
   интеграционное событие `crm.request.handed_over` в LMS (§13.2).
 
 Ответ `200` — обновлённая заявка (как §4.2).
@@ -757,14 +757,14 @@ file_type_not_allowed` с причиной («Формат «.exe» не под�
   "name": "Взаимодействие с вузами",
   "updated_at": "…",
   "statuses": [
-    {"id": "st-1", "code": "new",            "name": "Новая",                "color": "#8c8c8c", "is_initial": true,  "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 7,    "triggers_lms_handover": false, "position": 0},
-    {"id": "st-2", "code": "first_contact",  "name": "Первичный контакт",    "color": "#13c2c2", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 1},
-    {"id": "st-3", "code": "negotiation",    "name": "Переговоры",           "color": "#1677ff", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 2},
-    {"id": "st-4", "code": "contract_prep",  "name": "Подготовка договора",  "color": "#722ed1", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 3},
-    {"id": "st-5", "code": "contract_signed","name": "Договор подписан",     "color": "#52c41a", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 4},
-    {"id": "st-6", "code": "in_learning",    "name": "Передано в обучение",  "color": "#a0d911", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": null, "triggers_lms_handover": true,  "position": 5},
-    {"id": "st-7", "code": "completed",      "name": "Завершена",            "color": "#237804", "is_initial": false, "is_terminal": true,  "terminal_outcome": "won",  "stuck_threshold_days": null, "triggers_lms_handover": false, "position": 6},
-    {"id": "st-8", "code": "rejected",       "name": "Отказ",                "color": "#f5222d", "is_initial": false, "is_terminal": true,  "terminal_outcome": "lost", "stuck_threshold_days": null, "triggers_lms_handover": false, "position": 7}
+    {"id": "st-1", "code": "new",            "name": "Новая",                "color": "#585D69", "is_initial": true,  "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 7,    "triggers_lms_handover": false, "position": 0},
+    {"id": "st-2", "code": "first_contact",  "name": "Первичный контакт",    "color": "#1F69FF", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 1},
+    {"id": "st-3", "code": "negotiation",    "name": "Переговоры",           "color": "#148190", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 2},
+    {"id": "st-4", "code": "contract_prep",  "name": "Подготовка договора",  "color": "#9233FF", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 3},
+    {"id": "st-5", "code": "contract_signed","name": "Договор подписан",     "color": "#B1740B", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 14,   "triggers_lms_handover": false, "position": 4},
+    {"id": "st-6", "code": "in_learning",    "name": "Передано в обучение",  "color": "#B81B5E", "is_initial": false, "is_terminal": false, "terminal_outcome": null,   "stuck_threshold_days": 120,  "triggers_lms_handover": true,  "position": 5},
+    {"id": "st-7", "code": "completed",      "name": "Завершена",            "color": "#09AD4D", "is_initial": false, "is_terminal": true,  "terminal_outcome": "won",  "stuck_threshold_days": null, "triggers_lms_handover": false, "position": 6},
+    {"id": "st-8", "code": "rejected",       "name": "Отказ",                "color": "#D9430F", "is_initial": false, "is_terminal": true,  "terminal_outcome": "lost", "stuck_threshold_days": null, "triggers_lms_handover": false, "position": 7}
   ],
   "transitions": [
     {"id": "tr-1", "from_status_id": "st-1", "to_status_id": "st-2", "kind": "forward", "name": "Взять в работу",     "requires_comment": false, "allowed_roles": ["kam","head_kam","admin"]},
@@ -789,13 +789,17 @@ file_type_not_allowed` с причиной («Формат «.exe» не под�
 Ветвления — несколько исходящих транзиций из одного статуса (`kind: forward`); возвраты —
 `kind: return` (в БД — флаг `is_return`; «отказ» — обычный forward в терминальный `lost`-статус с
 `requires_comment: true`). API-поле `kind` — проекция флага, поле `position` — проекция колонки
-`sort_order`, `stuck_threshold_days: null` = наследовать порог workflow. У транзиции может быть
+`sort_order`, `stuck_threshold_days: null` = наследовать порог workflow. Порог этапа — 1–365 дней
+(долгие этапы обучения и сопровождения; в сиде у `in_learning` — 120), порог процесса и общая
+настройка — 1–60 (миграция 0006). Цвета этапов сида — палитра с контрастом текста не ниже 4,5:1.
+Как 14 шагов базового процесса ТЗ ложатся на этапы и механизмы — `docs/design/tz-14-steps.md`.
+У транзиции может быть
 `condition` (JSON-DSL, workflow-engine.md §3.3) — декларативная подсказка ветвления: backend
 аннотирует ею список доступных переходов (`available: true/false` + причина), но при `POST` не
 блокирует — жёстко проверяются только существование ребра, `allowed_roles` и `requires_comment`.
 Стартовый B2C-workflow: `new → consultation → proposal → payment_pending → paid → in_learning →
-completed` + `rejected` + возврат `payment_pending → proposal`; сиды в Alembic-миграции
-(файлы `backend/app/modules/workflow/seeds/{b2b,b2c}.json`).
+completed` + `rejected` + возврат `payment_pending → proposal`; графы засевает демо-сид
+`python -m app.tools.seed` из файлов `backend/app/modules/workflow/seeds/{b2b,b2c}.json`.
 
 ### 5.2. Эндпоинты workflow
 
@@ -991,8 +995,12 @@ sequenceDiagram
 Права: `import:run` (admin, head_kam, kam); `entity_type=dictionary:*` — `import:dictionaries`
 (admin, §10.1). Чужие сессии импорта видны только с `files:others`.
 
-`entity_type`: `universities | university_contacts | contracts | programs | requests_b2b |
-requests_b2c | students | kam_catalog | dictionary:<name>`.
+`entity_type`: `students | universities | requests_b2b | requests_b2c | kam_catalog |
+dictionary:<name>` (справочники: `federal_projects`, `interaction_types`, `products`,
+`universities_registry`, `regions`, `request_sources`, `activity_kinds`, `tags`). Другой тип —
+`400 validation_error` со списком доступных. Договоры, контакты вузов и лицензии грузятся
+составным `kam_catalog`; CHECK `import_session.entity_type` в БД шире (data-model.md §9.1) —
+это допустимые значения колонки, а не набор мастера.
 
 `kam_catalog` — «Таблица КАМов»: составной импорт, одна строка — вуз (название или ИНН), ИТ-продукт
 и номер договора (обязательные), плюс ИТ-направление, вендор, дата подписания и срок лицензии,
@@ -1214,25 +1222,37 @@ sequenceDiagram
 для растра эндпоинта не имеет (зафиксировано как обязанность фронта). Файловый экспорт
 таблиц-основ — через §7.1 (`entity_type: "report:<code>"`).
 
-| Метод/путь | Отчёт | Параметры |
+| Метод/путь | Отчёт | Особые параметры |
 |---|---|---|
-| `GET /reports/funnel` | Воронка по статусам workflow (counts + суммы) | `workflow_type`, `from`, `to`, `kam_id`, `product_id` |
-| `GET /reports/kam-workload` | Нагрузка КАМов: активные заявки/вузы/зависшие по каждому | `workflow_type` |
-| `GET /reports/stuck` | Зависшие заявки (детализация §11) | `workflow_type`, `threshold_days` (override) |
-| `GET /reports/universities-coverage` | Вузы: с договором / в работе / без контакта, по регионам | `region` |
-| `GET /reports/programs-demand` | Программы по приоритету + число заявок | `product_id` |
-| `GET /reports/talent-pool-funnel` | Воронка студентов: кандидат→обучается→выпускник→talent pool | `university_id`, `federal_project` |
-| `GET /reports/dynamics` | Динамика создания/закрытия заявок по неделям | `workflow_type`, `from`, `to` |
-| `GET /reports/dashboard` | Агрегат всех виджетов дашборда одним запросом (KPI + funnel + dynamics + kam-workload + programs-demand + talent-pool-funnel) | все фильтры панели дашборда; `kam_id[]`, `university_id[]`, `product_id[]`, `program_id[]` — повторяемые (IN во всех секциях, не больше 50) |
-| `GET /reports/interactions` | «Взаимодействия за период»: таблица заявок с выбором колонок (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]`, `product_id[]`, `program_id[]`, `stage_id[]` |
-| `GET /reports/kam-activity` | Активность КАМов, детализация: КАМ → вузы → заявки за период (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]` |
-| `GET /reports/kam-activity/summary` | Активность КАМов, сводка для заказчика: KPI с дельтами к прошлому периоду, конверсия по этапам, где застревают (§7.2.1) | те же |
+| `GET /reports/funnel` | «Заявки по текущему этапу»: заявки, созданные в периоде, по этапу, на котором они сейчас (срез, не конверсия); при «Все» — этапы обоих процессов области подряд, терминальные помечены `outcome` | период |
+| `GET /reports/kam-workload` | Нагрузка КАМов на текущую дату: открытые заявки по этапам (порядок `sort_order`, у элемента `{code,count}` и `{key,value}`), вузы в работе, зависшие | период не применяется |
+| `GET /reports/stuck` | Зависшие заявки на текущую дату (детализация §11) | `threshold_days` (1–60, вместо каскада порогов) |
+| `GET /reports/universities-coverage` | Вузы по регионам: с договором / в работе / без контакта | `region`; продукты, программы и направления не применяются |
+| `GET /reports/programs-demand` | Востребованность программ — три показателя: `requests_count` (заявки на обучение, созданные в периоде), `students_studying` (обучающиеся хотя бы день периода), `parallel_streams` (заявки на этапе обучения, без схлопывания по вузам); рядом ручной `priority_rank`; при фичефлаге `auto_ranking` — справочный индекс `computed_demand` 0–100 и `formula`. Сортировка — до ограничения длины (500 строк) | период |
+| `GET /reports/talent-pool-funnel` | Студенты по статусам на текущую дату: кандидат → обучается → выпускник → пул талантов | `federal_project`; период не применяется |
+| `GET /reports/dynamics` | Динамика по неделям (МСК): «Создано», «Завершено» (`won`), «Отказ» (`lost`); без периода — последние 12 недель | период |
+| `GET /reports/dashboard` | Агрегат всех виджетов панели одним запросом (KPI + funnel + dynamics + kam-workload + programs-demand + talent-pool-funnel) с одним набором фильтров | все параметры панели |
+| `GET /reports/interactions` | «Взаимодействия за период»: таблица заявок с выбором колонок (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]`, `direction_id[]`, `product_id[]`, `program_id[]`, `stage_id[]` |
+| `GET /reports/kam-activity` | Активность КАМов, детализация: КАМ → вузы → заявки за период (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]`, `direction_id[]` |
+| `GET /reports/kam-activity/summary` | Активность КАМов, сводка для заказчика: KPI с дельтами к прошлому периоду, вузы по этапам, конверсия по этапам, где застревают, риски (§7.2.1) | те же |
 
-KPI «Завершено за период» дашборда считается по истории: заявки `won`/`lost`, чей последний
-вход в терминальный этап попал в период (не по `deal.updated_at`, который меняется любой
-правкой карточки). Та же семантика, что «Выиграно / Отказ» в §7.2.1 — цифры дашборда и
-отчёта сходятся. КАМы в `kam-workload` и в фильтре КАМа — пользователи с ролью, у которой
-есть право `requests:kam` в процессе (в том числе свои роли).
+**Параметры панели** (первые восемь отчётов, общий разбор `report_params`): `workflow_type`
+(`b2b`/`b2c`; не задан — все процессы области), `from`, `to` (даты МСК, `to` включительно),
+`kam_id`, `university_id`, `product_id`, `program_id`, `direction_id` — повторяемые
+(`kam_id=a&kam_id=b`), условие `IN` во всех секциях, не больше 50 значений; один параметр —
+список из одного id. Плюс `region`, `federal_project`, `threshold_days`. Секция применяет те
+измерения, что к ней относятся (охват вузов — реестр вузов, а не заявок). Ошибки — `400
+validation_error`: неверный id, больше 50 значений (`too_many_values`), начало периода позже
+конца (`period_inverted`).
+
+KPI дашборда (`kpi` в `/reports/dashboard`): «Заявок активных» и «Зависших» — на текущую дату;
+«Завершено» (`won`), «Отказ» (`lost`) и конверсия `won / (won + lost)` — за период `kpi.period`
+(по умолчанию последние 30 дней, `is_default`) с дельтой к прошлому периоду той же длины.
+Момент закрытия берётся по истории — последний вход в терминальный этап, а не
+`deal.updated_at`, который меняется любой правкой карточки; тот же момент у серий
+«Завершено» и «Отказ» динамики (сумма точек за период равна KPI) и у «Выиграно / Отказ» в
+§7.2.1 — цифры дашборда и отчёта сходятся. КАМы в `kam-workload` и в фильтре КАМа —
+пользователи с ролью, у которой есть право `requests:kam` в процессе (в том числе свои роли).
 
 Единый формат ответа отчёта:
 
@@ -1277,6 +1297,7 @@ KPI «Завершено за период» дашборда считается
 | `workflow_type` (`b2b` / `b2c`) | оба процесса области | процесс вне области роли — `403` |
 | `kam_id` (повторяемый) | все КАМы области | не больше 50; при области «только свои» — только свой id |
 | `university_id` (повторяемый) | все вузы | не больше 50 |
+| `direction_id` (повторяемый) | все ИТ-направления | не больше 50; направление заявки — по правилу §3.3a |
 
 Ошибки: `400 validation_error` с `details[].code` — `period_inverted`, `period_too_long`,
 `period_in_future`, `too_many_values`, `invalid_value`; `403 forbidden` — «Процесс B2C недоступен
@@ -1314,7 +1335,7 @@ KPI «Завершено за период» дашборда считается
 {
   "report": "kam-activity",
   "generated_at": "…",
-  "params": {"from": "2026-09-17", "to": "2026-10-16", "workflow_type": null, "kam_id": [], "university_id": []},
+  "params": {"from": "2026-09-17", "to": "2026-10-16", "workflow_type": null, "kam_id": [], "university_id": [], "direction_id": []},
   "period": {"from": "2026-09-17", "to": "2026-10-16", "as_of": "…", "days": 30},
   "scope": {"own_only": false, "own_user_id": null, "workflow_types": ["b2b", "b2c"]},
   "totals": {"kams": …, "universities_touched": …, "coverage_pct": …, "requests_count": …, "new_requests": …, "won": …, "lost": …, "conversion": …, "stuck": …, "interactions": {…}},
@@ -1380,11 +1401,12 @@ KPI «Завершено за период» дашборда считается
 
 **«Взаимодействия за период»** — `GET /reports/interactions` (право `reports:read`, область —
 как у отчёта КАМов, `workflow_type` вне области — `403`). Тот же период и тот же состав заявок,
-что в детализации, плюс фильтры `product_id[]`, `program_id[]`, `stage_id[]` (этап на конец
-периода). Ответ: `columns` (`{key, label, group, default}`), `default_columns`, `stages` (этапы
+что в детализации (включая `direction_id[]`), плюс фильтры `product_id[]`, `program_id[]`,
+`stage_id[]` (этап на конец периода). Ответ: `columns` (`{key, label, group, default}`), `default_columns`, `stages` (этапы
 для фильтра), `totals`, `truncated` (строк больше 5 000 — API отдаёт первые 5 000, выгрузка —
-все), `rows`. Колонки по умолчанию: вуз, ИТ-направление (пока `null`, «—» в UI и файлах — до
-справочника направлений), ИТ-продукт, статус работы с вузом (этап на конец периода),
+все), `rows`. Колонки по умолчанию: вуз, ИТ-направление (по правилу §3.3a: направление программы заявки,
+без него — направления её ИТ-продукта через запятую; нет ни того, ни другого — «—»),
+ИТ-продукт, статус работы с вузом (этап на конец периода),
 ответственный, дата создания, «в статусе с», последний контакт; дополнительно — программа,
 заявка, процесс, дней в статусе, итог в периоде, взаимодействий, сумма. У B2C-строк в колонке
 вуза — псевдоним клиента с пометкой «(B2C)». Ошибки — как у отчёта КАМов (`400` на период и
@@ -1394,7 +1416,7 @@ KPI «Завершено за период» дашборда считается
 (хеш параметров и области), TTL 60 с; недоступный KeyDB — чтение из PG.
 
 **Выгрузка.** `POST /export/jobs` (§7.1) с `entity_type: "report:kam-activity"`; в `filters` —
-те же параметры (`from`, `to`, `workflow_type`, `kam_id`, `university_id`; принимаются и ключи
+те же параметры (`from`, `to`, `workflow_type`, `kam_id`, `university_id`, `direction_id`; принимаются и ключи
 состояния страницы `wf`, `kam`, `university`). Область и `403` — как у API, `columns` не
 применяется, имя файла — `kam-activity_<from>-<to>.<ext>`.
 
@@ -1522,7 +1544,7 @@ B2C-заявка контрагента `counterparty_id`.
 ```
 
 Каналы `email` и `max` — подключаемые заглушки (настройка видна, отправка логируется
-notification-service'ом и видна в его `GET /api/v1/outbox` — этого достаточно по PLAN §3).
+notification-service'ом и видна в его `GET /api/v1/outbox` — этого достаточно по решению кейсодержателя о каналах бота).
 Адресация — по привязанному TG, по email или по роли — определяется настройками получателя
 и матрицей эскалаций (§9.4).
 
@@ -1882,6 +1904,8 @@ workflow.stuck_threshold_days, settings.stuck_threshold_days)` → помети�
 | | `DELETE /contracts/{id}` | `contracts:delete` | |
 | | `DELETE /contracts/{id}/files/{fid}` | `contracts:files_delete` | |
 | Продукты | `GET` / `POST`, `PATCH` / `DELETE` | `products:read` / `products:write` / `products:delete` | |
+| ИТ-направления | `GET /it-directions`, `…/{id}` | вход | |
+| | `POST /it-directions`, `PATCH …/{id}`, `DELETE …/{id}` | `admin:dictionaries` | удаление — деактивация; `409`, пока есть активная программа направления |
 | Программы | `GET` / `POST`, `PATCH` / `PATCH …/priority`, `POST …/priorities/reorder` / `DELETE` | `programs:read` / `programs:write` / `programs:priority` / `programs:delete` | |
 | Студенты | `GET /students`, `…/{id}`, `…/{id}/history` | `students:read` | ПДн всегда маскированы |
 | | `POST /students`, `PATCH …/{id}`, `POST …/{id}/status` | `students:write` | |
@@ -1890,9 +1914,9 @@ workflow.stuck_threshold_days, settings.stuck_threshold_days)` → помети�
 | | `DELETE /students/{id}/files/{fid}` | `students:files_delete` | |
 | | `DELETE /students/{id}` | `students:delete` | |
 | Активности | `GET /activities` / `POST`, `PATCH`, `DELETE` / участники | `activities:read` / `activities:write` / `activities:participants` | |
-| Импорт | `/import/sessions*` | `import:run` | `dictionary:*` — `import:dictionaries`; чужие сессии — `files:others` |
+| Импорт | `/import/sessions*` | `import:run` | `dictionary:*` — `import:dictionaries`; `kam_catalog` — ещё `universities:write` и `contracts:write` (§6.1); чужие сессии — `files:others` |
 | Экспорт | `/export/jobs*` | `export:run` | плюс право чтения сущности (§7.1); чужие выгрузки — `files:others` |
-| Отчёты | `/reports/*`, включая `kam-activity` | `reports:read` | область; «все КАМы» — `reports:all` |
+| Отчёты | `/reports/*`, включая `kam-activity` и `interactions` | `reports:read` | область; «все КАМы» — `reports:all`; процесс вне области и чужой `kam_id` при области «только свои» — `403` |
 | Уведомления | `GET /notifications`, `POST …/read`, `/notifications/settings`, `…/test`, `…/channels`, `…/telegram/*` | `notifications:self` | |
 | | `GET /notifications/rules` | `notification_rules:read` | |
 | | `POST`, `PATCH`, `DELETE /notifications/rules*` | `notification_rules:write` | |
@@ -2347,7 +2371,7 @@ sequenceDiagram
 
 ## 14. Трассировка: решения кейсодержателя → разделы контракта
 
-| Решение кейсодержателя (PLAN.md §2–4) | Где покрыто |
+| Решение кейсодержателя (Q&A 16.09.2026) | Где покрыто |
 |---|---|
 | Два workflow B2B и B2C; в B2C добавляются новые варианты взаимодействия | §4 (`workflow_type`), §5.1, §5.3 (`add_status`/`add_transition`) |
 | Workflow един для всех, версионирование запрещено, изменения сразу для всех | §5.1, §5.4 (применение в одной транзакции, без версий) |
@@ -2374,6 +2398,20 @@ sequenceDiagram
 | Talent pool: карточка, воронка, расписание, импорт списков, файлы в MinIO | §8 |
 | K8s обязателен; CronJob для зависших | §11.1 |
 | Мобильного приложения нет (адаптивный веб-интерфейс от 375 px) / оффлайн не делаем / ЭЦП нет / версионирование wf нет | В контракте отсутствуют соответствующие API (осознанно) |
+
+Требования ТЗ, закрытые доработками октября 2026 (формулировки — своими словами; сводное
+соответствие ТЗ — `docs/evidence/compliance.md`):
+
+| Требование ТЗ | Где покрыто |
+|---|---|
+| Каталог ИТ-направлений; фильтр и колонка по направлению в отчётах и выгрузках | §3.3a (справочник и правило «направление записи»), §3.3–3.4 (`direction_id`), §7.2, §7.2.1 |
+| Отчёт о взаимодействиях с вузами за период по выбранным колонкам с выгрузкой в XLSX и PDF | §7.2.1 («Взаимодействия за период»), §7.1 (`report:interactions`, `columns`) |
+| Фильтрация отчётов по нескольким вузам, направлениям, продуктам и ответственным одновременно | §7.2 (параметры панели — `IN`), §7.2.1, §7.1 (`filters` строкой или списком) |
+| Комментарий пользователя при переходе между статусами | §4.3 (`comment` до 4000 символов на любом переходе) |
+| Файлы в статусах заявки — 10 форматов (PNG, JPEG, PDF, ZIP, GZIP, RAR, DOC, DOCX, XLS, XLSX) | §4.5 (белый список, привязка к строке истории), §4.3 (`file_ids` перехода) |
+| Смена ответственных за вузы — полномочие руководителя | §3.1 (`universities:assign`), §4.6 (передача портфеля), §12.1 |
+| Загрузка таблицы КАМов: вуз, ИТ-продукт, вендор, договор, лицензия, статус передачи, ответственные | §6.1 (`kam_catalog`), §6.4 (`details`), §3.2 (`licenses`) |
+| Подробное описание API в Swagger, коды ошибок | §1.4 (каталог кодов, `ErrorEnvelope` в OpenAPI) |
 
 ---
 
@@ -2412,6 +2450,7 @@ PATCH  /api/v1/programs/{id}/priority      POST   /api/v1/programs/priorities/re
 
 # заявки
 GET    /api/v1/requests                    POST   /api/v1/requests               GET    /api/v1/requests/board
+POST   /api/v1/requests/transfer-portfolio
 GET    /api/v1/requests/{id}               PATCH  /api/v1/requests/{id}          DELETE /api/v1/requests/{id}
 POST   /api/v1/requests/{id}/assign
 GET    /api/v1/requests/{id}/transitions   POST   /api/v1/requests/{id}/transitions
@@ -2439,6 +2478,7 @@ GET    /api/v1/reports/funnel              GET    /api/v1/reports/kam-workload  
 GET    /api/v1/reports/universities-coverage                                     GET    /api/v1/reports/programs-demand
 GET    /api/v1/reports/talent-pool-funnel  GET    /api/v1/reports/dynamics       GET    /api/v1/reports/dashboard
 GET    /api/v1/reports/kam-activity        GET    /api/v1/reports/kam-activity/summary
+GET    /api/v1/reports/interactions
 
 # talent pool
 GET    /api/v1/students                    POST   /api/v1/students
@@ -2507,11 +2547,11 @@ POST   /api/v1/catalog/upsert              POST   /api/v1/catalog/unpublish     
 Открытые допущения (зафиксированы, менять только через обновление этого документа):
 
 1. Системные роли `admin / head_kam / kam / observer` и их наборы прав по умолчанию задаёт код
-   (§12.4), сервисные `svc_notification`, `svc_integration` живут только в Keycloak (PLAN §2
-   ролей не перечисляет). Новые роли создаёт администратор в CRM без программиста (§10.5);
+   (§12.4), сервисные `svc_notification`, `svc_integration` живут только в Keycloak (решения
+   кейсодержателя ролей не перечисляют). Новые роли создаёт администратор в CRM без программиста (§10.5);
    новое право появляется только вместе с кодом его проверки (каталог `rbac_catalog.py`).
 2. LMS-события не двигают заявку по workflow автоматически (§13.3) — переходы делают люди;
    при появлении реального контракта LMS это может стать настраиваемым флагом транзиции.
 3. Системная роль kam читает все объекты своих процессов, пишет свои (§12.2) — следствие
-   «не переусложнять» из PLAN §2. Роль с областью записей `own` видит только заявки, где
+   решения кейсодержателя «не переусложнять». Роль с областью записей `own` видит только заявки, где
    пользователь ответственный.

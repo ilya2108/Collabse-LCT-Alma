@@ -2,8 +2,9 @@
 
 > Документ проектного уровня: по нему пишется весь код инфраструктуры без дополнительных вопросов.
 > Сверен с манифестами `deploy/` и `Makefile`: три overlay (`minikube`, `k3d`, `vm`), компонент
-> `prod-hardening`, три CronJob, прод-контур — §4.4.
-> Источник требований — `PLAN.md` (решения кейсодержателя, Q&A 16.09.2026).
+> `prod-hardening`, три CronJob и приостановленный шаблон `demo-reset`, прод-контур — §4.4.
+> Источник требований — техническое задание кейса и решения кейсодержателя (протокол Q&A
+> 16.09.2026, в репозиторий не входит).
 > Смежные документы: `docs/design/OVERVIEW.md` (сводная архитектура, модули backend),
 > `docs/design/data-model.md` (БД), `docs/design/api-contract.md` (контракты LMS/CMS/notification).
 
@@ -11,11 +12,11 @@
 
 ## 0. TL;DR
 
-- **Kubernetes — витрина решения.** Один kustomize `base` + три overlay: `minikube` и `k3d` — локальный стенд, `vm` — публичный демо-стенд на голом k3s с TLS (§4.3). В кластере: Deployments c HPA и probes, StatefulSet'ы с PVC, Jobs (миграции/сиды/бакеты), три CronJob (зависшие заявки, физическое удаление по 152-ФЗ, очистка ключей идемпотентности), Ingress, NetworkPolicy как иллюстрация закрытого контура.
-- **Модульный монолит + 3 сервиса-сателлита** (notification, lms-stub, cms-stub) — осознанный выбор, допустимый по PLAN.md §2 («допустимы монолит или микросервисы»); обоснование в §1.
+- **Kubernetes — витрина решения.** Один kustomize `base` + три overlay: `minikube` и `k3d` — локальный стенд, `vm` — публичный демо-стенд на голом k3s с TLS (§4.3). В кластере: Deployments c HPA и probes, StatefulSet'ы с PVC, Jobs (миграции/сиды/бакеты), три CronJob (зависшие заявки, физическое удаление по 152-ФЗ, очистка ключей идемпотентности) и приостановленный CronJob-шаблон `demo-reset` (сброс стенда к показу, §3.8), Ingress, NetworkPolicy как иллюстрация закрытого контура.
+- **Модульный монолит + 3 сервиса-сателлита** (notification, lms-stub, cms-stub) — осознанный выбор, допустимый по решениям кейсодержателя («допустимы монолит или микросервисы»); обоснование в §1.
 - **152-ФЗ:** ключ шифрования ПДн живёт только в k8s Secret (`crm-pii`), генерируется при установке, в git не попадает.
 - **Закрытый контур:** default-deny NetworkPolicy, точка-точка backend↔stubs/БД; notification-gateway — единственный pod с egress в интернет, в проде выносится в DMZ (диаграмма в §3.11).
-- **300+ параллельных пользователей:** HPA backend 2→6 реплик + расчёт ёмкости и k6-сценарий (§8) — прямой ответ кейсодержателю.
+- **300+ параллельных пользователей:** HPA backend 2→6 реплик + расчёт ёмкости, бюджет соединений PostgreSQL и k6-сценарий (§8) — прямой ответ кейсодержателю; профили НФТ «50 пользователей» и «10 параллельных отчётов» — §8.2.
 - Локальная разработка — `docker-compose.dev.yml` (`make dev`), стенд — `make k8s-up` (k3d) / `make k8s-up-minikube`, публичный демо-стенд — `make vm-install` + `make vm-deploy`.
 - **nip.io и Let's Encrypt — только для демо-стенда.** В проде — корпоративный DNS, ingress-контроллер контура заказчика и сертификат внутреннего CA; меняется один overlay, код и `base` — нет (§4.4).
 
@@ -37,7 +38,7 @@
 
 ## 1. Обоснование: модульный монолит + Kubernetes (а не микросервисы)
 
-PLAN.md §2 допускает оба варианта: «монолит с feature-флагами» или «микросервисы + minikube/k3s». Мы выбираем **модульный монолит** (пакеты-модули `workflow`, `integrations`, `import_export`, `talent_pool`, `reporting`, `iam` внутри одного FastAPI-приложения) **плюс отдельные сервисы там, где граница реальная**, и при этом деплоим всё в Kubernetes.
+Решения кейсодержателя допускают оба варианта: «монолит с feature-флагами» или «микросервисы + minikube/k3s». Мы выбираем **модульный монолит** (пакеты-модули `workflow`, `integrations`, `import_export`, `talent_pool`, `reporting`, `iam` внутри одного FastAPI-приложения) **плюс отдельные сервисы там, где граница реальная**, и при этом деплоим всё в Kubernetes.
 
 Почему монолит, а не микросервисы:
 
@@ -211,7 +212,8 @@ deploy/k8s/
 │   ├── cronjobs/
 │   │   ├── stuck-check-cronjob.yaml        # зависшие заявки, ежечасно
 │   │   ├── purge-deleted-cronjob.yaml      # физическое удаление soft-deleted (152-ФЗ), ночью
-│   │   └── idempotency-purge-cronjob.yaml  # просроченные ключи Idempotency-Key, ежечасно
+│   │   ├── idempotency-purge-cronjob.yaml  # просроченные ключи Idempotency-Key, ежечасно
+│   │   └── demo-reset-cronjob.yaml         # шаблон Job сброса стенда (suspend: true), §3.8
 │   ├── ingress/
 │   │   └── ingress.yaml
 │   └── networkpolicy/
@@ -281,6 +283,7 @@ resources:
   - cronjobs/stuck-check-cronjob.yaml
   - cronjobs/purge-deleted-cronjob.yaml
   - cronjobs/idempotency-purge-cronjob.yaml
+  - cronjobs/demo-reset-cronjob.yaml   # шаблон Job сброса стенда (suspend)
   - ingress/ingress.yaml
   - networkpolicy/00-default-deny.yaml
   - networkpolicy/10-allow-dns.yaml
@@ -331,7 +334,7 @@ flowchart TB
             KD[("Deployment keydb, emptyDir")]
         end
         JOBS["Jobs: db-migrate, minio-init, seed-demo"]
-        CRON["CronJob: stuck-check, idempotency-purge (hourly),\npurge-deleted (daily)"]
+        CRON["CronJob: stuck-check, idempotency-purge (hourly),\npurge-deleted (daily), demo-reset (suspend)"]
     end
     HOSTS --> ING
     ING --> FE
@@ -473,6 +476,8 @@ spec:
       containers:
         - name: postgres
           image: postgres:16-alpine
+          # бюджет соединений §8.4: 118 < 150 (tests/test_connection_budget.py)
+          args: ["postgres", "-c", "max_connections=150"]
           ports: [{containerPort: 5432, name: pg}]
           env:
             - name: POSTGRES_DB
@@ -592,7 +597,7 @@ spec:
 - `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` разрешает обращения по внутреннему имени;
 - backend конфигурируется **двумя** URL: `KEYCLOAK_INTERNAL_URL=http://keycloak:8080` (откуда качать JWKS) и `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm` (что ожидать в `iss`).
 
-**Импорт realm** — не Job, а штатный `start --import-realm` через обёртку `import-realm.sh` (подставляет client secrets из env в плейсхолдеры `${env.*}`, §5): файл `realm-crm.json` (ConfigMap `keycloak-realm`) содержит realm `crm`, клиентов `crm-frontend` (public, PKCE S256, redirect `http://crm.localhost/*`, `http://crm.local/*`, `http://localhost:5173/*`, `http://localhost/*` и хост VPS `https://crm.<IP>.nip.io/*`; в проде здесь хост корпоративного DNS, §4.4), `crm-notification` (confidential, service accounts, роль `svc_notification` — Telegram-бот), `crm-integration` (confidential, роль `svc_integration` — bearer-альтернатива HMAC для webhook'ов, по умолчанию не используется), `crm-loadtest` (confidential, Direct Access Grants — только для нагрузочного), канонические роли (`admin`, `head_kam`, `kam`, `observer` + сервисные `svc_notification`, `svc_integration` — список зафиксирован в `OVERVIEW.md`) и **преднастроенных пользователей по ролям с паролями** (`admin@demo`, `head@demo`, `kam1@demo`, `kam2@demo`, `observer@demo`) — их логины/пароли публикуются в README (требование PLAN.md §2). Роли из realm — только стартовое назначение при первом входе; дальше роли людей хранятся в БД Альмы. При изменении realm-JSON достаточно `kubectl rollout restart deployment/keycloak`: import идемпотентен (существующий realm не перезатирается, стратегия `IGNORE_EXISTING`).
+**Импорт realm** — не Job, а штатный `start --import-realm` через обёртку `import-realm.sh` (подставляет client secrets из env в плейсхолдеры `${env.*}`, §5): файл `realm-crm.json` (ConfigMap `keycloak-realm`) содержит realm `crm`, клиентов `crm-frontend` (public, PKCE S256, redirect `http://crm.localhost/*`, `http://crm.local/*`, `http://localhost:5173/*`, `http://localhost/*` и хост VPS `https://crm.<IP>.nip.io/*`; в проде здесь хост корпоративного DNS, §4.4), `crm-notification` (confidential, service accounts, роль `svc_notification` — Telegram-бот), `crm-integration` (confidential, роль `svc_integration` — bearer-альтернатива HMAC для webhook'ов, по умолчанию не используется), `crm-loadtest` (confidential, Direct Access Grants — только для нагрузочного), канонические роли (`admin`, `head_kam`, `kam`, `observer` + сервисные `svc_notification`, `svc_integration` — список зафиксирован в `OVERVIEW.md`) и **преднастроенных пользователей по ролям с паролями** (`admin@demo`, `head@demo`, `kam1@demo`, `kam2@demo`, `observer@demo`) — их логины/пароли публикуются в README (решение кейсодержателя). Роли из realm — только стартовое назначение при первом входе; дальше роли людей хранятся в БД Альмы. При изменении realm-JSON достаточно `kubectl rollout restart deployment/keycloak`: import идемпотентен (существующий realm не перезатирается, стратегия `IGNORE_EXISTING`).
 
 ### 3.5 Services
 
@@ -664,7 +669,7 @@ spec:
 
 | ConfigMap | Ключи | Потребители |
 |---|---|---|
-| `crm-config` | `APP_ENV=k8s`; `KEYCLOAK_INTERNAL_URL=http://keycloak:8080`; `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm`; `KEYCLOAK_REALM=crm`; `KEYCLOAK_AUDIENCES=account,crm-frontend,crm-notification,crm-integration,crm-loadtest` (последний — только для демо, его убирает `prod-hardening`, §4.4); `KEYDB_URL=redis://keydb:6379/0`; `S3_ENDPOINT=http://minio:9000`; `S3_BUCKET_FILES=crm-files`; `S3_BUCKET_IMPORTS=crm-imports`; `S3_BUCKET_EXPORTS=crm-exports`; `LMS_BASE_URL=http://lms-stub:8020`; `CMS_BASE_URL=http://cms-stub:8030`; `NOTIFICATION_BASE_URL=http://notification:8010`; `BACKEND_BASE_URL=http://backend:8000`; `STUCK_DEFAULT_DAYS=14` (сидирует `app_setting['stuck_threshold_days_default']`; фактические пороги per-workflow/per-этап хранятся в БД и настраиваются в админке/конструкторе) | backend, notification, jobs |
+| `crm-config` | `APP_ENV=k8s`; `KEYCLOAK_INTERNAL_URL=http://keycloak:8080`; `KEYCLOAK_ISSUER=http://id.crm.local/realms/crm`; `KEYCLOAK_REALM=crm`; `KEYCLOAK_AUDIENCES=account,crm-frontend,crm-notification,crm-integration,crm-loadtest` (последний — только для демо, его убирает `prod-hardening`, §4.4); `KEYDB_URL=redis://keydb:6379/0`; `S3_ENDPOINT=http://minio:9000`; `S3_BUCKET_FILES=crm-files`; `S3_BUCKET_IMPORTS=crm-imports`; `S3_BUCKET_EXPORTS=crm-exports`; `LMS_BASE_URL=http://lms-stub:8020`; `CMS_BASE_URL=http://cms-stub:8030`; `NOTIFICATION_BASE_URL=http://notification:8010`; `BACKEND_BASE_URL=http://backend:8000`; `STUCK_DEFAULT_DAYS=14` (сидирует `app_setting['stuck_threshold_days_default']`; фактические пороги per-workflow/per-этап хранятся в БД и настраиваются в админке/конструкторе); `DB_POOL_SIZE=4`, `DB_MAX_OVERFLOW=2` — пул на процесс uvicorn, бюджет соединений — §8.4 | backend, notification, jobs |
 | `frontend-env` | файл `config.js` (`KEYCLOAK_URL` патчат overlay k3d и vm): `window.__ENV__={KEYCLOAK_URL:"http://id.crm.local",KEYCLOAK_REALM:"crm",KEYCLOAK_CLIENT_ID:"crm-frontend",API_BASE:"/api"}` | frontend (volume) |
 | `postgres-init` | `01-init.sql` | postgres (initdb) |
 | `keycloak-realm` | `crm-realm.json` | keycloak (import) |
@@ -740,7 +745,7 @@ mc admin policy attach local readwrite --user "$S3_ACCESS_KEY" || true
 **Job `seed-demo`** — образ `crm/backend:dev`, `command: ["python", "-m", "app.seed"]`. Сид **идемпотентен** (upsert по натуральным ключам) и наполняет демо-стенд под демо-сценарий:
 
 - workflow B2B и B2C с ветвлениями и возвратами (канонические seed-схемы — `api-contract.md` §5.1, `workflow-engine.md` §4–5);
-- 8–10 вузов, договоры, продукты, заявки на разных этапах;
+- 8 базовых вузов, договоры, продукты, программы, 10 ИТ-направлений с привязкой программ и продуктов, заявки на разных этапах;
 - 3–4 заявки с датой последнего перехода «−20 дней» — **готовая фактура для демо CronJob о зависших**;
 - студенты Talent Pool (ФИО+email шифруются тем же кодом, что в проде — сид ходит через сервисный слой, а не raw SQL);
 - пользователи CRM, связанные по `keycloak_sub` с преднастроенными пользователями realm
@@ -748,8 +753,10 @@ mc admin policy attach local readwrite --user "$S3_ACCESS_KEY" || true
 - каталог прав (сверка с кодом) и демо-роли «КАМ B2B» / «КАМ B2C» с их кодами в переходах
   своего процесса (`seed_demo_roles`);
 - история активности для отчёта «Активность КАМов» (`app.tools.seed_activity`): ещё 18 КАМов
-  с разными профилями, 48 закреплённых вузов, заявки с историей переходов, комментарии,
-  файлы, мероприятия и студенты на программах; план детерминирован (фиксированное зерно).
+  с разными профилями, 48 закреплённых вузов (всего на стенде 56), заявки с историей
+  переходов, договоры подписавших вузов, комментарии, файлы, мероприятия и студенты на
+  программах; план детерминирован (фиксированное зерно);
+- скрытый онбординг демо-учёток (приветствие пройдено, чек-лист свёрнут).
 
 Запускается initContainer-ами `wait-postgres` + `wait-migrations` (как у backend) и после готовности backend не обязателен — пишет напрямую в БД через тот же код приложения.
 
@@ -768,7 +775,7 @@ CronJob (`suspend: true`), сам по расписанию не запуска�
 
 ### 3.9 CronJob: «зависшие» заявки (красивая k8s-стори)
 
-Требование PLAN.md §3: настраиваемый порог 1–2 недели без смены статуса → эскалация ответственному и руководителю КАМа. Архитектура: **CronJob — это только триггер**; вся логика (каскад порогов из БД, выбор адресатов, двухступенчатая эскалация, идемпотентность повторных запусков) — в backend (workflow-engine.md §8), отправка — через notification-service.
+Решение кейсодержателя по Telegram-боту: настраиваемый порог 1–2 недели без смены статуса → эскалация ответственному и руководителю КАМа. Архитектура: **CronJob — это только триггер**; вся логика (каскад порогов из БД, выбор адресатов, двухступенчатая эскалация, идемпотентность повторных запусков) — в backend (workflow-engine.md §8), отправка — через notification-service.
 
 ```yaml
 apiVersion: batch/v1
@@ -867,7 +874,7 @@ spec:
 
 ### 3.11 NetworkPolicy — закрытый контур
 
-Требование PLAN.md: закрытый контур, 152-ФЗ; notification-gateway с выходом в Telegram в целевой архитектуре выносится в DMZ (точка-точка). В прототипе мы **эмулируем контур средствами NetworkPolicy** в одном кластере — и показываем это на диаграмме как прямой ответ кейсодержателю.
+Требование кейсодержателя: закрытый контур, 152-ФЗ; notification-gateway с выходом в Telegram в целевой архитектуре выносится в DMZ (точка-точка). В прототипе мы **эмулируем контур средствами NetworkPolicy** в одном кластере — и показываем это на диаграмме как прямой ответ кейсодержателю.
 
 ```mermaid
 flowchart LR
@@ -901,7 +908,7 @@ flowchart LR
 1. **Default-deny на весь namespace** — любой трафик, не разрешённый явно, запрещён (включая egress в интернет: ядро CRM физически не может выйти наружу).
 2. **Точка-точка**: backend разговаривает только с lms-stub, cms-stub, postgres, minio, keydb, keycloak и notification. Заглушки не видят БД. Frontend (nginx со статикой) вообще ни с кем не разговаривает.
 3. **notification — прообраз DMZ**: единственный под с разрешённым egress в интернет; секрет бота видит только он; в целевой архитектуре переезжает в отдельный сегмент без изменения кода (общение с ядром уже только по HTTP точка-точка).
-4. Runtime-выхода в интернет у ядра нет и по коду (обогащение из открытых источников — только разовая предзагрузка через админку, PLAN.md §2), и по сети (NetworkPolicy) — двойной ответ.
+4. Runtime-выхода в интернет у ядра нет и по коду (обогащение из открытых источников — только разовая предзагрузка через админку — решение кейсодержателя), и по сети (NetworkPolicy) — двойной ответ.
 
 Полные манифесты — два эталонных, остальные по матрице:
 
@@ -1290,12 +1297,14 @@ Realm один на все среды — `deploy/keycloak/realm-crm.json`: в �
 | | `vm-smoke` | только smoke-проверки публичных URL |
 | Данные и демо | `seed` | перезапустить Job `seed-demo` (сид идемпотентен) |
 | | `demo` | `seed` + ручной запуск `stuck-check` + список адресов стенда |
+| | `demo-reset` | сброс стенда к показу (`ANCHOR=ГГГГ-ММ-ДД`): `stuck-check` на паузу, Job из шаблона `cronjob/demo-reset`, пересев одной транзакцией (§3.8); `demo-reset-local` — то же для compose, `vm-demo-reset` — для VPS |
 | | `hosts` | строка для `/etc/hosts` — нужна только для алиасов `*.crm.local` (curl/API, minikube) |
 | | `stuck-check` | compose-паритет CronJob: проверка зависших заявок |
 | | `idempotency-purge` | compose-паритет CronJob: очистка просроченных ключей Idempotency-Key |
 | | `demo-idempotency` | демонстрация Idempotency-Key против стенда (`deploy/scripts/demo-idempotency.sh`, нужен `DEMO_PASSWORD`) |
 | Замеры | `bench-migration` | замер массового переноса заявок на одноразовой БД `crm_bench` (`BENCH_DB`, `BENCH_ARGS`): создаёт базу, если её нет, доводит до head и запускает `python -m app.tools.bench_migration`; база с другим именем — отказ (workflow-engine.md §6.8) |
 | | `load-test` | k6: 300→400 VU против стенда (`deploy/load/k6-script.js`; docker-вариант — `deploy/load/README.md`) |
+| | `load-test-users` / `load-test-reports` / `load-test-nft` | профили НФТ: 50 пользователей под разными учётками, 10 параллельных отчётов с выгрузками, оба сразу (§8.2) |
 | Служебное | `logs` | логи backend в кластере |
 | | `clean` | снести compose-стек (с томами) и кластер; сгенерированные секреты `*.env` не трогает |
 
@@ -1350,7 +1359,7 @@ flowchart TD
 
 ## 8. Нагрузочное тестирование и план масштабирования на 300+
 
-PLAN.md §2: «свой отчёт нагрузочного тестирования (Postman и т.п.) достаточен; показать план масштабирования на 300+ одновременных пользователей». Мы делаем строже, чем Postman.
+Решение кейсодержателя: «свой отчёт нагрузочного тестирования (Postman и т.п.) достаточен; показать план масштабирования на 300+ одновременных пользователей». Мы делаем строже, чем Postman. Нефункциональные требования ТЗ к числу параллельных пользователей и отчётов закрываются отдельными профилями того же сценария (§8.2, «Профили НФТ»).
 
 ### 8.1 Инструмент — k6 (locust — запасной)
 
@@ -1431,7 +1440,20 @@ export default function (data) {
 }
 ```
 
-Токен получается один раз в `setup()` через выделенный клиент `crm-loadtest` (Direct Access Grants включён **только** у него — боевые клиенты чисты); сид гарантирует существование заявок 1..50 и пользователя `kam1`.
+Токен получается один раз в `setup()` через выделенный клиент `crm-loadtest` (Direct Access Grants включён **только** у него — остальные клиенты realm его не разрешают); сид гарантирует существование заявок 1..50 и пользователя `kam1`.
+
+**Профили НФТ.** Тот же скрипт содержит профили под нефункциональные требования ТЗ (выбор —
+переменной окружения, запуск — make-целями; методика — `deploy/load/README.md`, раздел «Методика
+НФТ», и `docs/evidence/load-report.md` §8):
+
+| Профиль | Нагрузка | Пороги в скрипте |
+|---|---|---|
+| `users50` (`make load-test-users`) | 50 VU под 5 учётками разных ролей, путь КАМа, 5 минут | ошибки < 1 %, экраны p95 < 500 мс и p99 < 1 с |
+| `reports` (`make load-test-reports`) | 10 VU строят разные отчёты (10 кодов) со случайными периодом и фильтрами на холодном кэше; каждая третья итерация — выгрузка XLSX/PDF со скачиванием | отчёт p95 < 1 с, выгрузка p95 < 3 с |
+| `nft` (`make load-test-nft`) | оба профиля одновременно | все пороги выше |
+
+Перед прогоном и после него стенд сбрасывается к эталону (`make demo-reset`, §3.8). Прогона
+профилей НФТ ещё не было — результаты добавляются в `load-report.md` по факту.
 
 ### 8.3 Что измеряем
 
@@ -1444,14 +1466,14 @@ export default function (data) {
 | CPU/Mem подов | `kubectl top pods -n crm` (metrics-server) | внутри limits |
 | Соединения PG | `pg_stat_activity` | < 80% max_connections |
 
-Артефакты: `docs/evidence/load-report.md` (методика, результаты прогона, вывод HPA; сырые данные `make load-test` пишет в `docs/defense/load-raw.json` и `load-summary.json`) — «отчёт нагрузочного тестирования» по требованию кейсодержателя. Замер массового переноса заявок при изменении схемы — отдельно, `docs/evidence/migration-benchmark.md` (workflow-engine.md §6.8).
+Артефакты: `docs/evidence/load-report.md` (методика, результаты прогона, вывод HPA; сырые данные `load-raw.json` и `load-summary.json` сохраняются локально и в git не попадают) — «отчёт нагрузочного тестирования» по требованию кейсодержателя. Замер массового переноса заявок при изменении схемы — отдельно, `docs/evidence/migration-benchmark.md` (workflow-engine.md §6.8).
 
 ### 8.4 Расчёт ёмкости (план масштабирования)
 
 - 300 одновременных пользователей × think-time 10–15 с × ~2 запроса на действие ⇒ **~40–60 RPS** пиково.
 - Backend IO-bound (async SQLAlchemy, кэш KeyDB на горячих чтениях): один uvicorn-воркер держит 150–200 RPS на этом профиле; под (2 воркера) ≈ 300 RPS.
 - Базовые **2 реплики = ~600 RPS** — десятикратный запас; HPA до 6 реплик закрывает и 400 VU, и деградацию кэша.
-- Соединения к PG: 6 подов × 2 воркера × (pool_size 10 + overflow 5) = **180 < max_connections 200** — лимит согласован (при выходе за — PgBouncer как следующий шаг, в прототипе не нужен).
+- Соединения к PG (исправлено после прогона 16.09, где пулы упёрлись в лимит СУБД): backend (maxReplicas 6 + maxSurge 2) × 2 воркера × (`DB_POOL_SIZE` 4 + `DB_MAX_OVERFLOW` 2) = 96, Keycloak — 10 (`KC_DB_POOL_MAX_SIZE`), Jobs — 9, резерв суперпользователя — 3; итого **118 < `max_connections=150`** (аргумент StatefulSet postgres). Бюджет сверяет `backend/tests/test_connection_budget.py` по тем же манифестам; на VPS (HPA max 4) — 82. При дальнейшем росте — PgBouncer перед PG, в прототипе не нужен.
 - Statefulness: приложение stateless (сессии — в JWT, файлы — в MinIO, кэш — в KeyDB) ⇒ горизонтальное масштабирование без sticky sessions; балансировка — штатный Service/Ingress.
 - Прод-рост дальше 6 реплик: реплика чтения PG + вынос reporting-модуля первым (границы модулей уже готовы, §1).
 
@@ -1459,14 +1481,14 @@ export default function (data) {
 
 ---
 
-## 9. Матрица соответствия решениям кейсодержателя (PLAN.md §2–3)
+## 9. Матрица соответствия решениям кейсодержателя (Q&A 16.09.2026)
 
 Деплой-релевантные пункты — где закрыты в этом документе; остальные — ссылка на профильный документ.
 
 | Решение кейсодержателя | Где закрыто |
 |---|---|
 | Keycloak в своей инфраструктуре, RBAC, пользователи по ролям в README | §3.4 keycloak (self-hosted, import realm с пользователями), §3.6 (`id.crm.localhost`); роли и права — в БД Альмы, Keycloak — только вход (ux.md §3.1); каталог прав засевает миграция Alembic, поэтому отдельного шага деплоя не нужно |
-| Закрытый контур; безопасность библиотек | §3.11 NetworkPolicy default-deny + диаграмма; пины версий образов; `uv.lock`/`npm ci` — фиксация зависимостей, аудит `pip-audit`/`npm audit` в CI (см. OVERVIEW.md) |
+| Закрытый контур; безопасность библиотек | §3.11 NetworkPolicy default-deny + диаграмма; пины версий образов; `uv.lock`/`npm ci` — фиксация зависимостей, сканирование уязвимостей в CI не подключено (план) |
 | 152-ФЗ: шифрование/псевдонимизация ПДн студентов | §3.7 Secret `crm-pii` (ключ только у backend, генерация при установке, ротация `rekey`); сама схема шифрования — data-model.md |
 | PostgreSQL + MinIO (кейсодержатель одобрил) | §3.4 StatefulSet-ы с PVC; бакеты §3.8 |
 | KeyDB как кэш | §3.4 keydb (Deployment, LRU 192mb, без персистентности — осознанно) |

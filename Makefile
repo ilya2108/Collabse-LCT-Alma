@@ -29,7 +29,7 @@ K6_CHECK      = command -v k6 >/dev/null 2>&1 || \
 .PHONY: help dev dev-env dev-down build-images realm-sync k8s-secrets k8s-up \
         k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo demo-reset \
         demo-reset-local hosts stuck-check idempotency-purge demo-idempotency \
-        bench-migration load-test load-test-users load-test-reports load-test-nft logs \
+        bench-migration docs-arch load-test load-test-users load-test-reports load-test-nft logs \
         clean vm-install vm-deploy vm-smoke vm-demo-reset
 
 help: ## список целей
@@ -185,6 +185,10 @@ bench-migration: ## замер массового переноса заявок 
 	  | (cd backend && $(BACKEND_PY) - "$(BENCH_PG)/postgres" "$(BENCH_DB)")
 	@cd backend && DATABASE_URL="$(BENCH_URL)" $(BACKEND_PY) -m alembic upgrade head
 	@cd backend && DATABASE_URL="$(BENCH_URL)" $(BACKEND_PY) -m app.tools.bench_migration $(BENCH_ARGS)
+
+docs-arch: ## перегенерировать модель Archi и перечень библиотек (docs/architecture)
+	python3 docs/architecture/archi/build_archi.py
+	cd backend && $(BACKEND_PY) -m app.tools.list_libraries
 
 load-test: ## k6: 300→400 VU против стенда (docker-вариант — deploy/load/README.md)
 	@$(K6_CHECK)
