@@ -1,4 +1,4 @@
-"""Все модели SQLAlchemy (31 таблица по data-model.md §13)."""
+"""Все модели SQLAlchemy (32 таблицы по data-model.md §13)."""
 
 from app.models.base import Base
 from app.models.crm import (
@@ -12,6 +12,7 @@ from app.models.crm import (
     UniversityContact,
 )
 from app.models.deal import Deal, DealComment, DealStageHistory
+from app.models.idempotency import IdempotencyKey
 from app.models.service import (
     AppSetting,
     AuditLog,
@@ -72,4 +73,5 @@ __all__ = [
     "Notification",
     "AppSetting",
     "AuditLog",
+    "IdempotencyKey",
 ]

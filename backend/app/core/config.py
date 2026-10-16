@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     # сидирует app_setting['stuck_threshold_days_default']; рабочие пороги живут в БД
     stuck_default_days: int = Field(default=14, ge=1, le=60)
 
+    # --- идемпотентность мутаций (api-contract.md §1.6) -------------------------------
+    idempotency_enabled: bool = True
+    idempotency_ttl_hours: int = Field(default=24, ge=1, le=168)
+    idempotency_lease_seconds: int = Field(default=60, ge=5, le=3600)
+    idempotency_max_request_bytes: int = 60 * 1024 * 1024
+    idempotency_max_response_bytes: int = 1024 * 1024
+
+    # --- роли и права (RBAC) ------------------------------------------------------------
+    # TTL каталога ролей в памяти процесса: сброс идёт по SSE access.changed,
+    # TTL — страховка для других реплик (в том числе при недоступном KeyDB)
+    rbac_catalog_ttl_seconds: int = 5
+
     @model_validator(mode="after")
     def _no_dev_secrets_outside_dev(self) -> Settings:
         """Fail-closed по образцу PiiCrypto: в контуре (k8s/prod) непустые

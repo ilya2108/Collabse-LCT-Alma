@@ -24,6 +24,7 @@ dependencies = [
     "sse-starlette>=2.1",
     "orjson>=3.10",
     "python-multipart>=0.0.9",
+    "fpdf2>=2.8",
 ]
 
 [project.optional-dependencies]
