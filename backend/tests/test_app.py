@@ -47,6 +47,9 @@ EXPECTED_ROUTES = [
     ("GET", "/api/v1/reports/kam-activity/summary"),
     # волна 4: «Взаимодействия за период» (ТЗ ФТ4)
     ("GET", "/api/v1/reports/interactions"),
+    # «Просрочки»
+    ("GET", "/api/v1/reports/sla"),
+    ("GET", "/api/v1/reports/sla/kams/{kam_id}"),
     ("GET", "/api/v1/students"),
     ("POST", "/api/v1/students/{student_id}/reveal"),
     ("GET", "/api/v1/activities"),
@@ -118,6 +121,7 @@ def test_healthz_ok_without_dependencies() -> None:
         ("GET", "/api/v1/admin/roles"),
         ("GET", "/api/v1/reports/kam-activity"),
         ("GET", "/api/v1/reports/interactions"),
+        ("GET", "/api/v1/reports/sla"),
         ("POST", "/api/v1/requests/transfer-portfolio"),
         ("GET", "/api/v1/requests/00000000-0000-0000-0000-000000000000/files"),
     ],

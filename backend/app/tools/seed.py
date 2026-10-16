@@ -14,6 +14,8 @@
   кодом, что в проде), федпроекты и активности с расписанием;
 - историю активности ~20 КАМов для отчёта «Активность КАМов» (`app.tools.seed_activity`:
   комментарии, файлы заявок, прошедшие мероприятия, исторические заявки);
+- просрочки (`app.tools.seed_sla`): сценарные заявки с разной картиной просрочек, передача
+  портфеля, журнал напоминаний о зависших и реакции КАМов на них;
 - скрытый онбординг демо-учёток (приветствие пройдено, чек-лист свёрнут).
 
 Идемпотентность — upsert по натуральным ключам: повторный запуск ничего не дублирует.
@@ -1935,6 +1937,10 @@ async def run_seed(*, reset: bool = False) -> dict[str, Any]:
         activity = await seed_activity_history(
             session, workflows, universities, products, programs, users, now=demo_now()
         )
+        # просрочки: сценарии, передача портфеля, журнал напоминаний, реакции
+        from app.tools.seed_sla import seed_sla_history
+
+        overdue = await seed_sla_history(session, now=demo_now())
         await hide_demo_onboarding(session, users)
         if reset:
             await write_audit(
@@ -1963,6 +1969,10 @@ async def run_seed(*, reset: bool = False) -> dict[str, Any]:
     print(  # noqa: T201
         "seed: активность КАМов — новых заявок {deals}, договоров {contracts}, файлов {files}, "
         "мероприятий {activities}, студентов {students}".format(**activity)
+    )
+    print(  # noqa: T201
+        "seed: просрочки — сценарных заявок {deals}, передач {transfers}, напоминаний "
+        "{reminders}, эскалаций {escalations}, реакций {reactions}".format(**overdue)
     )
     anchor = demo_now().astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
     print(f"seed: демо-данные загружены от {anchor} (повторный запуск безопасен)")  # noqa: T201

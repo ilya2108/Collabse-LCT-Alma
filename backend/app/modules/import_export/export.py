@@ -24,6 +24,9 @@
   (`app.modules.reporting.kam_activity_export`; та же область видимости, что у API);
   `report:interactions` — «Взаимодействия за период» по выбранным колонкам (ТЗ ФТ4)
   в XLSX/PDF/CSV/JSON (`app.modules.reporting.interactions_export`), PDF флагом не закрыт;
+  `report:sla` — «Просрочки» (`app.modules.reporting.sla_export`): XLSX из 8 листов, PDF
+  «Сроки этапов: просрочки» без имён или по КАМам (`options.by_kam`), CSV/JSON —
+  просроченные заявки; PDF флагом не закрыт;
 - фильтры тела (`filters`): id — строкой или списком, список применяется целиком (`IN`),
   а не «первый элемент»; некорректное значение (не UUID, не дата) — 422 с полями,
   а не 500.
@@ -67,6 +70,7 @@ EXPORT_FORMATS = ("xlsx", "csv", "json", "pdf")
 EXPORT_ENTITY_TYPES = ("requests", "universities", "contracts", "programs", "students")
 KAM_ACTIVITY_ENTITY_TYPE = "report:kam-activity"
 INTERACTIONS_ENTITY_TYPE = "report:interactions"
+SLA_ENTITY_TYPE = "report:sla"
 
 # право чтения выгружаемой сущности; отчёты `report:<code>` — reports:read
 _ENTITY_READ_PERMISSIONS = {
@@ -888,6 +892,34 @@ async def create_export_job(
     )
     if read_permission is not None and not user.access.has(read_permission):
         raise forbidden(f"Выгрузка недоступна: нет права «{permission_name(read_permission)}»")
+
+    if entity_type == SLA_ENTITY_TYPE:
+        # «Просрочки»: XLSX — 8 листов, PDF — сводка без имён или по КАМам (options.by_kam),
+        # CSV/JSON — просроченные заявки; область и 403 — как у API; PDF флагом не закрыт
+        from app.modules.reporting.sla_export import build_sla_file
+
+        try:
+            data, rows_count, file_name = await build_sla_file(
+                session, user=user, filters=filters, export_format=export_format, options=options
+            )
+        except ApiError as exc:
+            converted = _as_unprocessable(exc)
+            if converted is exc:
+                raise
+            raise converted from exc
+        except ModuleNotFoundError as exc:
+            if not _is_fpdf_missing(exc):
+                raise
+            raise _pdf_unavailable() from exc
+        return await _store_export(
+            session,
+            user=user,
+            entity_type=entity_type,
+            export_format=export_format,
+            data=data,
+            rows=rows_count,
+            file_name=file_name,
+        )
 
     if entity_type in (KAM_ACTIVITY_ENTITY_TYPE, INTERACTIONS_ENTITY_TYPE):
         # отчёты со своим рендером (PDF флагом report_pdf не закрыт); область и 403 на
