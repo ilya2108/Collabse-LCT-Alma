@@ -22,11 +22,11 @@ import { dayjs, type Dayjs } from '@/shared/lib/dayjs';
  */
 
 export type PeriodPreset = 'week' | 'month' | 'quarter' | 'prev_quarter' | 'custom';
-export type KamActivityTab = 'detail' | 'summary' | 'interactions';
+export type KamActivityTab = 'detail' | 'summary' | 'interactions' | 'sla';
 
 /** Период по умолчанию — «Месяц» (с 1-го числа по сегодня): один для всех вкладок. */
 export const DEFAULT_PRESET: PeriodPreset = 'month';
-const TABS = new Set<string>(['detail', 'summary', 'interactions']);
+const TABS = new Set<string>(['detail', 'summary', 'interactions', 'sla']);
 
 export const PRESETS: Array<{ value: PeriodPreset; label: string }> = [
   { value: 'week', label: 'Неделя' },

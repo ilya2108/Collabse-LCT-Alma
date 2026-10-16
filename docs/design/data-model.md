@@ -1734,6 +1734,8 @@ CREATE TABLE notification (
 CREATE UNIQUE INDEX uq_notification_dedup ON notification (dedup_key) WHERE dedup_key IS NOT NULL;
 CREATE INDEX ix_notification_pending ON notification (created_at) WHERE status = 'pending';
 CREATE INDEX ix_notification_entity  ON notification (entity_type, entity_id, created_at);
+-- 0009: начало журнала напоминаний для вкладки «Просрочки» (min(created_at) по request.stuck)
+CREATE INDEX ix_notification_stuck_created ON notification (created_at) WHERE event_type = 'request.stuck';
 
 CREATE TABLE app_setting (
     key         text PRIMARY KEY,
@@ -2059,6 +2061,7 @@ PostgreSQL 13+. Модели — `backend/app/models/` (регистрация �
 | `0006` files in statuses and kam assign | `file_object.stage_history_id` + частичный индекс и бэкфилл по истории (9.2); право `universities:assign` и его выдача ролям с `crm:write_any` и `admin` (3.3); CHECK порога этапа 1–365 (5.1); даунгрейд приводит пороги больше 60 к 60 |
 | `0007` it directions | таблицы `it_direction`, `product_direction`, колонка `program.direction_id` с индексом (4.5.1); описание права `admin:dictionaries`; новых прав нет |
 | `0008` contract product license | поля лицензии в `contract_product` с CHECK и частичным индексом по дате окончания (4.6); `kam_catalog` в CHECK `import_session.entity_type` (9.1); даунгрейд удаляет сессии `kam_catalog` |
+| `0009` notification stuck index | только индекс: частичный `ix_notification_stuck_created (created_at) WHERE event_type = 'request.stuck'` — начало журнала напоминаний для вкладки «Просрочки» (api-contract.md §7.2.2) |
 
 Обратимость `upgrade head → downgrade base → upgrade head` проверяет `tests/db/test_db_smoke.py`;
 тесты с БД создают схему настоящими миграциями, а не `create_all`.

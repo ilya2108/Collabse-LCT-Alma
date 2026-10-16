@@ -14,7 +14,7 @@ CRM закрытого контура для работы КАМов с вуза
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![MinIO](https://img.shields.io/badge/MinIO-S3-C72E49?logo=minio&logoColor=white)
 ![KeyDB](https://img.shields.io/badge/KeyDB-cache-DC382D?logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1937_pytest_%2B_62_node%3Atest-2E7D32)
+![Tests](https://img.shields.io/badge/tests-2017_pytest_%2B_83_node%3Atest-2E7D32)
 ![k6](https://img.shields.io/badge/k6-300%2B_VU-7D64FF?logo=k6&logoColor=white)
 ![152-ФЗ](https://img.shields.io/badge/152--ФЗ-Fernet_%2B_blind_index-2E7D32)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -93,15 +93,17 @@ gen2 («Атомаро»).
   истории заявки под своим переходом. Принимаются PNG, JPEG, PDF, ZIP, GZIP, RAR,
   DOC, DOCX, XLS и XLSX: сервер сверяет расширение с сигнатурой содержимого.
 - 📈 **Отчёт «Активность КАМов»** — кто, когда, с какими вузами
-  взаимодействовал и на каком этапе остановился. Три вкладки: детализация
+  взаимодействовал и на каком этапе остановился. Четыре вкладки: детализация
   «КАМ → вузы → заявки» для руководителя; сводка для заказчика (KPI с дельтами к
   прошлому периоду, вузы по этапам, конверсия, «где застревают», риски);
   **«Взаимодействия за период»** — таблица с выбором колонок (вуз, ИТ-направление,
   ИТ-продукт, статус работы с вузом, ответственный и др.) и выгрузкой XLSX, PDF и
-  CSV. Фильтры — по нескольким КАМам, вузам, ИТ-направлениям, продуктам и
-  программам. Дни на этапе считаются от входа в этап: перевод схемы их не
-  обнуляет, отчёт совпадает с доской. PDF — серверный (fpdf2, кириллица), XLSX —
-  многолистовой; КАМ видит свою активность.
+  CSV; **«Просрочки»** — заявки на этапе дольше нормы этапа, задержка по корзинам,
+  «Уложились в норму», атрибуция на дату и разбор каждого КАМа. Фильтры — по
+  нескольким КАМам, вузам, ИТ-направлениям, продуктам и программам. Дни на этапе
+  считаются от входа в этап: перевод схемы их не обнуляет, отчёт совпадает с
+  доской. PDF — серверный (fpdf2, кириллица), XLSX — многолистовой; КАМ видит
+  свою активность.
 - 📊 **Аналитика** — ECharts с мультифильтрами (несколько КАМов, вузов,
   продуктов, программ и ИТ-направлений — во всех виджетах сразу), детализацией и
   экспортом: PNG графика с шапкой (период и фильтры), PNG и PDF всей панели,
@@ -582,7 +584,7 @@ Keycloak при импорте realm — в git они не попадают.
   - [migration-benchmark.md](docs/evidence/migration-benchmark.md) — замер массового переноса заявок: 1 000 / 10 000 / 50 000, «до» и «после»
 - **Проектная документация** — [docs/design/](docs/design/):
   - [OVERVIEW.md](docs/design/OVERVIEW.md) — сводная архитектура, C4, трассировка требований
-  - [data-model.md](docs/design/data-model.md) — PostgreSQL: DDL 37 таблиц, миграции 0001–0008, шифрование ПДн, ключи KeyDB
+  - [data-model.md](docs/design/data-model.md) — PostgreSQL: DDL 37 таблиц, миграции 0001–0009, шифрование ПДн, ключи KeyDB
   - [api-contract.md](docs/design/api-contract.md) — REST `/api/v1`, права эндпоинтов, Idempotency-Key, интеграционный конверт
   - [workflow-engine.md](docs/design/workflow-engine.md) — семантика движка процессов: графы, миграции, блокировки, SLA
   - [tz-14-steps.md](docs/design/tz-14-steps.md) — 14 шагов базового процесса: какой шаг каким этапом или механизмом закрыт
@@ -596,29 +598,31 @@ Keycloak при импорте realm — в git они не попадают.
 
 ## Тесты
 
-Всего **1 937 тестов pytest**: 1 819 в backend, 82 в службе уведомлений, 36 в
-заглушках LMS/CMS. Во фронтенде — 62 юнит-теста `node:test` (клиент
-Idempotency-Key, контраст палитры этапов, шаблон импорта), строгая проверка типов,
-проверка встроенной справки и сборка. Числа — по `pytest --collect-only -q` (с
-параметризациями) и `npm run test:unit`, подсчёт 16.10.2026.
+Всего **2 017 тестов pytest**: 1 899 в backend, 82 в службе уведомлений, 36 в
+заглушках LMS/CMS. Во фронтенде — 83 юнит-теста `node:test` (клиент
+Idempotency-Key, контраст палитры этапов, шаблон импорта, форматы вкладки
+«Просрочки»), строгая проверка типов, проверка встроенной справки и сборка.
+Числа — по `pytest --collect-only -q` (с параметризациями) и `npm run test:unit`,
+подсчёт 16.10.2026.
 
-Из тестов backend 1 620 идут без инфраструктуры, а 199 в `backend/tests/db` — на
+Из тестов backend 1 677 идут без инфраструктуры, а 222 в `backend/tests/db` — на
 настоящем PostgreSQL 16 со схемой из миграций Alembic (`upgrade head`, со всеми
 индексами и CHECK). Они проверяют обратимость миграций, каталог ролей против кода,
 перенос 10 000 заявок и откат при сбое посередине переноса, гонки переходов с
 применением схемы на настоящих COMMIT, Idempotency-Key сквозь приложение, отчёт
-«Активность КАМов» и «Взаимодействия за период», фильтры аналитики, файлы в
-статусах и передачу портфеля, ИТ-направления, импорт «Таблицы КАМов» и сброс
-демо-стенда. Модель Archi и перечень библиотек сверяются с кодом: пути API — с
-OpenAPI, права — с каталогом, пакеты — с lock-файлами. Полный прогон backend с
-PostgreSQL — около 80 секунд, 1 819 passed.
+«Активность КАМов», «Взаимодействия за период» и «Просрочки» (с замером на 10 000
+заявок), фильтры аналитики, файлы в статусах и передачу портфеля, ИТ-направления,
+импорт «Таблицы КАМов» и сброс демо-стенда. Модель Archi и перечень библиотек
+сверяются с кодом: пути API — с OpenAPI, права — с каталогом, пакеты — с
+lock-файлами. Полный прогон backend с PostgreSQL — около 100 секунд, 1 898 passed
+и 1 skipped: замер «Просрочек» на 50 000 заявок включается `ALMA_SLA_PERF_50K=1`.
 
 | Сервис | Команды |
 |---|---|
-| backend (1 819) | `cd backend && uv sync --extra dev && uv run pytest` (линт: `uv run ruff check app tests`) |
+| backend (1 899) | `cd backend && uv sync --extra dev && uv run pytest` (линт: `uv run ruff check app tests`) |
 | notification (82) | `cd services/notification && uv sync && uv run pytest` |
 | lms-stub / cms-stub (20 + 16) | `cd services/lms-stub && uv sync --extra dev && uv run pytest` (аналогично cms-stub) |
-| frontend (62) | `cd frontend && npm ci && npm run typecheck && npm run test:unit && npm run docs:help && npm run build` |
+| frontend (83) | `cd frontend && npm ci && npm run typecheck && npm run test:unit && npm run docs:help && npm run build` |
 
 Тесты `tests/db` ждут PostgreSQL на `localhost:5432` (пользователь `crm/crm`) и
 пересоздают схему базы `crm_test` (своя база — `ALMA_TEST_DB=crm_test_<имя>`).
@@ -681,8 +685,8 @@ docker-вариант запуска — `deploy/load/README.md`.
 │   │   │                           #   reporting · notifications · integrations · access · admin
 │   │   └── tools/                  #   наполнение демо-данными, аварийная выдача admin,
 │   │                               #   замер переноса заявок, ротация ключей ПДн, перечень библиотек
-│   ├── alembic/                    #   миграции схемы БД (0001–0008), 37 таблиц
-│   └── tests/                      #   1 819 pytest, из них 199 на PostgreSQL (tests/db)
+│   ├── alembic/                    #   миграции схемы БД (0001–0009), 37 таблиц
+│   └── tests/                      #   1 899 pytest, из них 222 на PostgreSQL (tests/db)
 ├── frontend/                       # интерфейс — React 18 + TypeScript + Vite
 │   ├── src/
 │   │   ├── app/                    #   каркас: маршруты, охрана доступа по правам, меню, макет
@@ -692,7 +696,7 @@ docker-вариант запуска — `deploy/load/README.md`.
 │   │   │                           #   встроенная справка (help/content — текст руководств)
 │   │   ├── features/onboarding/    #   адаптация сотрудников: туры, контрольный список
 │   │   └── shared/                 #   дизайн-система (ui, токены), API-клиент с Idempotency-Key, SSE
-│   └── tests/                      #   62 юнит-теста node:test
+│   └── tests/                      #   83 юнит-теста node:test
 ├── services/
 │   ├── notification/               # служба уведомлений + Telegram-бот (aiogram 3, DMZ), 82 pytest
 │   ├── lms-stub/                   # заглушка LMS: журнал обмена, кнопки тестовых событий

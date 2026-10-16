@@ -239,6 +239,13 @@
       <property key="Права" value="reports:read, reports:all"/>
       <property key="Экран" value="/reports/kam-activity"/>
     </element>
+    <element xsi:type="archimate:ApplicationService" name="Просрочки по срокам этапов" id="alma-svc-sla">
+      <documentation>Вкладка «Просрочки» отчёта «Активность КАМов»: заявки дольше нормы этапа, корзины задержки, атрибуция на дату.</documentation>
+      <property key="Вид" value="Функциональная схема"/>
+      <property key="API" value="/api/v1/reports/sla"/>
+      <property key="Права" value="reports:read, reports:all"/>
+      <property key="Экран" value="/reports/kam-activity"/>
+    </element>
     <element xsi:type="archimate:ApplicationService" name="Экспорт XLSX, CSV, JSON, PDF" id="alma-svc-export">
       <documentation>Выгрузка реестров и отчётов; ПДн маскируются по правам выгружающего.</documentation>
       <property key="Вид" value="Функциональная схема"/>
@@ -791,6 +798,8 @@
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-interactions" source="alma-grp-svc-reports" target="alma-svc-interactions"/>
     <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-interactions--fn-kam-control" source="alma-svc-interactions" target="alma-fn-kam-control"/>
     <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-interactions--fn-analytics" source="alma-svc-interactions" target="alma-fn-analytics"/>
+    <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-sla" source="alma-grp-svc-reports" target="alma-svc-sla"/>
+    <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-sla--fn-kam-control" source="alma-svc-sla" target="alma-fn-kam-control"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-reports--svc-export" source="alma-grp-svc-reports" target="alma-svc-export"/>
     <element xsi:type="archimate:ServingRelationship" id="alma-rel-v-svc-export--fn-analytics" source="alma-svc-export" target="alma-fn-analytics"/>
     <element xsi:type="archimate:AggregationRelationship" id="alma-rel-g-grp-svc-access--svc-login" source="alma-grp-svc-access" target="alma-svc-login"/>
@@ -957,6 +966,7 @@
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-dashboard" source="alma-mod-reporting" target="alma-svc-dashboard"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-kam-activity" source="alma-mod-reporting" target="alma-svc-kam-activity"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-interactions" source="alma-mod-reporting" target="alma-svc-interactions"/>
+    <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-reporting--svc-sla" source="alma-mod-reporting" target="alma-svc-sla"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-import-export--svc-export" source="alma-mod-import-export" target="alma-svc-export"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-mod-auth--svc-login" source="alma-mod-auth" target="alma-svc-login"/>
     <element xsi:type="archimate:RealizationRelationship" id="alma-rel-r-ac-keycloak--svc-login" source="alma-ac-keycloak" target="alma-svc-login"/>
@@ -1080,7 +1090,7 @@
         <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-talent" targetConnections="alma-vf-c-rel-i-role-kam--fn-talent alma-vf-c-rel-i-role-head-kam--fn-talent alma-vf-c-rel-i-role-admin--fn-talent alma-vf-c-rel-v-svc-students--fn-talent alma-vf-c-rel-v-svc-reveal--fn-talent alma-vf-c-rel-v-svc-activities--fn-talent" archimateElement="alma-fn-talent">
           <bounds x="450" y="32" width="190" height="58"/>
         </child>
-        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-kam-control" targetConnections="alma-vf-c-rel-i-role-head-kam--fn-kam-control alma-vf-c-rel-i-role-admin--fn-kam-control alma-vf-c-rel-i-role-observer--fn-kam-control alma-vf-c-rel-v-svc-kam-activity--fn-kam-control alma-vf-c-rel-v-svc-interactions--fn-kam-control alma-vf-c-rel-v-svc-stuck--fn-kam-control" archimateElement="alma-fn-kam-control">
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-kam-control" targetConnections="alma-vf-c-rel-i-role-head-kam--fn-kam-control alma-vf-c-rel-i-role-admin--fn-kam-control alma-vf-c-rel-i-role-observer--fn-kam-control alma-vf-c-rel-v-svc-kam-activity--fn-kam-control alma-vf-c-rel-v-svc-interactions--fn-kam-control alma-vf-c-rel-v-svc-sla--fn-kam-control alma-vf-c-rel-v-svc-stuck--fn-kam-control" archimateElement="alma-fn-kam-control">
           <bounds x="670" y="32" width="190" height="58"/>
         </child>
         <child xsi:type="archimate:DiagramObject" id="alma-vf-fn-analytics" targetConnections="alma-vf-c-rel-i-role-kam--fn-analytics alma-vf-c-rel-i-role-head-kam--fn-analytics alma-vf-c-rel-i-role-admin--fn-analytics alma-vf-c-rel-i-role-observer--fn-analytics alma-vf-c-rel-v-svc-dashboard--fn-analytics alma-vf-c-rel-v-svc-interactions--fn-analytics alma-vf-c-rel-v-svc-export--fn-analytics" archimateElement="alma-fn-analytics">
@@ -1175,7 +1185,7 @@
         </child>
       </child>
       <child xsi:type="archimate:DiagramObject" id="alma-vf-grp-svc-reports" archimateElement="alma-grp-svc-reports">
-        <bounds x="680" y="440" width="210" height="297"/>
+        <bounds x="680" y="440" width="210" height="362"/>
         <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-dashboard" archimateElement="alma-svc-dashboard">
           <bounds x="10" y="32" width="190" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-dashboard--fn-analytics" source="alma-vf-svc-dashboard" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-dashboard--fn-analytics"/>
@@ -1189,8 +1199,12 @@
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-interactions--fn-kam-control" source="alma-vf-svc-interactions" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-interactions--fn-kam-control"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-interactions--fn-analytics" source="alma-vf-svc-interactions" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-interactions--fn-analytics"/>
         </child>
-        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-export" archimateElement="alma-svc-export">
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-sla" archimateElement="alma-svc-sla">
           <bounds x="10" y="227" width="190" height="55"/>
+          <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-sla--fn-kam-control" source="alma-vf-svc-sla" target="alma-vf-fn-kam-control" archimateRelationship="alma-rel-v-svc-sla--fn-kam-control"/>
+        </child>
+        <child xsi:type="archimate:DiagramObject" id="alma-vf-svc-export" archimateElement="alma-svc-export">
+          <bounds x="10" y="292" width="190" height="55"/>
           <sourceConnection xsi:type="archimate:Connection" id="alma-vf-c-rel-v-svc-export--fn-analytics" source="alma-vf-svc-export" target="alma-vf-fn-analytics" archimateRelationship="alma-rel-v-svc-export--fn-analytics"/>
         </child>
       </child>

@@ -604,6 +604,18 @@ SERVICES: tuple[ServiceDef, ...] = (
         "Взаимодействия КАМов с вузами за период по колонкам отчёта, с выгрузкой.",
     ),
     ServiceDef(
+        "sla",
+        "Просрочки по срокам этапов",
+        "reports",
+        ("kam-control",),
+        "/api/v1/reports/sla",
+        "reports:read, reports:all",
+        "/reports/kam-activity",
+        ("mod-reporting",),
+        "Вкладка «Просрочки» отчёта «Активность КАМов»: заявки дольше нормы этапа, "
+        "корзины задержки, атрибуция на дату.",
+    ),
+    ServiceDef(
         "export",
         "Экспорт XLSX, CSV, JSON, PDF",
         "reports",

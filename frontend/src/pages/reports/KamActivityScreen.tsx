@@ -64,14 +64,16 @@ import {
   toInteractionsParams,
   type KamActivityTab,
 } from './kamActivityModel';
+import { SlaTab } from './sla/SlaTab';
 
 /**
  * Отчёт «Активность КАМов» (ux.md §6.4, api-contract.md §7.2.1): какой КАМ за период
  * с какими вузами взаимодействовал и на каких этапах остановились заявки.
- * Три вкладки — «Детализация» (руководителю КАМов), «Сводка для заказчика» и
- * «Взаимодействия за период» (таблица по колонкам ТЗ с выгрузкой XLSX/PDF) — с одной
- * семантикой периода; по умолчанию — «Месяц». Фильтры в URL (ссылку можно переслать),
- * карточка заявки — поверх отчёта (`request=`), выгрузки — серверные, через журнал выгрузок.
+ * Четыре вкладки — «Детализация» (руководителю КАМов), «Сводка для заказчика»,
+ * «Взаимодействия за период» (таблица по колонкам ТЗ с выгрузкой XLSX/PDF) и «Просрочки»
+ * (заявки дольше нормы этапа, api-contract.md §7.2.2) — с одной семантикой периода;
+ * по умолчанию — «Месяц». Фильтры в URL (ссылку можно переслать), карточка заявки —
+ * поверх отчёта (`request=`), выгрузки — серверные, через журнал выгрузок.
  */
 
 const DEFINITIONS: Array<[string, string]> = [
@@ -276,7 +278,13 @@ export function KamActivityScreen(): ReactNode {
     staleTime: 30_000,
     enabled: filters.tab === 'interactions',
   });
-  const reportKeys = [['kam-activity'], ['kam-activity-summary'], ['kam-activity-interactions']];
+  const reportKeys = [
+    ['kam-activity'],
+    ['kam-activity-summary'],
+    ['kam-activity-interactions'],
+    ['sla'],
+    ['sla-kam'],
+  ];
   useSseInvalidate('workflow.changed', reportKeys);
   useSseInvalidate('request.transitioned', reportKeys);
   useSseInvalidate('request.comment_added', reportKeys);
@@ -434,7 +442,7 @@ export function KamActivityScreen(): ReactNode {
             ? 'С какими вузами вы работали за период и на каких этапах остановились заявки'
             : 'Кто из КАМов, когда и с какими вузами работал — и на каких этапах остановились заявки'
         }
-        extra={exportMenu}
+        extra={filters.tab === 'sla' ? undefined : exportMenu}
       />
 
       <KamActivityFilters
@@ -465,6 +473,7 @@ export function KamActivityScreen(): ReactNode {
             <TabsTrigger value="detail">Детализация</TabsTrigger>
             <TabsTrigger value="summary">Сводка для заказчика</TabsTrigger>
             <TabsTrigger value="interactions">Взаимодействия за период</TabsTrigger>
+            <TabsTrigger value="sla">Просрочки</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="detail" className="flex min-w-0 flex-col gap-4">
@@ -491,6 +500,11 @@ export function KamActivityScreen(): ReactNode {
         </TabsContent>
         <TabsContent value="interactions" className="min-w-0">
           {interactionsBody}
+        </TabsContent>
+        <TabsContent value="sla" className="min-w-0">
+          {filters.tab === 'sla' ? (
+            <SlaTab params={params} ownOnly={ownOnly} onOpenRequest={openRequest} />
+          ) : null}
         </TabsContent>
       </Tabs>
 
