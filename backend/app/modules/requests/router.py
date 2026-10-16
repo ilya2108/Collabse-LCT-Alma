@@ -1,4 +1,4 @@
-"""Заявки B2B/B2C: CRUD, канбан, переходы, история, комментарии (api-contract.md §4).
+"""Заявки B2B/B2C: CRUD, канбан, переходы, история, комментарии, файлы (api-contract.md §4).
 
 Ресурс API — /requests, таблица — deal (мост Р-2). Смена этапа — только через
 POST /transitions (инвариант I-4, движок — app.modules.workflow.service).
@@ -14,6 +14,12 @@ POST /transitions (инвариант I-4, движок — app.modules.workflow
 Права и область (F2): эндпоинты закрыты `require_permission`; область роли (процессы
 B2B/B2C, «только свои») фильтрует списки и доску, заявка вне области — 404 (Р-F2-10),
 доска и создание в процессе вне области — 403 с понятным текстом.
+
+Файлы заявки (`entity_type='deal'`, бакет crm-files): список — `requests:read`; загрузка —
+`requests:files` в процессе заявки; удаление — `requests:files` и автор файла либо
+`requests:write_any` в процессе. Скачивание — общий `GET /files/{id}/download` (вне области
+заявки — 404, без `files:business` — 403). Загрузка КАМом — взаимодействие в отчёте
+«Активность КАМов».
 """
 
 from __future__ import annotations
@@ -23,12 +29,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import client_ip, write_audit
 from app.core.cache import get_cache
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.errors import forbidden, not_found, validation_error
 from app.core.events import (
@@ -44,10 +51,12 @@ from app.core.security import require_permission
 from app.core.sse import publish_event
 from app.models.crm import Contract, Counterparty, InteractionType, Product, Program, University
 from app.models.deal import Deal, DealComment, DealStageHistory
-from app.models.service import AuditLog
+from app.models.service import AuditLog, FileObject
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
 from app.modules.crm.deps import check_version
+from app.modules.crm.schemas import FileOut
+from app.modules.files.service import soft_delete_file, store_upload
 from app.modules.requests.schemas import (
     AssignBody,
     CommentCreate,
@@ -849,6 +858,124 @@ async def delete_comment(
     ):
         raise forbidden("Удалить комментарий может только автор или администратор")
     comment.deleted_at = _now()
+    await session.commit()
+    await get_cache().delete(f"deal:{deal.id}")
+    return Response(status_code=204)
+
+
+# --- файлы заявки (MinIO, bucket crm-files; entity_type='deal') ----------------------------
+
+
+def _ensure_files_permission(user: AppUser, deal: Deal) -> None:
+    if not user.access.has("requests:files", deal.pipeline):
+        raise forbidden(
+            f"Файлы заявок процесса {_workflow_label(deal.pipeline)} недоступны вашей роли"
+        )
+
+
+@router.get(
+    "/{request_id}/files",
+    summary="Файлы заявки",
+    dependencies=[_READ],
+)
+async def list_request_files(
+    request_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("requests:read"))],
+) -> dict[str, Any]:
+    deal = await _load_deal(session, request_id, user)
+    files = (
+        (
+            await session.execute(
+                select(FileObject)
+                .where(
+                    FileObject.entity_type == "deal",
+                    FileObject.entity_id == deal.id,
+                    FileObject.deleted_at.is_(None),
+                )
+                .order_by(FileObject.created_at, FileObject.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    items = [FileOut.model_validate(f).model_dump(mode="json") for f in files]
+    return {"items": items, "total": len(items)}
+
+
+@router.post(
+    "/{request_id}/files",
+    status_code=201,
+    summary="Загрузить файл в заявку (до 50 МБ)",
+)
+async def upload_request_file(
+    request_id: uuid.UUID,
+    file: Annotated[UploadFile, File(description="Вложение заявки (до 50 МБ)")],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("requests:files"))],
+    request: Request,
+) -> dict[str, Any]:
+    deal = await _load_deal(session, request_id, user)
+    _ensure_files_permission(user, deal)
+    file_object = await store_upload(
+        session,
+        upload=file,
+        bucket=get_settings().s3_bucket_files,
+        entity_type="deal",
+        entity_id=deal.id,
+        uploaded_by=user.id,
+    )
+    deal.last_activity_at = _now()
+    await write_audit(
+        session,
+        actor_user_id=user.id,
+        action="request.file_uploaded",
+        entity_type="deal",
+        entity_id=deal.id,
+        after={"file_id": str(file_object.id), "file_name": file_object.original_name},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    await get_cache().delete(f"deal:{deal.id}")
+    return FileOut.model_validate(file_object).model_dump(mode="json")
+
+
+@router.delete(
+    "/{request_id}/files/{file_id}",
+    status_code=204,
+    summary="Удалить файл заявки (автор или право править чужие заявки)",
+)
+async def delete_request_file(
+    request_id: uuid.UUID,
+    file_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("requests:files"))],
+    request: Request,
+) -> Response:
+    deal = await _load_deal(session, request_id, user)
+    _ensure_files_permission(user, deal)
+    file_object = await session.get(FileObject, file_id)
+    if (
+        file_object is None
+        or file_object.entity_type != "deal"
+        or file_object.entity_id != deal.id
+        or file_object.deleted_at is not None
+    ):
+        raise not_found("Файл не найден")
+    if file_object.uploaded_by != user.id and not user.access.has(
+        "requests:write_any", deal.pipeline
+    ):
+        raise forbidden("Удалить файл может только его автор или руководитель")
+    soft_delete_file(file_object)  # объект в MinIO чистит POST /internal/jobs/purge-deleted
+    await write_audit(
+        session,
+        actor_user_id=user.id,
+        action="request.file_deleted",
+        entity_type="deal",
+        entity_id=deal.id,
+        before={"file_id": str(file_object.id), "file_name": file_object.original_name},
+        ip=client_ip(request),
+    )
     await session.commit()
     await get_cache().delete(f"deal:{deal.id}")
     return Response(status_code=204)

@@ -12,11 +12,18 @@ COMPOSE       = docker compose -f deploy/compose/docker-compose.dev.yml
 # Публичный VPS (голый k3s): деплой — deploy/scripts/vm-*.sh
 VM_IP        ?= 168.113.158.10
 VM_HOST      ?= root@$(VM_IP)
+# Замер массового переноса заявок (bench-migration): одноразовая БД на локальном PostgreSQL
+BENCH_PG     ?= postgresql://crm:crm@localhost:5432
+BENCH_DB     ?= crm_bench
+BENCH_ARGS   ?=
+BENCH_URL     = $(subst postgresql://,postgresql+asyncpg://,$(BENCH_PG))/$(BENCH_DB)
+# интерпретатор backend (путь — относительно backend/): venv, если он есть
+BACKEND_PY   ?= $(if $(wildcard backend/.venv/bin/python),.venv/bin/python,python3)
 
 .PHONY: help dev dev-env dev-down build-images realm-sync k8s-secrets k8s-up \
         k8s-up-minikube k8s-apply k8s-validate k8s-down seed demo hosts \
-        stuck-check idempotency-purge demo-idempotency load-test logs clean \
-        vm-install vm-deploy vm-smoke
+        stuck-check idempotency-purge demo-idempotency bench-migration load-test logs \
+        clean vm-install vm-deploy vm-smoke
 
 help: ## список целей
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -127,6 +134,33 @@ idempotency-purge: ## compose-паритет k8s CronJob: очистка про�
 demo-idempotency: ## демо Idempotency-Key против стенда (нужен DEMO_PASSWORD; см. скрипт)
 	LOADTEST_CLIENT_SECRET=$${LOADTEST_CLIENT_SECRET:-$$(kubectl -n $(NS) get secret crm-keycloak-clients -o jsonpath='{.data.LOADTEST_CLIENT_SECRET}' | base64 -d)} \
 	./deploy/scripts/demo-idempotency.sh
+
+# Замер переноса заявок при удалении этапа (docs/evidence/migration-benchmark.md):
+# создаёт БД $(BENCH_DB), если её нет, доводит схему до head и запускает
+# `python -m app.tools.bench_migration` — таблицы домена этой базы очищаются.
+# Markdown-таблица — в stdout, ход замера — в stderr:
+#   make -s bench-migration > bench.md
+#   make bench-migration BENCH_ARGS="--sizes 1000,10000,50000 --legacy-max 50000 --json $PWD/bench.json"
+bench-migration: ## замер массового переноса заявок на одноразовой БД crm_bench (BENCH_ARGS=...)
+	@case "$(BENCH_DB)" in \
+	  *_bench|*_test|crm_test*) ;; \
+	  *) echo "bench-migration: нужна одноразовая база *_bench, *_test или crm_test* (BENCH_DB=$(BENCH_DB)) — замер очищает таблицы" >&2; exit 2;; \
+	esac
+	@printf '%s\n' \
+	  'import asyncio, sys' \
+	  'import asyncpg' \
+	  'async def main(dsn, name):' \
+	  '    conn = await asyncpg.connect(dsn, timeout=5)' \
+	  '    try:' \
+	  '        if not await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $$1", name):' \
+	  '            await conn.execute(f"CREATE DATABASE \"{name}\"")' \
+	  '            print(f"bench-migration: создана база {name}", file=sys.stderr)' \
+	  '    finally:' \
+	  '        await conn.close()' \
+	  'asyncio.run(main(sys.argv[1], sys.argv[2]))' \
+	  | (cd backend && $(BACKEND_PY) - "$(BENCH_PG)/postgres" "$(BENCH_DB)")
+	@cd backend && DATABASE_URL="$(BENCH_URL)" $(BACKEND_PY) -m alembic upgrade head
+	@cd backend && DATABASE_URL="$(BENCH_URL)" $(BACKEND_PY) -m app.tools.bench_migration $(BENCH_ARGS)
 
 load-test: ## k6: 300→400 VU против стенда (docker-вариант — deploy/load/README.md)
 	@command -v k6 >/dev/null 2>&1 || \

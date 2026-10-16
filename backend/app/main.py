@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.core.db import dispose_engine
 from app.core.errors import RequestIdMiddleware, register_error_handlers
 from app.core.health import router as health_router
+from app.core.idempotency import IdempotencyMiddleware, install_idempotency_openapi
 from app.core.outbox import outbox_relay_loop
 from app.core.sse import sse_listener_loop
 from app.modules.access.router import router as access_router
@@ -70,6 +71,11 @@ def create_app() -> FastAPI:
         openapi_url="/api/v1/openapi.json",
         redoc_url=None,
     )
+    # порядок важен: последний добавленный middleware — внешний. Idempotency-Key
+    # (api-contract.md §1.6) работает внутри RequestIdMiddleware: видит trace_id,
+    # а ApiError обработчиков приходит к нему уже JSON-ответом. Конфиг, хранилище (PG)
+    # и проверка принципала — лениво из Settings при первом запросе с ключом
+    app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(RequestIdMiddleware)
     register_error_handlers(app)
 
@@ -92,6 +98,8 @@ def create_app() -> FastAPI:
     api.include_router(internal_router)
     app.include_router(api)
 
+    # Swagger: заголовок Idempotency-Key и ответы 409/422 у каждой мутации /api/v1/
+    install_idempotency_openapi(app)
     return app
 
 

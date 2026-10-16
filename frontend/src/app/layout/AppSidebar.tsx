@@ -20,6 +20,7 @@ import {
   Shield,
   SquareKanban,
   Users,
+  UsersRound,
   Workflow,
   type LucideIcon,
 } from 'lucide-react';
@@ -49,6 +50,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
 
 const NAV_ICONS: Record<string, LucideIcon> = {
   dashboard: LayoutDashboard,
+  'kam-activity': UsersRound,
   board: SquareKanban,
   registry: Library,
   'registry-universities': Building2,

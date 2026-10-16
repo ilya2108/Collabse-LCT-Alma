@@ -4,6 +4,8 @@
 - системные настройки — отдельные ключи `app_setting` (сид data-model.md §9.4),
   API-поле `stuck_threshold_days` ↔ ключ `stuck_threshold_days_default`;
   версия документа настроек — ключ `settings_version`;
+- `integration_mode` принимает только `http`: источник истины — outbox PostgreSQL,
+  доставка HTTP + HMAC (api-contract.md §13.7); поле остаётся в GET/PUT для совместимости;
 - фичефлаги — ключ `app_setting['feature_flags']` (реестр и дефолты — в коде);
 - `last_login_at` в списке пользователей — проекция `app_user.updated_at`
   (отдельной колонки в DDL нет; зеркало обновляется при каждом логине);
@@ -24,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.access import ensure_role_catalog, get_catalog_snapshot
 from app.core.config import get_settings
 from app.core.errors import ApiError, not_found, stale_version, validation_error
+from app.core.integration_transport import SUPPORTED_INTEGRATION_TRANSPORTS
 from app.core.pagination import ListParams, apply_sort
 from app.core.security import PEOPLE_ROLES
 from app.models.service import AppSetting, AuditLog
@@ -38,9 +41,11 @@ KNOWN_FLAGS: dict[str, dict[str, Any]] = {
         "default": False,
         "label": "Авторанжирование программ по числу заявок (бонус, read-only)",
     },
+    # закрывает только общую табличную PDF-выгрузку дашборда (`report:<code>`);
+    # PDF отчёта «Активность КАМов» флагом не закрыт (доработка по замечаниям экспертов)
     "report_pdf": {
-        "default": False,
-        "label": "PDF-отчёты (вне MVP — Р-13)",
+        "default": True,
+        "label": "PDF-выгрузка дашборда (общая таблица)",
     },
     "llm_features": {
         "default": False,
@@ -79,8 +84,13 @@ def validate_system_settings(body: dict[str, Any]) -> dict[str, Any]:
     if "stuck_escalate_to_manager" in body:
         result["stuck_escalate_to_manager"] = bool(body["stuck_escalate_to_manager"])
     if "integration_mode" in body:
-        if body["integration_mode"] not in ("http", "stream"):
-            raise validation_error("integration_mode — «http» или «stream»")
+        # единственный транспорт — outbox PostgreSQL → HTTP + HMAC; режим `stream`
+        # (KeyDB Streams) убран осознанно, миграция 0003 привела сохранённое значение к http
+        if body["integration_mode"] not in SUPPORTED_INTEGRATION_TRANSPORTS:
+            raise validation_error(
+                "integration_mode — поддерживается только «http»: события доставляет outbox "
+                "PostgreSQL по HTTP + HMAC (api-contract.md §13.7)"
+            )
         result["integration_mode"] = body["integration_mode"]
     if "file_delivery" in body:
         if body["file_delivery"] not in ("proxy", "presigned"):

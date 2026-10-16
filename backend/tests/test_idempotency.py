@@ -1,5 +1,6 @@
-"""Idempotency-Key: чистые функции, решение по ключу, ASGI-middleware, OpenAPI
-(api-contract.md §1.6). Без БД: хранилище — FakeStore в памяти с той же логикой decide()."""
+"""Idempotency-Key: чистые функции, решение по ключу, ASGI-middleware, OpenAPI,
+подключение в app.main (api-contract.md §1.6). Без БД: хранилище — FakeStore в памяти
+с той же логикой decide()."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from fastapi import FastAPI, Request
 from starlette.datastructures import Headers
 
 from app.core import idempotency as idem
+from app.core import idempotency_store
 from app.core.config import get_settings
 from app.core.errors import (
     REQUEST_ID_HEADER,
@@ -49,6 +51,7 @@ from app.core.idempotency import (
     should_persist,
 )
 from app.core.security import TokenClaims
+from app.main import create_app
 
 # --------------------------------------------------------------------------------------
 # Чистые функции
@@ -792,3 +795,136 @@ class TestOpenApi:
         assert len(self._header(again["paths"]["/api/v1/requests"]["post"])) == 1
         description = again["paths"]["/api/v1/requests"]["post"]["responses"]["422"]
         assert description["description"].count("idempotency_key_reused") == 1
+
+
+# --------------------------------------------------------------------------------------
+# Подключение в app.main: порядок middleware, Swagger, путь запроса без БД
+# --------------------------------------------------------------------------------------
+
+
+def _idempotency_header(operation: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        p
+        for p in operation.get("parameters", [])
+        if p["in"] == "header" and p["name"] == idem.IDEMPOTENCY_HEADER
+    ]
+
+
+@pytest.fixture(scope="module")
+def app_openapi() -> dict[str, Any]:
+    """Схема настоящего приложения (строится ~0,4 с — одна на модуль)."""
+    return create_app().openapi()
+
+
+@pytest.fixture
+def app_store(monkeypatch: pytest.MonkeyPatch) -> FakeStore:
+    """Хранилище по умолчанию настоящего приложения → FakeStore (middleware ищет
+    get_idempotency_store в момент запроса)."""
+    store = FakeStore()
+    monkeypatch.setattr(idempotency_store, "get_idempotency_store", lambda: store)
+    return store
+
+
+def _app_client() -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=create_app(), raise_app_exceptions=False)
+    return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+
+def _internal(key: str) -> dict[str, str]:
+    return {"X-Internal-Token": get_settings().internal_api_token, "Idempotency-Key": key}
+
+
+class TestAppWiring:
+    def test_middleware_order(self) -> None:
+        app = create_app()
+        # последний добавленный — внешний: RequestId снаружи (trace_id есть у ответов
+        # middleware), Idempotency внутри (ApiError обработчиков уже JSON-ответ)
+        assert [m.cls for m in app.user_middleware] == [
+            RequestIdMiddleware,
+            IdempotencyMiddleware,
+        ]
+        # без аргументов: конфиг, хранилище и резолвер — лениво из Settings при запросе
+        assert app.user_middleware[1].args == () and app.user_middleware[1].kwargs == {}
+
+    def test_openapi_header_on_every_mutation(self, app_openapi: dict[str, Any]) -> None:
+        schema = app_openapi
+        covered = 0
+        for path, item in schema["paths"].items():
+            for method, operation in item.items():
+                if method.upper() not in idem.MUTATING_METHODS:
+                    assert not _idempotency_header(operation), (method, path)
+                    continue
+                header = _idempotency_header(operation)
+                if not path.startswith("/api/v1/") or path in idem.DEFAULT_EXCLUDED_PATHS:
+                    assert not header, (method, path)
+                    continue
+                assert len(header) == 1, (method, path)
+                assert header[0]["required"] is False
+                responses = operation["responses"]
+                assert "idempotency_in_progress" in responses["409"]["description"]
+                assert "idempotency_key_reused" in responses["422"]["description"]
+                covered += 1
+        assert covered >= 70  # все мутации API (74 до доработок + F1–F3)
+        for webhook in idem.DEFAULT_EXCLUDED_PATHS:
+            assert webhook in schema["paths"], webhook  # исключение — не опечатка в пути
+
+    def test_openapi_keys_existing_responses(self, app_openapi: dict[str, Any]) -> None:
+        paths = app_openapi["paths"]
+        create = paths["/api/v1/requests"]["post"]
+        assert _idempotency_header(create)
+        assert not _idempotency_header(paths["/api/v1/requests"]["get"])
+        # 422 FastAPI (схема HTTPValidationError) сохраняется, описание дополняется
+        assert "content" in create["responses"]["422"]
+        assert "idempotency_key_reused" in create["responses"]["422"]["description"]
+        purge = paths["/api/v1/internal/jobs/purge-idempotency-keys"]["post"]
+        assert _idempotency_header(purge)
+
+    async def test_openapi_json_served_with_header(self) -> None:
+        async with _app_client() as client:
+            response = await client.get("/api/v1/openapi.json")
+        assert response.status_code == 200
+        post = response.json()["paths"]["/api/v1/requests"]["post"]
+        assert len(_idempotency_header(post)) == 1
+
+    async def test_anonymous_with_key_passes_through(self, app_store: FakeStore) -> None:
+        async with _app_client() as client:
+            response = await client.post(
+                "/api/v1/ui/presets",
+                json={"screen": "s", "name": "n"},
+                headers={"Idempotency-Key": "k-anon"},
+            )
+        assert response.status_code == 401
+        assert _code(response) == "unauthorized"
+        assert app_store.calls == []  # принципала нет — хранилище не трогаем
+
+    async def test_internal_principal_4xx_releases_key(self, app_store: FakeStore) -> None:
+        # настоящий резолвер признал X-Internal-Token (`internal`), обработчику нужен JWT → 401
+        async with _app_client() as client:
+            response = await client.post(
+                "/api/v1/ui/presets", json={"screen": "s", "name": "n"}, headers=_internal("k-4xx")
+            )
+        assert response.status_code == 401
+        assert REPLAYED_HEADER not in response.headers
+        assert app_store.calls == ["claim", "release"]
+        assert app_store.rows == {}
+
+    async def test_invalid_key_400_with_trace_id(self, app_store: FakeStore) -> None:
+        async with _app_client() as client:
+            response = await client.post(
+                "/api/v1/internal/jobs/outbox-relay", headers=_internal("two words")
+            )
+        assert response.status_code == 400
+        assert _code(response) == "idempotency_key_invalid"
+        assert response.json()["error"]["trace_id"] == response.headers[REQUEST_ID_HEADER]
+        assert app_store.calls == []
+
+    async def test_store_failure_fail_closed_503(self, app_store: FakeStore) -> None:
+        app_store.fail_claim = True
+        async with _app_client() as client:
+            response = await client.post(
+                "/api/v1/internal/jobs/purge-idempotency-keys", headers=_internal("k-503")
+            )
+        assert response.status_code == 503
+        assert _code(response) == "service_unavailable"
+        assert response.headers["Retry-After"] == "2"
+        assert response.json()["error"]["trace_id"] == response.headers[REQUEST_ID_HEADER]

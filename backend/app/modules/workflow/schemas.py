@@ -12,12 +12,29 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
+from app.core.rbac_catalog import ROLE_CODE_PATTERN
 from app.modules.workflow.conditions import validate_condition_syntax
 
-# роли, допустимые в allowed_roles ребра (V-7, E_UNKNOWN_ROLE)
-TRANSITION_ROLES = ("admin", "head_kam", "kam")
+# Роли в allowed_roles ребра — коды динамического каталога ролей (app_role). Pydantic
+# проверяет только формат кода; существование роли и право `requests:transition` в процессе
+# проверяет V-7 под эксклюзивным локом воронки (строгий — операции пакета, мягкий — живые
+# строки; graph.check_operation_roles / graph.validate_graph).
+# DEFAULT_TRANSITION_ROLES — системные роли с переходами: значение по умолчанию для чистых
+# проверок без БД (юнит-тесты, совместимость).
+DEFAULT_TRANSITION_ROLES = ("admin", "head_kam", "kam")
+TRANSITION_ROLES = DEFAULT_TRANSITION_ROLES  # совместимость (удаляется в волне 3)
+MAX_ALLOWED_ROLES = 20
+
+RoleCode = Annotated[str, StringConstraints(pattern=ROLE_CODE_PATTERN)]
 
 DANGEROUS_OPS = frozenset({"rename_status", "delete_status"})
 
@@ -33,6 +50,11 @@ def _check_condition(value: dict[str, Any] | None) -> dict[str, Any] | None:
             "{all|any: [...]} или {field, op, value}"
         )
     return value
+
+
+def _dedupe_roles(value: list[str] | None) -> list[str] | None:
+    """Повтор кода роли в allowed_roles ничего не значит — оставляем первое вхождение."""
+    return None if value is None else list(dict.fromkeys(value))
 
 
 # --- операции над этапами ---------------------------------------------------------------
@@ -111,11 +133,12 @@ class TransitionSpec(_Model):
     name: str = Field(min_length=1, max_length=200)
     kind: Literal["forward", "return"] = "forward"
     requires_comment: bool = False
-    allowed_roles: list[Literal["admin", "head_kam", "kam"]] = Field(default_factory=list)
+    allowed_roles: list[RoleCode] = Field(default_factory=list, max_length=MAX_ALLOWED_ROLES)
     condition: dict[str, Any] | None = None
     position: int = Field(default=0, ge=0)
 
     _validate_condition = field_validator("condition")(_check_condition)
+    _dedupe_allowed_roles = field_validator("allowed_roles")(_dedupe_roles)
 
     @model_validator(mode="after")
     def _check_endpoints(self) -> TransitionSpec:
@@ -135,12 +158,13 @@ class TransitionPatch(_Model):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     kind: Literal["forward", "return"] | None = None
     requires_comment: bool | None = None
-    allowed_roles: list[Literal["admin", "head_kam", "kam"]] | None = None
+    allowed_roles: list[RoleCode] | None = Field(default=None, max_length=MAX_ALLOWED_ROLES)
     condition: dict[str, Any] | None = None
     reset_condition: bool = False  # явный сброс condition в NULL
     position: int | None = Field(default=None, ge=0)
 
     _validate_condition = field_validator("condition")(_check_condition)
+    _dedupe_allowed_roles = field_validator("allowed_roles")(_dedupe_roles)
 
 
 class AddTransitionOp(_Model):

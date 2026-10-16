@@ -22,9 +22,13 @@
 - охват — закреплённые вузы с ≥1 взаимодействием в периоде / все закреплённые;
 - мягко удалённый этап показывается под историческим названием с пометкой «(удалён)».
 
-Зона видимости — единственная точка `_resolve_scope` (явный 403 на чужой `kam_id`).
+Зона видимости — область отчётов RBAC `report_scope(viewer)` (`DealScope`: процессы ролей
+с `reports:read`, «по всем КАМам» только с `reports:all`); единственная точка проверки —
+`_resolve_scope` (явный 403 на процесс вне области и на чужой `kam_id`). Основной запрос
+проходит через `scope.apply`, мероприятия и закреплённые вузы (сущности B2B) — только при
+процессе b2b в области. КАМы отчёта — роли с правом `requests:kam` в процессе.
 `_envelope` и TTL кэша — из `service.py` того же пакета (приватные имена внутри пакета
-`reporting`); ключ кэша `dash:kam-activity[-summary]:{sha1(params + scope)}`.
+`reporting`); ключ кэша `dash:kam-activity[-summary]:{sha1(params + scope.cache_key())}`.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.core.access import DealScope, get_catalog_snapshot
 from app.core.cache import get_cache
 from app.core.errors import forbidden, validation_error
 from app.models.crm import Counterparty, Program, University
@@ -57,7 +62,7 @@ from app.modules.reporting.service import (
     FUNNEL_LABELS,
     REPORT_CACHE_TTL_SECONDS,
     _envelope,
-    scope_kam_id,
+    report_scope,
 )
 from app.modules.workflow.service import _global_stuck_default  # каскад порога (Р-5)
 
@@ -300,68 +305,44 @@ def pick_granularity(days: int) -> Granularity:
     return "month"
 
 
-@dataclass(frozen=True)
-class ViewerScope:
-    """Зона видимости отчёта.
-
-    Утиная совместимость с `DealScope` RBAC (F2): `rules`, `apply`, `own_user_id`,
-    `workflow_types`, `cache_key`. Сейчас строится из `scope_kam_id` (kam без «широких»
-    ролей видит только свои заявки); переключение на `report_scope(viewer)` меняет
-    только `viewer_scope`.
-    """
-
-    own_user_id: uuid.UUID | None = None
-    workflow_types: tuple[str, ...] = WORKFLOW_TYPES
-
-    @property
-    def rules(self) -> tuple[tuple[str, uuid.UUID | None], ...]:
-        return tuple((wf, self.own_user_id) for wf in self.workflow_types)
-
-    def apply(self, stmt: sa.Select) -> sa.Select:
-        if set(self.workflow_types) != set(WORKFLOW_TYPES):
-            stmt = stmt.where(Deal.pipeline.in_(self.workflow_types))
-        if self.own_user_id is not None:
-            stmt = stmt.where(Deal.responsible_user_id == self.own_user_id)
-        return stmt
-
-    def cache_key(self) -> str:
-        own = str(self.own_user_id) if self.own_user_id else "*"
-        return "|".join(f"{wf}:{own}" for wf in sorted(self.workflow_types))
+def viewer_scope(viewer: AppUser) -> DealScope:
+    """Область отчёта зрителя — общая область отчётов RBAC (`reporting.service.report_scope`):
+    процессы ролей с `reports:read`; «все КАМы» — при `reports:all` и записях `all`."""
+    return report_scope(viewer)
 
 
-def viewer_scope(viewer: AppUser) -> ViewerScope:
-    return ViewerScope(own_user_id=scope_kam_id(viewer))
+def _rule(scope: DealScope, workflow_type: str) -> tuple[bool, uuid.UUID | None]:
+    """(виден ли процесс, ответственный правила процесса) — для запросов вне `deal`."""
+    return scope.owner_for(workflow_type)
 
 
-def _rule(scope: Any, workflow_type: str) -> tuple[bool, uuid.UUID | None]:
-    """(виден ли процесс, own_user_id правила процесса) — для запросов вне `deal`."""
-    rules = dict(getattr(scope, "rules", ()))
-    if workflow_type not in rules:
-        return False, None
-    return True, rules[workflow_type]
-
-
-def _visible_workflows(params: KamActivityParams, scope: Any) -> tuple[str, ...]:
+def _visible_workflows(params: KamActivityParams, scope: DealScope) -> tuple[str, ...]:
     allowed = tuple(scope.workflow_types)
     if params.workflow_type:
         return tuple(wf for wf in allowed if wf == params.workflow_type)
     return tuple(wf for wf in WORKFLOW_TYPES if wf in allowed)
 
 
-def _is_wide(params: KamActivityParams, scope: Any) -> bool:
+def _is_wide(params: KamActivityParams, scope: DealScope) -> bool:
     """Без фильтров по людям/вузам и без ограничения «только свои»."""
     return (
         not params.kam_ids
         and not params.university_ids
-        and all(own is None for _wf, own in getattr(scope, "rules", ()))
+        and all(own is None for _wf, own in scope.rules)
     )
 
 
 def _resolve_scope(
-    viewer: AppUser, params: KamActivityParams, scope: Any | None = None
+    viewer: AppUser, params: KamActivityParams, scope: DealScope | None = None
 ) -> KamActivityParams:
-    """Единая точка проверки видимости (D10): явный 403 вместо тихого пустого ответа."""
+    """Единая точка проверки видимости (D10): явный 403 вместо тихого пустого ответа.
+
+    Процесс вне области — 403 (правило коллекций RBAC); при области «только свои» чужой
+    `kam_id` — 403, без фильтра подставляется сам зритель.
+    """
     scope = scope if scope is not None else viewer_scope(viewer)
+    if scope.is_empty:
+        raise forbidden("Отчёты недоступны вашей роли")
     if params.workflow_type and params.workflow_type not in tuple(scope.workflow_types):
         label = WORKFLOW_LABELS.get(params.workflow_type, params.workflow_type)
         raise forbidden(f"Процесс {label} недоступен вашей роли")
@@ -374,7 +355,7 @@ def _resolve_scope(
     return params
 
 
-def _cache_key(code: str, params: KamActivityParams, scope: Any) -> str:
+def _cache_key(code: str, params: KamActivityParams, scope: DealScope) -> str:
     digest = hashlib.sha1(
         orjson.dumps(
             {"params": params.as_json(), "scope": scope.cache_key()},
@@ -421,7 +402,9 @@ class DealRow:
     last_contact_at: datetime | None = None
 
 
-def _apply_deal_filters(stmt: sa.Select, params: KamActivityParams, scope: Any) -> sa.Select:
+def _apply_deal_filters(
+    stmt: sa.Select, params: KamActivityParams, scope: DealScope | None
+) -> sa.Select:
     if params.workflow_type:
         stmt = stmt.where(Deal.pipeline == params.workflow_type)
     if params.kam_ids:
@@ -437,7 +420,7 @@ def deal_rows_stmt(
     params: KamActivityParams,
     bounds: PeriodBounds,
     default_days: int,
-    scope: Any | None = None,
+    scope: DealScope | None = None,
 ) -> sa.Select:
     """Заявки, с которыми шла работа или которые висели в периоде (D3), с метриками.
 
@@ -632,7 +615,7 @@ async def fetch_deal_rows(
     session: AsyncSession,
     params: KamActivityParams,
     bounds: PeriodBounds,
-    scope: Any | None = None,
+    scope: DealScope | None = None,
     *,
     default_days: int | None = None,
 ) -> list[DealRow]:
@@ -675,7 +658,7 @@ class PersonRef:
     is_active: bool = True
 
 
-def _b2b_rule(params: KamActivityParams, scope: Any) -> tuple[bool, uuid.UUID | None]:
+def _b2b_rule(params: KamActivityParams, scope: DealScope) -> tuple[bool, uuid.UUID | None]:
     """Мероприятия и закреплённые вузы — сущности B2B: видны, если виден процесс b2b."""
     if params.workflow_type == "b2c":
         return False, None
@@ -724,7 +707,7 @@ def activity_stats_stmt(
 
 
 async def fetch_activity_stats(
-    session: AsyncSession, params: KamActivityParams, bounds: PeriodBounds, scope: Any
+    session: AsyncSession, params: KamActivityParams, bounds: PeriodBounds, scope: DealScope
 ) -> list[ActivityStat]:
     visible, own = _b2b_rule(params, scope)
     if not visible:
@@ -745,7 +728,7 @@ async def fetch_activity_stats(
 
 
 async def fetch_assigned_universities(
-    session: AsyncSession, params: KamActivityParams, scope: Any
+    session: AsyncSession, params: KamActivityParams, scope: DealScope
 ) -> list[UniversityRef]:
     """Закреплённые вузы — знаменатель охвата (D5). Закрепление не историческое."""
     visible, own = _b2b_rule(params, scope)
@@ -770,18 +753,32 @@ async def fetch_assigned_universities(
     ]
 
 
+def kam_role_codes(params: KamActivityParams, scope: DealScope) -> tuple[str, ...]:
+    """Роли КАМов в процессах отчёта: право `requests:kam` в процессе (снимок каталога)."""
+    catalog = get_catalog_snapshot()
+    codes: set[str] = set()
+    for workflow_type in _visible_workflows(params, scope):
+        codes.update(catalog.role_codes_with("requests:kam", workflow_type))
+    return tuple(sorted(codes))
+
+
 async def fetch_people(
-    session: AsyncSession, ids: Iterable[uuid.UUID], params: KamActivityParams, scope: Any
+    session: AsyncSession, ids: Iterable[uuid.UUID], params: KamActivityParams, scope: DealScope
 ) -> dict[uuid.UUID, PersonRef]:
-    """Люди строк отчёта: участники данных + активные КАМы (КАМ без активности виден)."""
+    """Люди строк отчёта: участники данных + активные КАМы (КАМ без активности виден).
+
+    КАМ — пользователь с ролью, у которой есть `requests:kam` в процессе отчёта (каталог
+    ролей RBAC), а не только системная роль `kam`: своя роль «КАМ B2C» тоже в отчёте.
+    """
     wanted = set(ids) | set(params.kam_ids)
     conditions: list[sa.ColumnElement[bool]] = []
     if wanted:
         conditions.append(AppUser.id.in_(wanted))
-    if not params.kam_ids and not params.university_ids:
+    kam_roles = kam_role_codes(params, scope)
+    if not params.kam_ids and not params.university_ids and kam_roles:
         # КАМ без активности тоже строка отчёта; при фильтре по вузам — только участники
-        kam_condition = and_(AppUser.is_active.is_(True), AppUser.roles.any("kam"))
-        own = getattr(scope, "own_user_id", None)
+        kam_condition = and_(AppUser.is_active.is_(True), AppUser.roles.overlap(list(kam_roles)))
+        own = scope.own_user_id
         if own is not None:
             kam_condition = and_(kam_condition, AppUser.id == own)
         conditions.append(kam_condition)
@@ -1585,7 +1582,7 @@ async def fetch_dynamics(
     params: KamActivityParams,
     bounds: PeriodBounds,
     granularity: str,
-    scope: Any,
+    scope: DealScope,
 ) -> dict[str, dict[date, int]]:
     visible, own = _b2b_rule(params, scope)
     stmt = dynamics_stmt(
@@ -1826,7 +1823,7 @@ def build_highlights(summary: Mapping[str, Any]) -> list[str]:
 
 def _talent_condition(
     params: KamActivityParams,
-    scope: Any,
+    scope: DealScope,
     university_ids: set[uuid.UUID],
     counterparty_ids: set[uuid.UUID],
 ) -> sa.ColumnElement[bool] | None:
@@ -1889,7 +1886,7 @@ def _empty_talent() -> dict[str, Any]:
 async def fetch_talent(
     session: AsyncSession,
     params: KamActivityParams,
-    scope: Any,
+    scope: DealScope,
     bounds: PeriodBounds,
     prev: PeriodBounds,
     *,
@@ -2017,7 +2014,7 @@ async def fetch_talent(
 # --------------------------------------------------------------------------------------
 
 
-def _scope_payload(scope: Any) -> dict[str, Any]:
+def _scope_payload(scope: DealScope) -> dict[str, Any]:
     own = scope.own_user_id
     return {
         "own_only": own is not None,
@@ -2027,8 +2024,8 @@ def _scope_payload(scope: Any) -> dict[str, Any]:
 
 
 def _prepare(
-    viewer: AppUser, params: KamActivityParams, scope: Any | None
-) -> tuple[KamActivityParams, Any, PeriodBounds]:
+    viewer: AppUser, params: KamActivityParams, scope: DealScope | None
+) -> tuple[KamActivityParams, DealScope, PeriodBounds]:
     now = _now()
     params = resolve_params(params, today=now.astimezone(REPORT_TZ).date())
     scope = scope if scope is not None else viewer_scope(viewer)
@@ -2040,7 +2037,7 @@ async def _collect(
     session: AsyncSession,
     params: KamActivityParams,
     bounds: PeriodBounds,
-    scope: Any,
+    scope: DealScope,
     *,
     default_days: int,
     assigned: Sequence[UniversityRef] | None = None,
@@ -2065,7 +2062,7 @@ async def kam_activity_detail(
     session: AsyncSession,
     params: KamActivityParams,
     bounds: PeriodBounds,
-    scope: Any,
+    scope: DealScope,
     *,
     force_requests: bool = False,
 ) -> dict[str, Any]:
@@ -2087,7 +2084,7 @@ async def kam_activity_detail(
 
 
 async def kam_activity_summary(
-    session: AsyncSession, params: KamActivityParams, bounds: PeriodBounds, scope: Any
+    session: AsyncSession, params: KamActivityParams, bounds: PeriodBounds, scope: DealScope
 ) -> dict[str, Any]:
     """Тело сводки (без конверта и кэша)."""
     default_days = await _global_stuck_default(session)
@@ -2163,7 +2160,7 @@ async def build_kam_activity(
     viewer: AppUser,
     params: KamActivityParams,
     *,
-    scope: Any | None = None,
+    scope: DealScope | None = None,
     force_requests: bool = False,
 ) -> dict[str, Any]:
     """Детализация (А) с кэшем cache-aside (TTL 60 с). `force_requests` (выгрузка) —
@@ -2188,7 +2185,7 @@ async def build_kam_activity_summary(
     viewer: AppUser,
     params: KamActivityParams,
     *,
-    scope: Any | None = None,
+    scope: DealScope | None = None,
 ) -> dict[str, Any]:
     """Сводка для заказчика (Б) с кэшем cache-aside (TTL 60 с)."""
     params, scope, bounds = _prepare(viewer, params, scope)

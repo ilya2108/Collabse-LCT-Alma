@@ -3,7 +3,9 @@
 Три журнала пишутся В ОДНОЙ транзакции с бизнес-изменением:
 - `notification` — получатели вычисляются backend'ом по `notification_rule`;
   relay доставляет в notification-service `POST :8010/api/v1/send`
-  (X-Internal-Token, идемпотентность по `notification_id`);
+  (X-Internal-Token, идемпотентность по `notification_id`). Получатели правила `role`
+  (`role_rule_members`) — активные пользователи с ролью, видящие заявку события
+  (область B2B/B2C и «только свои», F2);
 - `integration_event` (outbound) — конверт IntegrationEvent; outbox в PG — источник
   истины, доставку выполняет транспорт `IntegrationTransport` (app.core.integration_transport,
   сейчас HTTP + HMAC к заглушкам; корпоративная шина — новая реализация того же протокола),
@@ -30,6 +32,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import ensure_role_catalog
 from app.core.config import get_settings
 from app.core.db import get_session_factory
 from app.core.events import (
@@ -108,6 +111,45 @@ def _address_for(user: AppUser, channel: str) -> str | None:
     return None
 
 
+def sees_deal(user: AppUser, pipeline: str, responsible_user_id: uuid.UUID | None) -> bool:
+    """Заявка процесса `pipeline` с этим ответственным — в области пользователя
+    (`requests:read` в процессе; при «только свои» — он ответственный). Права — по снимку
+    каталога ролей: вызывающий заранее делает `ensure_role_catalog`."""
+    return user.access.deal_scope("requests:read", user.id).allows(pipeline, responsible_user_id)
+
+
+async def role_rule_members(
+    session: AsyncSession,
+    role_code: str,
+    *,
+    pipeline: str | None,
+    responsible_user_id: uuid.UUID | None = None,
+) -> list[AppUser]:
+    """Получатели правила `role`: активные пользователи с ролью `role_code`.
+
+    Процесс события известен (`pipeline`) — только те, у кого `requests:read` в нём
+    (роль «КАМ B2C» не получает уведомления о заявках B2B); известен и ответственный —
+    ещё и с учётом «только свои» (заявка в области получателя, `sees_deal`). Общая функция
+    поштучных уведомлений (`_resolve_rule_users`) и сводок переноса заявок
+    (`modules.workflow.migration.emit_migration_digests`) — их эквивалентность проверяет
+    tests/db/test_workflow_bulk_migration.py::test_digest_equivalent_to_legacy.
+    """
+    if not role_code:
+        return []
+    await ensure_role_catalog(session)
+    rows = await session.execute(
+        select(AppUser)
+        .where(AppUser.roles.any(role_code), AppUser.is_active.is_(True))
+        .order_by(AppUser.id)
+    )
+    users = list(rows.scalars().all())
+    if pipeline is None:
+        return users
+    if responsible_user_id is None:
+        return [user for user in users if user.access.has("requests:read", pipeline)]
+    return [user for user in users if sees_deal(user, pipeline, responsible_user_id)]
+
+
 async def _resolve_rule_users(
     session: AsyncSession, rule: NotificationRule, deal: Deal | None
 ) -> list[AppUser]:
@@ -125,12 +167,12 @@ async def _resolve_rule_users(
         manager = await session.get(AppUser, responsible.manager_id)
         return [manager] if manager else []
     if rule.recipient_type == "role":
-        rows = await session.execute(
-            select(AppUser).where(
-                AppUser.roles.any(rule.recipient_value or ""), AppUser.is_active.is_(True)
-            )
+        return await role_rule_members(
+            session,
+            rule.recipient_value or "",
+            pipeline=deal.pipeline if deal is not None else None,
+            responsible_user_id=deal.responsible_user_id if deal is not None else None,
         )
-        return list(rows.scalars().all())
     if rule.recipient_type == "user":
         try:
             user = await session.get(AppUser, uuid.UUID(rule.recipient_value or ""))
@@ -247,7 +289,8 @@ async def emit_event_notifications(
             rules = [r for r in rules if r.recipient_type in recipient_types]
         if not rules and event_type == EVENT_INTEGRATION_DELIVERY_FAILED:
             # дефолтного правила в сиде нет, но админ обязан узнать о DLQ (§13.7):
-            # фолбэк кодом — всем активным админам в telegram
+            # фолбэк кодом — всем активным админам в telegram (код admin системный и
+            # неизменяемый — Р-F2-9)
             admins = await session.execute(
                 select(AppUser).where(AppUser.roles.any("admin"), AppUser.is_active.is_(True))
             )

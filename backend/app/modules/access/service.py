@@ -11,8 +11,11 @@
 - после commit — сброс кэша каталога и SSE `access.changed` (`after_rbac_change`):
   реплики сбрасывают кэш, фронты перечитывают /auth/me без перезахода.
 
-Порядок локов при удалении роли: RBAC → workflow b2b → workflow b2c (как у применения
-пакетов схемы, которое RBAC-лок не берёт) — дедлок исключён.
+Порядок локов при удалении роли: RBAC → workflow b2b → workflow b2c (эксклюзивные
+advisory-локи воронок из `workflow/locks.py`; применение пакетов схемы RBAC-лок не берёт) —
+дедлок исключён. Применение пакета читает роли свежим SELECT уже под локом воронки, поэтому
+роль не попадёт в переходы в момент удаления. Ожидание локов воронок ограничено
+`APPLY_LOCK_TIMEOUT_MS`: дольше — 409 `workflow_busy` с `Retry-After`, роль не удалена.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ from app.models.access import AppRole, AppRolePermission
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowTransition
 from app.modules.crm.deps import check_version
-from app.modules.workflow.locks import acquire_exclusive_workflow_lock
+from app.modules.workflow.locks import acquire_exclusive_workflow_lock, lock_timeout_as_busy
 
 ADMIN_ROLES_PERMISSION = "admin:roles"
 _PERMISSION_ORDER = {definition.code: index for index, definition in enumerate(PERMISSIONS)}
@@ -561,16 +564,27 @@ async def reset_system_role(
     return serialize_role(role, definition.permissions, counts.get(role.code, 0))
 
 
+ROLE_DELETE_BUSY_MESSAGE = (
+    "Схема процесса сейчас обновляется — роль не удалена, повторите через несколько секунд"
+)
+
+
+async def lock_workflows_for_role_change(session: AsyncSession) -> None:
+    """Эксклюзивные локи всех воронок в фиксированном порядке b2b → b2c (после RBAC-лока):
+    пока роль удаляется, применение пакетов схемы ждёт и не добавит её код в переходы.
+    Таймаут ожидания — 409 `workflow_busy` (`lock_timeout_as_busy`)."""
+    workflow_ids = dict((await session.execute(select(Workflow.code, Workflow.id))).all())
+    async with lock_timeout_as_busy(ROLE_DELETE_BUSY_MESSAGE):
+        for wf in WORKFLOW_TYPES:
+            if wf in workflow_ids:
+                await acquire_exclusive_workflow_lock(session, workflow_ids[wf])
+
+
 async def delete_role(
     session: AsyncSession, *, actor: AppUser, role_id: uuid.UUID, ip: str | None
 ) -> None:
     await acquire_rbac_lock(session)
-    # переходы процессов не должны получить код роли, пока идёт удаление: локи схем
-    # в фиксированном порядке b2b → b2c (после RBAC-лока)
-    workflow_ids = dict((await session.execute(select(Workflow.code, Workflow.id))).all())
-    for wf in WORKFLOW_TYPES:
-        if wf in workflow_ids:
-            await acquire_exclusive_workflow_lock(session, workflow_ids[wf])
+    await lock_workflows_for_role_change(session)
 
     role = await _load_role(session, role_id, lock=True)
     if role.is_system:

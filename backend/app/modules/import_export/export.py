@@ -1,4 +1,4 @@
-"""Экспорт данных и отчётов: XLSX / CSV / JSON (api-contract.md §7.1).
+"""Экспорт данных и отчётов: XLSX / CSV / JSON / PDF (api-contract.md §7.1).
 
 Устойчивость к кодировкам при выгрузке (решение кейсодержателя): CSV — `utf-8`
 с BOM (Excel не ломает кириллицу) либо `cp1251`, разделитель по умолчанию `;`.
@@ -16,7 +16,12 @@
   (CWE-1236: инъекционные значения попадают в БД легитимно через импорт);
 - права (F2): выгрузка сущности требует права её чтения (`<сущность>:read`, отчёты —
   `reports:read`), заявки — в области роли (процессы B2B/B2C, «только свои»);
-  чужие выгрузки видны только с правом `files:others`.
+  чужие выгрузки видны только с правом `files:others`;
+- PDF — только для отчётов: `report:kam-activity` — PDF для заказчика (флагом не закрыт),
+  общая табличная PDF-выгрузка `report:<code>` дашборда — за фичефлагом `report_pdf`;
+  реестрам PDF не нужен (422). `report:kam-activity` в XLSX — многолистовая книга
+  «Сводка / КАМы / Вузы / Заявки / Динамика», в CSV/JSON — лист «Заявки»
+  (`app.modules.reporting.kam_activity_export`; та же область видимости, что у API).
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import asyncio
 import csv
 import io
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import orjson
@@ -35,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.cache import get_cache
 from app.core.config import get_settings
-from app.core.errors import forbidden, not_found, unprocessable, validation_error
+from app.core.errors import ApiError, forbidden, not_found, unprocessable, validation_error
 from app.core.pii import mask_email, mask_full_name, mask_phone
 from app.core.rbac_catalog import permission_name
 from app.models.crm import Contract, Counterparty, Product, Program, University
@@ -49,9 +54,11 @@ from app.modules.reporting.service import REPORT_CODES, ReportParams, build_repo
 
 EXPORT_STATUS_TTL_SECONDS = 30 * 60
 MAX_EXPORT_ROWS = 50_000
+_MSK = timezone(timedelta(hours=3), "MSK")  # подписи PDF — московское время (как отчёты)
 
-EXPORT_FORMATS = ("xlsx", "csv", "json")
+EXPORT_FORMATS = ("xlsx", "csv", "json", "pdf")
 EXPORT_ENTITY_TYPES = ("requests", "universities", "contracts", "programs", "students")
+KAM_ACTIVITY_ENTITY_TYPE = "report:kam-activity"
 
 # право чтения выгружаемой сущности; отчёты `report:<code>` — reports:read
 _ENTITY_READ_PERMISSIONS = {
@@ -66,6 +73,19 @@ _CONTENT_TYPES = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "csv": "text/csv",
     "json": "application/json",
+    "pdf": "application/pdf",
+}
+
+# заголовки табличного PDF `report:<code>` (подписи — как в виджетах дашборда)
+_REPORT_TITLES = {
+    "funnel": "Воронка по этапам",
+    "kam-workload": "Нагрузка по КАМам",
+    "stuck": "Зависшие заявки",
+    "universities-coverage": "Вузы по регионам",
+    "programs-demand": "Топ программ",
+    "talent-pool-funnel": "Пул талантов: воронка студентов",
+    "dynamics": "Динамика заявок",
+    "dashboard": "Аналитика: ключевые показатели",
 }
 
 
@@ -523,12 +543,45 @@ def render_export(
     export_format: str,
     encoding: str = "utf-8",
     delimiter: str = ";",
+    title: str = "Выгрузка",
+    subtitle: str = "",
 ) -> bytes:
     if export_format == "xlsx":
         return _write_xlsx(columns, rows)
     if export_format == "csv":
         return _write_csv(columns, rows, encoding=encoding, delimiter=delimiter)
+    if export_format == "pdf":
+        # ленивый импорт: fpdf нужен только PDF (без библиотеки остальной экспорт работает)
+        from app.modules.reporting.pdf import render_table_pdf
+
+        generated = _now().astimezone(_MSK).strftime("%d.%m.%Y %H:%M МСК")
+        return render_table_pdf(
+            title,
+            columns,
+            [{key: _pdf_cell(row.get(key)) for key, _label in columns} for row in rows],
+            subtitle=subtitle,
+            generated=generated,
+        )
     return _write_json(columns, rows)
+
+
+def _pdf_cell(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.astimezone(_MSK).strftime("%d.%m.%Y %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    return value
+
+
+def _pdf_unavailable() -> ApiError:
+    """fpdf2 не установлен (образ собран без него) — понятная 422 вместо 500."""
+    return unprocessable("PDF-модуль недоступен на сервере — выгрузите XLSX")
+
+
+def _is_fpdf_missing(exc: ModuleNotFoundError) -> bool:
+    return (exc.name or "").split(".", 1)[0] == "fpdf"
 
 
 def _select_columns(
@@ -580,6 +633,60 @@ def _job_status_payload(
     }
 
 
+async def _store_export(
+    session: AsyncSession,
+    *,
+    user: AppUser,
+    entity_type: str,
+    export_format: str,
+    data: bytes,
+    rows: int,
+    file_name: str,
+) -> dict[str, Any]:
+    """Общий хвост выгрузки: файл в бакет выгрузок, аудит, commit, статус в KeyDB.
+
+    Видимость результата (автор или `files:others`) проверяют `get_export_job` и
+    `list_export_jobs` по `uploaded_by`.
+    """
+    file_object = await store_bytes(
+        session,
+        data=data,
+        original_name=file_name,
+        content_type=_CONTENT_TYPES[export_format],
+        bucket=get_settings().s3_bucket_exports,
+        entity_type="report",
+        entity_id=user.id,  # владелец выгрузки; сам файл — самостоятельная сущность
+        uploaded_by=user.id,
+    )
+    await write_audit(
+        session,
+        actor_user_id=user.id,
+        action="student.exported" if entity_type == "students" else "export.created",
+        entity_type="export",
+        entity_id=file_object.id,
+        after={"entity_type": entity_type, "format": export_format, "rows": rows},
+    )
+    await session.commit()
+
+    payload = _job_status_payload(
+        file_object, entity_type=entity_type, export_format=export_format, rows=rows
+    )
+    await get_cache().set_json(f"export:{file_object.id}", payload, EXPORT_STATUS_TTL_SECONDS)
+    return payload
+
+
+async def _report_pdf_enabled(session: AsyncSession) -> bool:
+    from app.modules.admin.service import get_flags
+
+    return bool((await get_flags(session)).get("report_pdf"))
+
+
+def _report_pdf_subtitle(filters: dict[str, Any]) -> str:
+    if not (filters.get("from") or filters.get("to")):
+        return "Период: всё время"
+    return f"Период: {filters.get('from') or '…'} — {filters.get('to') or '…'}"
+
+
 async def create_export_job(
     session: AsyncSession,
     *,
@@ -591,7 +698,7 @@ async def create_export_job(
     options: dict[str, Any],
 ) -> dict[str, Any]:
     if export_format not in EXPORT_FORMATS:
-        raise unprocessable(f"Формат «{export_format}» не поддерживается (xlsx/csv/json)")
+        raise unprocessable(f"Формат «{export_format}» не поддерживается (xlsx/csv/json/pdf)")
     encoding = (options.get("encoding") or "utf-8").lower()
     if encoding not in ("utf-8", "cp1251"):
         raise unprocessable("Кодировка CSV — только utf-8 (с BOM) или cp1251")
@@ -605,6 +712,42 @@ async def create_export_job(
     )
     if read_permission is not None and not user.access.has(read_permission):
         raise forbidden(f"Выгрузка недоступна: нет права «{permission_name(read_permission)}»")
+
+    if entity_type == KAM_ACTIVITY_ENTITY_TYPE:
+        # отчёт «Активность КАМов»: свой рендер (многолистовой XLSX, PDF для заказчика —
+        # флагом report_pdf не закрыт); область и 403 на чужих — как у API отчёта.
+        # Выбор колонок (`columns`) к многолистовому отчёту не применяется.
+        from app.modules.reporting.kam_activity_export import build_kam_activity_file
+
+        try:
+            data, rows_count, file_name = await build_kam_activity_file(
+                session,
+                user=user,
+                filters=filters,
+                export_format=export_format,
+                options=options,
+            )
+        except ModuleNotFoundError as exc:
+            if not _is_fpdf_missing(exc):
+                raise
+            raise _pdf_unavailable() from exc
+        return await _store_export(
+            session,
+            user=user,
+            entity_type=entity_type,
+            export_format=export_format,
+            data=data,
+            rows=rows_count,
+            file_name=file_name,
+        )
+
+    if export_format == "pdf":
+        if not entity_type.startswith("report:"):
+            raise unprocessable("PDF доступен только для отчётов (report:<code>)")
+        if not await _report_pdf_enabled(session):
+            raise unprocessable(
+                "PDF-выгрузка дашборда выключена администратором (фичефлаг report_pdf)"
+            )
 
     if entity_type.startswith("report:"):
         dataset = await _dataset_report(session, entity_type.split(":", 1)[1], filters, user)
@@ -629,41 +772,33 @@ async def create_export_job(
 
     all_columns, rows = dataset
     selected = _select_columns(all_columns, columns)
-    data = await asyncio.to_thread(
-        render_export,
-        selected,
-        rows,
-        export_format=export_format,
-        encoding=encoding,
-        delimiter=delimiter,
-    )
+    code = entity_type.split(":", 1)[1] if entity_type.startswith("report:") else entity_type
+    try:
+        data = await asyncio.to_thread(
+            render_export,
+            selected,
+            rows,
+            export_format=export_format,
+            encoding=encoding,
+            delimiter=delimiter,
+            title=_REPORT_TITLES.get(code, "Выгрузка"),
+            subtitle=_report_pdf_subtitle(filters) if export_format == "pdf" else "",
+        )
+    except ModuleNotFoundError as exc:
+        if not _is_fpdf_missing(exc):
+            raise
+        raise _pdf_unavailable() from exc
     stamp = _now().strftime("%Y%m%d_%H%M%S")
     file_name = f"{entity_type.replace(':', '_')}_{stamp}.{export_format}"
-    file_object = await store_bytes(
+    return await _store_export(
         session,
+        user=user,
+        entity_type=entity_type,
+        export_format=export_format,
         data=data,
-        original_name=file_name,
-        content_type=_CONTENT_TYPES[export_format],
-        bucket=get_settings().s3_bucket_exports,
-        entity_type="report",
-        entity_id=user.id,  # владелец выгрузки; сам файл — самостоятельная сущность
-        uploaded_by=user.id,
+        rows=len(rows),
+        file_name=file_name,
     )
-    await write_audit(
-        session,
-        actor_user_id=user.id,
-        action="student.exported" if entity_type == "students" else "export.created",
-        entity_type="export",
-        entity_id=file_object.id,
-        after={"entity_type": entity_type, "format": export_format, "rows": len(rows)},
-    )
-    await session.commit()
-
-    payload = _job_status_payload(
-        file_object, entity_type=entity_type, export_format=export_format, rows=len(rows)
-    )
-    await get_cache().set_json(f"export:{file_object.id}", payload, EXPORT_STATUS_TTL_SECONDS)
-    return payload
 
 
 async def get_export_job(

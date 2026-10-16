@@ -3,6 +3,15 @@
 Алгоритмы — workflow-engine.md §6 (apply_workflow_change), §8 (check_stuck_requests),
 §9.1 (transition_deal). Все бизнес-изменения пишут историю и outbox-события в одной
 транзакции; инвалидация кэша и SSE — строго после коммита (data-model.md §10).
+
+Права (F2, Р-F2-7, Р-F2-12): переход заявки — `requests:transition` в процессе заявки
+(чужой — ещё `requests:write_any`) и пересечение ролей пользователя, способных выполнять
+переходы в процессе, с `allowed_roles` ребра. Роли в `allowed_roles` — коды динамического
+каталога: при применении пакета наборы ролей читаются свежим SELECT ПОСЛЕ эксклюзивного
+лока воронки (`transition_capable_roles`, `known_role_codes`) — удаление роли
+(`access.service.delete_role`) берёт те же локи, гонки «пакет добавил роль, которую в этот
+момент удалили» нет. Безопасный пакет применяется сразу, если у автора есть
+`workflow:approve` в процессе воронки.
 """
 
 from __future__ import annotations
@@ -20,6 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.core.access import compute_access, static_catalog
 from app.core.audit import write_audit
 from app.core.cache import cache_key, get_cache
 from app.core.errors import ApiError, conflict, not_found, stale_version, unprocessable
@@ -36,7 +46,9 @@ from app.core.outbox import (
     emit_integration_event,
     stuck_dedup_key,
 )
+from app.core.rbac_catalog import WORKFLOW_TYPE_LABELS
 from app.core.sse import publish_event
+from app.models.access import AppRole, AppRolePermission
 from app.models.deal import Deal, DealStageHistory
 from app.models.service import AppSetting, Notification, NotificationRule
 from app.models.talent import Student, StudentStatusHistory
@@ -58,6 +70,7 @@ from app.modules.workflow.graph import (
     OperationUnprocessable,
     WorkflowGraph,
     apply_operations,
+    check_operation_roles,
     default_migration_target,
     validate_graph,
     validate_migration,
@@ -86,21 +99,31 @@ def _now() -> datetime:
 
 
 def user_can_write_deal(
-    roles: list[str] | tuple[str, ...], user_id: uuid.UUID, responsible_user_id: uuid.UUID
+    roles: list[str] | tuple[str, ...],
+    user_id: uuid.UUID,
+    responsible_user_id: uuid.UUID,
+    *,
+    pipeline: str = "b2b",
 ) -> bool:
-    """RBAC §12.2: admin/head_kam пишут любую заявку, kam — только свою."""
-    role_set = set(roles)
-    if role_set & {"admin", "head_kam"}:
-        return True
-    if "kam" in role_set:
-        return user_id == responsible_user_id
-    return False
+    """Совместимость (тесты): правка заявки по кодам СИСТЕМНЫХ ролей — статический
+    каталог, `requests:write` в процессе и (`requests:write_any` или своя заявка).
+    Для 4 базовых ролей — прежнее правило §12.2: admin/head_kam пишут любую, kam — свою.
+    Новый код вызывает `user.access.can_act_on_deal(...)` (свои роли из каталога БД)."""
+    return compute_access(roles, static_catalog()).can_act_on_deal(
+        "requests:write",
+        pipeline=pipeline,
+        responsible_user_id=responsible_user_id,
+        user_id=user_id,
+    )
 
 
 def transition_role_allowed(
-    roles: list[str] | tuple[str, ...], allowed_roles: list[str] | None
+    roles: list[str] | tuple[str, ...] | frozenset[str], allowed_roles: list[str] | None
 ) -> bool:
-    """Пустой allowed_roles = достаточно доступа к заявке; иначе роль ∈ списку."""
+    """Пустой allowed_roles = достаточно доступа к заявке; иначе роль ∈ списку.
+
+    `roles` — роли пользователя, способные выполнять переходы в процессе заявки
+    (`user.access.transition_roles(pipeline)`)."""
     if not allowed_roles:
         return True
     return bool(set(roles) & set(allowed_roles))
@@ -334,9 +357,24 @@ async def transition_deal(
                 }
             ],
         )
-    if not user_can_write_deal(actor.roles, actor.id, deal.responsible_user_id):
+    access = actor.access
+    if not access.has("requests:transition", deal.pipeline):
+        raise ApiError(
+            403,
+            "forbidden",
+            f"Перевод заявок процесса {WORKFLOW_TYPE_LABELS.get(deal.pipeline, deal.pipeline)} "
+            "недоступен вашей роли",
+        )
+    if not access.can_act_on_deal(
+        "requests:transition",
+        pipeline=deal.pipeline,
+        responsible_user_id=deal.responsible_user_id,
+        user_id=actor.id,
+    ):
         raise ApiError(403, "forbidden", "Переход доступен только ответственному по заявке")
-    if not transition_role_allowed(actor.roles, transition.allowed_roles):
+    if not transition_role_allowed(
+        access.transition_roles(deal.pipeline), transition.allowed_roles
+    ):
         raise ApiError(403, "forbidden", "Ваша роль не может выполнить этот переход")
     if not comment_satisfies(transition.requires_comment, comment):
         message = (
@@ -577,18 +615,79 @@ def _invalid_migration_error(errors: list[dict[str, Any]]) -> ApiError:
     )
 
 
+async def transition_capable_roles(session: AsyncSession, workflow_code: str) -> frozenset[str]:
+    """Коды ролей, которые могут выполнять переходы в процессе: право
+    `requests:transition` и процесс в области роли (строгий V-7).
+
+    Свежий SELECT, а не кэш каталога процесса: `_execute_plan` вызывает его под
+    эксклюзивным локом воронки, и роль, удалённая параллельно, уже не попадёт в переходы.
+    """
+    rows = await session.execute(
+        select(AppRole.code)
+        .join(AppRolePermission, AppRolePermission.role_id == AppRole.id)
+        .where(
+            AppRolePermission.permission_code == "requests:transition",
+            AppRole.workflow_types.any(workflow_code),
+        )
+    )
+    return frozenset(rows.scalars().all())
+
+
+async def known_role_codes(session: AsyncSession) -> frozenset[str]:
+    """Коды всех ролей каталога (мягкий V-7 живых переходов) — свежим SELECT."""
+    return frozenset((await session.execute(select(AppRole.code))).scalars().all())
+
+
+async def _workflow_code(session: AsyncSession, workflow_id: uuid.UUID) -> str:
+    code = (
+        await session.execute(select(Workflow.code).where(Workflow.id == workflow_id))
+    ).scalar_one_or_none()
+    if code is None:
+        raise not_found("Воронка не найдена")
+    return code
+
+
+async def _validate_target(
+    session: AsyncSession,
+    *,
+    workflow_code: str,
+    live: WorkflowGraph,
+    target: WorkflowGraph,
+    operations: list[Operation],
+) -> list[dict[str, Any]]:
+    """V-1..V-7 целевой схемы: строгий V-7 для ролей, которые добавляет пакет, и мягкий —
+    для всех переходов (роль, уже отклонённая строгой проверкой, не дублируется)."""
+    capable = await transition_capable_roles(session, workflow_code)
+    known = await known_role_codes(session)
+    role_errors = check_operation_roles(operations, capable, live=live)
+    flagged = {error["role"] for error in role_errors}
+    return role_errors + validate_graph(target, known_roles=known | flagged)
+
+
 async def compute_impact(
-    session: AsyncSession, live: WorkflowGraph, operations: list[Operation]
+    session: AsyncSession,
+    live: WorkflowGraph,
+    operations: list[Operation],
+    *,
+    workflow_code: str | None = None,
 ) -> tuple[dict[str, Any], ApplyPlan]:
-    """Валидация пакета против живой схемы + расчёт impact (api-contract.md §5.3)."""
+    """Валидация пакета против живой схемы + расчёт impact (api-contract.md §5.3).
+
+    Роли переходов — строгий и мягкий V-7 по текущему каталогу (без лока: предпросмотр и
+    создание пакета; окончательная проверка — в `_execute_plan` под локом воронки).
+    """
     try:
         target, plan = apply_operations(live, operations)
     except (OperationConflict, OperationUnprocessable) as exc:
         raise _wrap_graph_errors(exc) from exc
+    if workflow_code is None:
+        workflow_code = await _workflow_code(session, live.workflow_id)
     counts = await _open_deal_counts(
         session, live.workflow_id, [i.stage_id for i in plan.deleted_stages]
     )
-    graph_errors = validate_graph(target)
+    graph_errors = await _validate_target(
+        session, workflow_code=workflow_code, live=live, target=target, operations=operations
+    )
     if graph_errors:
         raise _invalid_schema_error(graph_errors)
     migration_errors = validate_migration(live, plan, counts)
@@ -653,16 +752,21 @@ async def _execute_plan(
     counts = await _open_deal_counts(
         session, wcr.workflow_id, [i.stage_id for i in plan.deleted_stages]
     )
-    # Точка расширения: проверки пакета против свежих данных под эксклюзивным локом
-    # (например, известность ролей переходов) — здесь, до validate_graph.
-    graph_errors = validate_graph(target)
+    workflow = await session.get(Workflow, wcr.workflow_id)
+    if workflow is None:
+        raise not_found("Воронка не найдена")
+    # Роли переходов — свежим SELECT уже ПОД эксклюзивным локом воронки, а не из кэша
+    # каталога: роль, удалённая до захвата лока, даёт E_UNKNOWN_ROLE; удаление роли после
+    # COMMIT применения увидит её в переходах и вернёт 409 role_in_use (те же локи)
+    graph_errors = await _validate_target(
+        session, workflow_code=workflow.code, live=live, target=target, operations=operations
+    )
     if graph_errors:
         raise _invalid_schema_error(graph_errors)
     migration_errors = validate_migration(live, plan, counts)
     if migration_errors:
         raise _invalid_migration_error(migration_errors)
 
-    workflow = await session.get(Workflow, wcr.workflow_id)
     stage_rows: dict[uuid.UUID, WorkflowStage] = {
         row.id: row
         for row in (
@@ -757,13 +861,11 @@ async def _execute_plan(
 
     # 5. сводные уведомления — одно на получателя вместо одного на заявку (§6.3 п.4);
     #    в этой же транзакции: нет переноса — нет уведомления
-    digests = 0
-    if workflow is not None:
-        digests = await migration.emit_migration_digests(
-            session, outcome=outcome, workflow=workflow, change_id=wcr.id
-        )
-        workflow.updated_by = actor.id
-        workflow.updated_at = _now()
+    digests = await migration.emit_migration_digests(
+        session, outcome=outcome, workflow=workflow, change_id=wcr.id
+    )
+    workflow.updated_by = actor.id
+    workflow.updated_at = _now()
 
     wcr.status = "applied"
     wcr.decided_by = actor.id
@@ -837,9 +939,10 @@ async def create_change(
 ) -> WorkflowChangeRequest:
     """Создание пакета операций (api-contract.md §5.3).
 
-    Классификация: пакет с опасной операцией — всегда pending (даже от admin,
-    двухшаговое подтверждение); безопасный от admin — применяется сразу;
-    от head_kam — pending на апрув.
+    Классификация: пакет с опасной операцией — всегда pending (даже от автора с правом
+    согласования, двухшаговое подтверждение); безопасный от автора с `workflow:approve`
+    в процессе воронки — применяется сразу; без этого права — pending на согласование.
+    Право `workflow:change` в процессе проверяет обработчик запроса.
     """
     workflow = await session.get(Workflow, workflow_id)
     if workflow is None:
@@ -849,7 +952,7 @@ async def create_change(
         verify_confirm_names(live, operations)  # рубеж 1 «защиты от дурака»
     except (OperationConflict, ConfirmNameMismatch) as exc:
         raise _wrap_graph_errors(exc) from exc
-    impact, _plan = await compute_impact(session, live, operations)
+    impact, _plan = await compute_impact(session, live, operations, workflow_code=workflow.code)
 
     wcr = WorkflowChangeRequest(
         workflow_id=workflow_id,
@@ -863,7 +966,7 @@ async def create_change(
     await session.flush()
 
     dangerous = any(is_dangerous(op) for op in operations)
-    apply_now = not dangerous and "admin" in author.roles
+    apply_now = not dangerous and author.access.has("workflow:approve", workflow.code)
 
     if apply_now:
         started = time.perf_counter()
@@ -899,7 +1002,7 @@ async def create_change(
         subject="Изменение схемы ждёт согласования",
         body=(
             f"{author.full_name or author.username} предложил(а) изменение схемы "
-            f"«{workflow.name}» — требуется решение администратора"
+            f"«{workflow.name}» — требуется согласование"
         ),
         payload={
             "workflow_id": str(workflow_id),

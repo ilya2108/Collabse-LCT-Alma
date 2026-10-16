@@ -566,6 +566,48 @@ async def report_dynamics(
     return {"series": series}
 
 
+def _closed_between_stmt(
+    status: str,
+    start: date | None,
+    end: date | None,
+    params: ReportParams,
+    scope: DealScope,
+) -> sa.Select:
+    """«Завершено за период» (D16): заявки со статусом `won`/`lost`, чей ПОСЛЕДНИЙ вход в
+    терминальный этап с этим исходом (`deal_stage_history`) попал в интервал.
+
+    Не `deal.updated_at`: он меняется любой правкой карточки (сумма, ответственный) —
+    закрытая полгода назад заявка «завершалась» бы заново. Та же семантика, что «Выиграно /
+    Отказ» в отчёте «Активность КАМов», — цифры дашборда и отчёта сходятся. Заявки без
+    строки истории (ручная правка БД) — по `stage_entered_at` текущего этапа.
+    """
+    closed_at = sa.func.coalesce(
+        select(func.max(DealStageHistory.created_at))
+        .join(WorkflowStage, WorkflowStage.id == DealStageHistory.to_stage_id)
+        .where(
+            DealStageHistory.deal_id == Deal.id,
+            WorkflowStage.is_terminal.is_(True),
+            WorkflowStage.terminal_outcome == status,
+        )
+        .correlate(Deal)
+        .scalar_subquery(),
+        Deal.stage_entered_at,
+    )
+    stmt = select(func.count()).select_from(Deal).where(Deal.status == status)
+    if params.workflow_type:
+        stmt = stmt.join(Workflow, Workflow.id == Deal.workflow_id).where(
+            Workflow.code == params.workflow_type
+        )
+    stmt = scope.apply(stmt)
+    if params.kam_id:
+        stmt = stmt.where(Deal.responsible_user_id == params.kam_id)
+    if start:
+        stmt = stmt.where(closed_at >= start)
+    if end:
+        stmt = stmt.where(closed_at < end + timedelta(days=1))
+    return stmt
+
+
 async def _kpi(session: AsyncSession, params: ReportParams, scope: DealScope) -> dict[str, Any]:
     """KPI-строка дашборда: активные, завершено за период, конверсия, зависшие."""
     scope = _scope_or_all(scope)
@@ -580,18 +622,7 @@ async def _kpi(session: AsyncSession, params: ReportParams, scope: DealScope) ->
     active = (await session.execute(active_stmt)).scalar_one()
 
     async def _closed_between(status: str, start: date | None, end: date | None) -> int:
-        stmt = select(func.count()).select_from(Deal).where(Deal.status == status)
-        if params.workflow_type:
-            stmt = stmt.join(Workflow, Workflow.id == Deal.workflow_id).where(
-                Workflow.code == params.workflow_type
-            )
-        stmt = scope.apply(stmt)
-        if params.kam_id:
-            stmt = stmt.where(Deal.responsible_user_id == params.kam_id)
-        if start:
-            stmt = stmt.where(Deal.updated_at >= start)
-        if end:
-            stmt = stmt.where(Deal.updated_at < end + timedelta(days=1))
+        stmt = _closed_between_stmt(status, start, end, params, scope)
         return int((await session.execute(stmt)).scalar_one())
 
     date_to = params.date_to or _now().date()

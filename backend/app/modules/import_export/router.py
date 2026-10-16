@@ -131,12 +131,14 @@ async def cancel_import(
 # --- экспорт ----------------------------------------------------------------------------
 
 
-@router.post("/export/jobs", status_code=201, summary="Создать выгрузку (XLSX/CSV/JSON)")
+@router.post("/export/jobs", status_code=201, summary="Создать выгрузку (XLSX/CSV/JSON/PDF)")
 async def create_export_job(
     body: ExportJobBody,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[AppUser, Depends(require_permission("export:run"))],
 ) -> dict[str, Any]:
+    """PDF — только отчётам: `report:kam-activity` (PDF для заказчика) и общая таблица
+    `report:<code>` за фичефлагом `report_pdf`; для реестров — 422."""
     # RBAC §12.1: экспорт — право export:run; чтение сущности и область заявок
     # проверяет сервис, наблюдатель получает маскированные ПДн
     return await export_service.create_export_job(

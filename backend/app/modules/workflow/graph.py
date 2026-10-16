@@ -4,18 +4,26 @@ workflow-engine.md §6: операции применяются к копии ж
 проверяется валидациями (400 `workflow_invalid_schema` со списком кодов);
 миграция заявок удаляемых этапов проверяется V-8. Модуль чистый (без БД) —
 инварианты покрываются юнит-тестами.
+
+Роли в `allowed_roles` (V-7, Р-F2-12) — коды динамического каталога ролей, проверка в
+двух вариантах (наборы ролей сервис читает свежим SELECT под эксклюзивным локом воронки):
+- строгий, `check_operation_roles` — роли, которые пакет ДОБАВЛЯЕТ в переходы: роль
+  существует и имеет `requests:transition` в этом процессе;
+- мягкий, `validate_graph(known_roles=…)` — все переходы целевой схемы: роль просто
+  существует. Иначе правка прав роли (или её процессов) блокировала бы конструктор.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections import deque
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.modules.workflow.conditions import validate_condition_syntax
 from app.modules.workflow.schemas import (
-    TRANSITION_ROLES,
+    DEFAULT_TRANSITION_ROLES,
     AddStatusOp,
     AddTransitionOp,
     DeleteStatusOp,
@@ -400,9 +408,17 @@ def _reaching_terminal(graph: WorkflowGraph) -> set[uuid.UUID]:
     return seen
 
 
-def validate_graph(graph: WorkflowGraph) -> list[dict[str, Any]]:
-    """V-1..V-7; пустой список — схема валидна. Элемент: {code, message, status_id?}."""
+def validate_graph(
+    graph: WorkflowGraph, *, known_roles: Collection[str] = DEFAULT_TRANSITION_ROLES
+) -> list[dict[str, Any]]:
+    """V-1..V-7; пустой список — схема валидна. Элемент: {code, message, status_id?}.
+
+    `known_roles` — коды существующих ролей (мягкий V-7: роль перехода должна быть в
+    каталоге; может ли она выполнять переходы — строгий `check_operation_roles`).
+    По умолчанию — системные роли с переходами (чистые проверки без БД).
+    """
     errors: list[dict[str, Any]] = []
+    known = frozenset(known_roles)
 
     initials = graph.initial_stages
     if len(initials) != 1:
@@ -445,16 +461,18 @@ def validate_graph(graph: WorkflowGraph) -> list[dict[str, Any]]:
                     "message": f"Переход «{t.name}» ссылается на несуществующий этап",
                 }
             )
-        # V-7: роли и условие
-        unknown_roles = set(t.allowed_roles) - set(TRANSITION_ROLES)
+        # V-7 (мягкий): роли перехода существуют в каталоге; условие корректно
+        unknown_roles = set(t.allowed_roles) - known
         if unknown_roles:
             errors.append(
                 {
                     "code": E_UNKNOWN_ROLE,
                     "message": (
-                        f"Переход «{t.name}»: недопустимые роли {sorted(unknown_roles)}; "
-                        f"допустимы {list(TRANSITION_ROLES)}"
+                        f"Переход «{t.name}»: неизвестные роли "
+                        + ", ".join(f"«{code}»" for code in sorted(unknown_roles))
+                        + " — их нет в каталоге ролей"
                     ),
+                    "roles": sorted(unknown_roles),
                 }
             )
         if not validate_condition_syntax(t.condition):
@@ -524,6 +542,47 @@ def validate_graph(graph: WorkflowGraph) -> list[dict[str, Any]]:
                         ),
                     }
                 )
+    return errors
+
+
+def check_operation_roles(
+    operations: list[Operation],
+    capable: Collection[str],
+    *,
+    live: WorkflowGraph | None = None,
+) -> list[dict[str, Any]]:
+    """Строгий V-7 для операций пакета: каждая роль, которую операция добавляет в
+    `allowed_roles`, обязана существовать и иметь `requests:transition` в процессе воронки
+    (`capable` — такие коды, сервис читает их свежим SELECT под локом). Иначе переход
+    ссылался бы на роль, пользователи которой его никогда не выполнят.
+
+    `add_transition` проверяется целиком. `update_transition` — только роли, которых не было
+    в живом переходе (`live`): уже указанная роль, потерявшая право, не блокирует правку
+    других полей перехода (её ловит лишь мягкий V-7, если роль удалена). Без `live` —
+    весь новый список.
+    """
+    allowed = frozenset(capable)
+    errors: list[dict[str, Any]] = []
+    for operation in operations:
+        name: str | None
+        if isinstance(operation, AddTransitionOp):
+            name = operation.transition.name
+            roles = list(operation.transition.allowed_roles)
+        elif isinstance(operation, UpdateTransitionOp):
+            if operation.patch.allowed_roles is None:
+                continue
+            existing = live.transitions.get(operation.transition_id) if live else None
+            name = operation.patch.name or (existing.name if existing else None)
+            before = set(existing.allowed_roles) if existing else set()
+            roles = [code for code in operation.patch.allowed_roles if code not in before]
+        else:
+            continue
+        for code in dict.fromkeys(roles):
+            if code in allowed:
+                continue
+            prefix = f"Переход «{name}»: роль" if name else "Роль"
+            message = f"{prefix} «{code}» не может выполнять переходы в этом процессе"
+            errors.append({"code": E_UNKNOWN_ROLE, "message": message, "role": code})
     return errors
 
 

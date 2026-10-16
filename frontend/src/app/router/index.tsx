@@ -19,6 +19,7 @@ import { BoardPage } from '@/pages/board/BoardPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { ForbiddenPage, NotFoundPage } from '@/pages/ErrorPages';
 import { ImportPage } from '@/pages/ImportPage';
+import { KamActivityPage } from '@/pages/KamActivityPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotificationSettingsPage } from '@/pages/NotificationSettingsPage';
 import { ContractDetailPage } from '@/pages/registry/ContractDetailPage';
@@ -104,6 +105,11 @@ export const router = createBrowserRouter([
                 <DashboardPage />
               </RequirePermission>
             ),
+          },
+          // отчёт «Активность КАМов» (ux.md §6.4): область — report_scope на бэке
+          {
+            path: 'reports/kam-activity',
+            element: guarded('reports:read', <KamActivityPage />),
           },
           { path: 'board', element: guarded('requests:read', <BoardPage />) },
           { path: 'requests/:id', element: guarded('requests:read', <RequestPage />) },

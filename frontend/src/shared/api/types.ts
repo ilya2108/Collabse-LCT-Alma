@@ -531,10 +531,29 @@ export interface WorkflowChangeImpact {
   }[];
 }
 
-/** Отчёт миграции после approve (§5.4). */
+/** Замеры применения пакета, мс (§5.4, workflow-engine.md §6.8). */
+export interface WorkflowMigrationTimings {
+  /** Ожидание эксклюзивного лока воронки — хвоста уже начатых переходов. */
+  lock_wait_ms: number;
+  /** От захвата лока до COMMIT: схема, перенос, история, сводки, аудит. */
+  apply_ms: number;
+  /** Из них — пакетный перенос заявок. */
+  migrate_ms: number;
+  /** Лок удерживался (включая COMMIT) — только в ответе approve. */
+  lock_held_ms?: number | null;
+}
+
+/**
+ * Отчёт миграции (§5.3–5.4): в ответе approve и у применённого пакета
+ * (`WorkflowChangeRecord.migration_report`, хранится в `impact.migration_report`).
+ */
 export interface WorkflowMigrationReport {
   migrated_requests: number;
   by_status: { from: string; to: string; count: number }[];
+  /** Сводных уведомлений `request.transitioned` — одно на получателя и канал. */
+  digest_notifications?: number | null;
+  /** Нет у пакетов, применённых до появления замеров. */
+  timings?: WorkflowMigrationTimings | null;
 }
 
 export type WorkflowChangeStatus = 'pending' | 'approved' | 'rejected' | 'applied' | 'failed';
@@ -961,7 +980,8 @@ export interface DictionaryImportResult {
 export interface AdminSettings {
   stuck_threshold_days: number;
   stuck_escalate_to_manager: boolean;
-  integration_mode: 'http' | 'stream';
+  /** Единственный транспорт — outbox PostgreSQL → HTTP + HMAC (§13.7). */
+  integration_mode: 'http';
   file_delivery: 'proxy' | 'presigned';
   version: number;
 }

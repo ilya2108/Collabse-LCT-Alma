@@ -41,6 +41,13 @@ export const menuConfig: NavEntry[] = [
     permission: 'reports:read',
   },
   {
+    // отдельный пункт, а не группа «Аналитика»: ключ dashboard нужен турам онбординга
+    key: 'kam-activity',
+    path: '/reports/kam-activity',
+    label: 'Активность КАМов',
+    permission: 'reports:read',
+  },
+  {
     key: 'board',
     path: '/board',
     label: 'Доска заявок',
@@ -209,6 +216,10 @@ interface BreadcrumbRule {
 /** Правила хлебных крошек: первый матч побеждает (порядок — от частного к общему). */
 const BREADCRUMB_RULES: BreadcrumbRule[] = [
   { pattern: '/dashboard', crumbs: [{ title: 'Аналитика' }] },
+  {
+    pattern: '/reports/kam-activity',
+    crumbs: [{ title: 'Аналитика', href: '/dashboard' }, { title: 'Активность КАМов' }],
+  },
   {
     pattern: '/board',
     crumbs: [{ title: 'Доска заявок' }],

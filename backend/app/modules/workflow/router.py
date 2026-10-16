@@ -2,6 +2,14 @@
 
 Контракт — api-contract.md §5; семантика движка — workflow-engine.md §6.
 GET /workflows/{id} — cache-aside `crm:v1:wf:{id}` (TTL 24 ч, DEL при применении CR).
+
+Права (Р-F2-7) — с областью по процессу, проверяются в процессе воронки (`wf.code`):
+- схема процесса видна при `workflow:read` (конструктор) или `requests:read` (доска и
+  карточка заявки строятся по схеме); список — только такие процессы, чужая схема — 404;
+- `workflow:change` — предпросмотр и пакет изменений; `workflow:history` — история
+  пакетов; `workflow:approve` — согласование и отклонение (и «безопасный пакет автора
+  применяется сразу»). Право есть, но не в процессе воронки — 403; пакет процесса, схема
+  которого пользователю не видна, — 404.
 """
 
 from __future__ import annotations
@@ -16,9 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import client_ip
 from app.core.cache import get_cache
 from app.core.db import get_session
-from app.core.errors import not_found
+from app.core.errors import forbidden, not_found
 from app.core.pagination import ListParams, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.rbac_catalog import WORKFLOW_TYPE_LABELS, WORKFLOW_TYPES, permission_name
+from app.core.security import get_current_user, require_permission
 from app.models.deal import Deal
 from app.models.user import AppUser
 from app.models.workflow import (
@@ -46,13 +55,68 @@ router = APIRouter(prefix="/workflows", tags=["workflow"])
 
 WORKFLOW_CACHE_TTL = 24 * 3600
 
+# права, при которых схема процесса видна (конструктор / доска и карточки заявок)
+SCHEMA_READ_PERMISSIONS = ("workflow:read", "requests:read")
+
+
+def visible_workflow_types(user: AppUser) -> tuple[str, ...]:
+    """Процессы, схему которых пользователь видит."""
+    access = user.access
+    return tuple(
+        wf for wf in WORKFLOW_TYPES if access.has_any(*SCHEMA_READ_PERMISSIONS, workflow_type=wf)
+    )
+
+
+def ensure_workflow_permission(user: AppUser, workflow_code: str, permission: str) -> None:
+    """403, если права нет в процессе воронки (а не «хоть в одном процессе»)."""
+    if not user.access.has(permission, workflow_code):
+        label = WORKFLOW_TYPE_LABELS.get(workflow_code, workflow_code)
+        raise forbidden(f"Недостаточно прав в процессе {label}: «{permission_name(permission)}»")
+
+
+async def _workflow_or_404(session: AsyncSession, workflow_id: uuid.UUID) -> Workflow:
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise not_found("Воронка не найдена")
+    return workflow
+
+
+async def _change_workflow_code(
+    session: AsyncSession, change_id: uuid.UUID, user: AppUser, permission: str
+) -> str:
+    """Процесс пакета изменений с проверкой права в нём. Только колонки, без загрузки
+    пакета в сессию: approve дальше берёт строку пакета FOR UPDATE и сверяет статус —
+    объект из identity map со старым статусом сломал бы защиту от двойного применения."""
+    code = (
+        await session.execute(
+            select(Workflow.code)
+            .join(WorkflowChangeRequest, WorkflowChangeRequest.workflow_id == Workflow.id)
+            .where(WorkflowChangeRequest.id == change_id)
+        )
+    ).scalar_one_or_none()
+    if code is None or code not in visible_workflow_types(user):
+        raise not_found("Пакет изменений не найден")
+    ensure_workflow_permission(user, code, permission)
+    return code
+
 
 @router.get("", summary="Список воронок")
 async def list_workflows(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(get_current_user)],
 ) -> list[dict[str, Any]]:
-    workflows = (await session.execute(select(Workflow).order_by(Workflow.code))).scalars().all()
+    visible = visible_workflow_types(user)
+    if not visible:
+        return []
+    workflows = (
+        (
+            await session.execute(
+                select(Workflow).where(Workflow.code.in_(visible)).order_by(Workflow.code)
+            )
+        )
+        .scalars()
+        .all()
+    )
     result: list[dict[str, Any]] = []
     for wf in workflows:
         statuses_count = (
@@ -84,13 +148,17 @@ async def list_workflows(
 async def get_workflow(
     workflow_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(get_current_user)],
 ) -> dict[str, Any]:
+    # схема процесса вне области — 404, как несуществующая (Р-F2-10)
+    visible = visible_workflow_types(user)
     cached = await get_cache().get_json(f"wf:{workflow_id}")
     if cached is not None:
+        if cached.get("type") not in visible:
+            raise not_found("Воронка не найдена")
         return cached
     workflow = await session.get(Workflow, workflow_id)
-    if workflow is None:
+    if workflow is None or workflow.code not in visible:
         raise not_found("Воронка не найдена")
     stages = (
         (
@@ -181,21 +249,19 @@ async def _load_change_users(
     return author, decided
 
 
-@router.post(
-    "/{workflow_id}/impact-preview",
-    summary="Предпросмотр влияния операций",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
-)
+@router.post("/{workflow_id}/impact-preview", summary="Предпросмотр влияния операций")
 async def impact_preview(
     workflow_id: uuid.UUID,
     body: ImpactPreviewBody,
     session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("workflow:change"))],
 ) -> dict[str, Any]:
-    workflow = await session.get(Workflow, workflow_id)
-    if workflow is None:
-        raise not_found("Воронка не найдена")
+    workflow = await _workflow_or_404(session, workflow_id)
+    ensure_workflow_permission(user, workflow.code, "workflow:change")
     live = await service.load_graph(session, workflow_id)
-    impact, _plan = await service.compute_impact(session, live, body.operations)
+    impact, _plan = await service.compute_impact(
+        session, live, body.operations, workflow_code=workflow.code
+    )
     return {"impact": ImpactOut.model_validate(impact).model_dump(mode="json")}
 
 
@@ -203,14 +269,21 @@ async def impact_preview(
     "/{workflow_id}/changes",
     status_code=201,
     summary="Создать пакет операций изменения схемы",
+    description=(
+        "Право «Правка схемы: черновик и пакет изменений» в процессе воронки. Безопасный "
+        "пакет автора с правом «Согласование и публикация изменений схемы» в этом процессе "
+        "применяется сразу (status=applied), иначе — на согласование (pending)."
+    ),
 )
 async def create_change(
     workflow_id: uuid.UUID,
     body: ChangeCreateBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
+    user: Annotated[AppUser, Depends(require_permission("workflow:change"))],
     request: Request,
 ) -> dict[str, Any]:
+    workflow = await _workflow_or_404(session, workflow_id)
+    ensure_workflow_permission(user, workflow.code, "workflow:change")
     raw_operations = [op.model_dump(mode="json", exclude_none=True) for op in body.operations]
     wcr = await service.create_change(
         session,
@@ -225,21 +298,18 @@ async def create_change(
     return _serialize_change(wcr, author, decided)
 
 
-@router.get(
-    "/{workflow_id}/changes",
-    summary="Список изменений схемы",
-    dependencies=[Depends(require_roles("admin", "head_kam", "observer"))],
-)
+@router.get("/{workflow_id}/changes", summary="Список изменений схемы")
 async def list_changes(
     workflow_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("workflow:history"))],
     params: Annotated[ListParams, Depends(list_params)],
     status: Annotated[
         Literal["pending", "approved", "rejected", "applied", "failed"] | None, Query()
     ] = None,
 ) -> dict[str, Any]:
-    if await session.get(Workflow, workflow_id) is None:
-        raise not_found("Воронка не найдена")
+    workflow = await _workflow_or_404(session, workflow_id)
+    ensure_workflow_permission(user, workflow.code, "workflow:history")
     stmt = select(WorkflowChangeRequest).where(WorkflowChangeRequest.workflow_id == workflow_id)
     if status:
         stmt = stmt.where(WorkflowChangeRequest.status == status)
@@ -262,15 +332,13 @@ async def list_changes(
     return list_envelope(items, total, params)
 
 
-@router.get(
-    "/changes/{change_id}",
-    summary="Карточка изменения схемы",
-    dependencies=[Depends(require_roles("admin", "head_kam", "observer"))],
-)
+@router.get("/changes/{change_id}", summary="Карточка изменения схемы")
 async def get_change(
     change_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("workflow:history"))],
 ) -> dict[str, Any]:
+    await _change_workflow_code(session, change_id, user, "workflow:history")
     wcr = await session.get(WorkflowChangeRequest, change_id)
     if wcr is None:
         raise not_found("Пакет изменений не найден")
@@ -280,8 +348,9 @@ async def get_change(
 
 @router.post(
     "/changes/{change_id}/approve",
-    summary="Одобрить и атомарно применить изменение (только admin)",
+    summary="Одобрить и атомарно применить изменение",
     description=(
+        "Право «Согласование и публикация изменений схемы» в процессе воронки пакета. "
         "Одна транзакция: схема, перенос заявок удаляемых этапов, история, сводные "
         "уведомления и аудит. 409 `conflict` — пакет уже обработан; 409 `workflow_busy` "
         "(заголовок Retry-After) — воронка занята переходами, пакет остаётся на "
@@ -292,8 +361,9 @@ async def get_change(
 async def approve_change(
     change_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("workflow:approve"))],
 ) -> dict[str, Any]:
+    await _change_workflow_code(session, change_id, user, "workflow:approve")
     wcr, report = await service.apply_change(session, change_id=change_id, approver=user)
     return ApplyResultOut(
         id=wcr.id,
@@ -306,14 +376,16 @@ async def approve_change(
 
 @router.post(
     "/changes/{change_id}/reject",
-    summary="Отклонить изменение (только admin)",
+    summary="Отклонить изменение",
+    description="Право «Согласование и публикация изменений схемы» в процессе воронки пакета.",
 )
 async def reject_change(
     change_id: uuid.UUID,
     body: RejectBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("workflow:approve"))],
 ) -> dict[str, Any]:
+    await _change_workflow_code(session, change_id, user, "workflow:approve")
     wcr = await service.reject_change(
         session, change_id=change_id, approver=user, reason=body.reason
     )

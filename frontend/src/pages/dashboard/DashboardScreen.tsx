@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, Download, LoaderCircle } from 'lucide-react';
+import { ArrowRight, ChevronDown, Download, LoaderCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ErrorBrokenIllustration } from '@/app/localIllustrations';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { runExportAndDownload } from '@/shared/api/endpoints/exportJobs';
@@ -66,6 +66,24 @@ function filtersFromParams(params: URLSearchParams): DashFilters {
     university: params.getAll('university'),
     product: params.getAll('product'),
   };
+}
+
+/**
+ * Ссылка на отчёт «Активность КАМов» с фильтрами дашборда (URL-контракт ux.md §6.4):
+ * заданный период — пресет «Произвольный», процесс, КАМы и вузы переносятся как есть.
+ */
+function kamActivityHref(f: DashFilters): string {
+  const query = new URLSearchParams();
+  if (f.from || f.to) {
+    query.set('preset', 'custom');
+    if (f.from) query.set('from', f.from);
+    if (f.to) query.set('to', f.to);
+  }
+  if (f.wf) query.set('wf', f.wf);
+  for (const id of f.kam) query.append('kam', id);
+  for (const id of f.university) query.append('university', id);
+  const search = query.toString();
+  return search ? `/reports/kam-activity?${search}` : '/reports/kam-activity';
 }
 
 function reportParams(f: DashFilters): DashboardReportParams {
@@ -422,7 +440,14 @@ export function DashboardScreen(): ReactNode {
           loading={productsQuery.isLoading}
           emptyText="Продукты не найдены"
         />
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* отчёт по КАМам — с теми же фильтрами (период, процесс, КАМы, вузы) */}
+          <Button variant="outline" asChild>
+            <Link to={kamActivityHref(filters)}>
+              Отчёт по КАМам
+              <ArrowRight aria-hidden="true" />
+            </Link>
+          </Button>
           <Button
             variant="ghost"
             onClick={() =>

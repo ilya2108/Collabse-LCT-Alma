@@ -2,8 +2,9 @@
 
 Протокол claim → complete/release/heartbeat, шифрование сохранённого ответа, перехват
 аренды, сброс просроченного ключа, очистка пачками, гонка двух заявок на настоящих
-COMMIT, нормализация `integration_mode` миграцией 0003 и сквозной прогон middleware
-на мини-приложении (роутеры ui и internal с тем же хранилищем).
+COMMIT, нормализация `integration_mode` миграцией 0003 и сквозной прогон на настоящем
+приложении (`create_app`: middleware из app.main, хранилище по умолчанию) через
+`api.as_user` / `api.internal`.
 
 `now()` внутри теста на `db_session` — время начала внешней транзакции (заморожено),
 поэтому сдвиги времени задаются явными UPDATE относительно `now()`.
@@ -18,32 +19,23 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import httpx
 import pytest
 import sqlalchemy as sa
-from fastapi import APIRouter, FastAPI, Request
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
-from app.core.db import get_session
-from app.core.errors import RequestIdMiddleware, register_error_handlers, unauthorized
-from app.core.idempotency import (
-    REPLAYED_HEADER,
-    IdempotencyConfig,
-    IdempotencyMiddleware,
-    KeyRequest,
-    StoredResponse,
-)
+from app.core.errors import REQUEST_ID_HEADER
+from app.core.idempotency import REPLAYED_HEADER, KeyRequest, StoredResponse
 from app.core.idempotency_store import (
     PgIdempotencyStore,
     get_idempotency_store,
     purge_expired_keys,
     reset_idempotency_store,
 )
-from app.core.security import TokenClaims, get_token_claims, verify_internal_token
-from app.models import AppSetting, AppUser, IdempotencyKey
+from app.models import AppSetting, Deal, DealComment, IdempotencyKey
 
-from .conftest import BACKEND_ROOT
+from . import factories
+from .conftest import BACKEND_ROOT, ApiClients
 
 BODY = '{"id": "p-1", "name": "Мой пресет"}'.encode()
 
@@ -408,121 +400,186 @@ async def test_integration_mode_fix_normalizes_stream(db_session: AsyncSession) 
 
 
 # --------------------------------------------------------------------------------------
-# Сквозной прогон: middleware + PG-хранилище + настоящие роутеры (без app.main)
+# Сквозной прогон на настоящем приложении (create_app из app.main): middleware подключён
+# в main, хранилище по умолчанию (глобальный движок, настоящие COMMIT мимо транзакции
+# теста), принципал — из тестовых токенов фикстуры `api` (as_user → `sub:<sub>`,
+# internal → `internal`). Бизнес-данные пишутся в `db_session` и откатываются после теста.
 # --------------------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def stack(
-    db_session: AsyncSession,
-    db_session_factory: async_sessionmaker[AsyncSession],
-    user_factory: Any,
-) -> AsyncIterator[tuple[httpx.AsyncClient, AppUser, dict[str, str]]]:
-    from app.modules.internal.router import router as internal_router
-    from app.modules.ui.router import router as ui_router
-
-    user = await user_factory(roles=("kam",))
-    await db_session.commit()
-    token = f"test-{uuid.uuid4()}"
-    claims = {
-        token: TokenClaims(
-            sub=str(user.keycloak_sub),
-            username=user.username,
-            email=user.email,
-            full_name=user.full_name,
-            roles=tuple(user.roles),
-            azp="crm-frontend",
+async def app_keys(db_engine: AsyncEngine) -> AsyncIterator[AsyncEngine]:
+    """Ключи, которые приложение закоммитило через глобальный движок, после теста
+    удаляются (иначе их увидели бы другие тесты, например перешифровка `rekey`).
+    Принципалы приложения — `sub:<sub>` и `internal`; тесты хранилища пишут `test:*`.
+    Короткий DELETE на отдельном соединении не ждёт внешнюю транзакцию `db_session`:
+    она эти строки не трогает. Проверки читают ключи через этот же движок."""
+    yield db_engine
+    async with db_engine.begin() as conn:
+        await conn.execute(
+            sa.text(
+                "DELETE FROM idempotency_key WHERE principal = 'internal' OR principal LIKE 'sub:%'"
+            )
         )
-    }
-
-    async def session_override() -> AsyncIterator[AsyncSession]:
-        yield db_session
-
-    async def claims_override(request: Request) -> TokenClaims:
-        bearer = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        if bearer not in claims:
-            raise unauthorized()
-        return claims[bearer]
-
-    async def principal(headers: Any) -> str | None:
-        bearer = (headers.get("authorization") or "").removeprefix("Bearer ").strip()
-        if bearer in claims:
-            return f"sub:{claims[bearer].sub}"
-        if verify_internal_token(
-            headers.get("x-internal-token"), get_settings().internal_api_token
-        ):
-            return "internal"
-        return None
-
-    app = FastAPI()
-    register_error_handlers(app)
-    api = APIRouter(prefix="/api/v1")
-    api.include_router(ui_router)
-    api.include_router(internal_router)
-    app.include_router(api)
-    app.dependency_overrides[get_session] = session_override
-    app.dependency_overrides[get_token_claims] = claims_override
-    app.add_middleware(
-        IdempotencyMiddleware,
-        store=PgIdempotencyStore(db_session_factory, ttl_hours=24, lease_seconds=60),
-        principal_resolver=principal,
-        config=IdempotencyConfig(heartbeat_seconds=None),
-    )
-    app.add_middleware(RequestIdMiddleware)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, user, {"Authorization": f"Bearer {token}"}
 
 
-async def test_preset_created_once_and_replayed(
-    stack: tuple[httpx.AsyncClient, AppUser, dict[str, str]], db_session: AsyncSession
+async def _stored_key(engine: AsyncEngine, principal: str, key: str) -> sa.Row | None:
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            sa.text(
+                "SELECT status, method, path, response_status, response_body, replay_count, "
+                "first_request_id FROM idempotency_key WHERE principal = :p AND idem_key = :k"
+            ),
+            {"p": principal, "k": key},
+        )
+        return result.first()
+
+
+async def test_app_preset_created_once_and_replayed(
+    api: ApiClients, app_keys: AsyncEngine, db_session: AsyncSession, user_factory: Any
 ) -> None:
-    client, user, auth = stack
-    headers = {**auth, "Idempotency-Key": str(uuid.uuid4())}
+    user = await user_factory(roles=("kam",))
+    client = api.as_user(user)
+    key = str(uuid.uuid4())
+    headers = {"Idempotency-Key": key}
     payload = {"screen": "registry", "name": "Мои вузы", "state": {"sort": "name"}}
+
     first = await client.post("/api/v1/ui/presets", json=payload, headers=headers)
     second = await client.post("/api/v1/ui/presets", json=payload, headers=headers)
-    assert first.status_code == second.status_code == 201
+    assert first.status_code == second.status_code == 201, first.text
     assert second.json() == first.json()
     assert second.headers[REPLAYED_HEADER] == "true"
     assert REPLAYED_HEADER not in first.headers
+    # у повтора свой trace_id (RequestIdMiddleware снаружи), исходный — в записи ключа
+    assert second.headers[REQUEST_ID_HEADER] != first.headers[REQUEST_ID_HEADER]
 
     setting = await db_session.get(AppSetting, f"ui:presets:{user.id}")
     assert setting is not None
     assert [item["name"] for item in setting.value["items"]] == ["Мои вузы"]
+
+    stored = await _stored_key(app_keys, f"sub:{user.keycloak_sub}", key)
+    assert stored is not None
+    assert stored.status == "completed"
+    assert (stored.method, stored.path) == ("POST", "/api/v1/ui/presets")
+    assert stored.response_status == 201 and stored.replay_count == 1
+    assert stored.first_request_id == first.headers[REQUEST_ID_HEADER]
+    raw = bytes(stored.response_body)
+    assert raw.startswith(b"gAAAAA") and "Мои вузы".encode() not in raw  # Fernet: в ответе ПДн
 
     other = await client.post(
         "/api/v1/ui/presets", json={**payload, "name": "Другое"}, headers=headers
     )
     assert other.status_code == 422
     assert other.json()["error"]["code"] == "idempotency_key_reused"
+    assert other.json()["error"]["trace_id"] == other.headers[REQUEST_ID_HEADER]
 
     # без ключа — прежнее поведение: обработчик выполняется снова
-    plain = await client.post("/api/v1/ui/presets", json=payload, headers=auth)
+    plain = await client.post("/api/v1/ui/presets", json=payload)
     assert plain.status_code == 201
     assert plain.json()["id"] != first.json()["id"]
     assert REPLAYED_HEADER not in plain.headers
 
+    # область действия ключа — пользователь: тот же ключ у коллеги не отдаёт чужой ответ
+    colleague = await user_factory(roles=("kam",))
+    theirs = await api.as_user(colleague).post("/api/v1/ui/presets", json=payload, headers=headers)
+    assert theirs.status_code == 201
+    assert REPLAYED_HEADER not in theirs.headers
+    assert theirs.json()["id"] != first.json()["id"]
+    assert await _stored_key(app_keys, f"sub:{colleague.keycloak_sub}", key) is not None
 
-async def test_delete_replayed_as_204(
-    stack: tuple[httpx.AsyncClient, AppUser, dict[str, str]],
+
+async def test_app_request_created_once_error_does_not_burn_key(
+    api: ApiClients,
+    app_keys: AsyncEngine,
+    db_session: AsyncSession,
+    workflows: dict[str, Any],
 ) -> None:
-    client, _, auth = stack
-    created = await client.post(
-        "/api/v1/ui/presets", json={"screen": "board", "name": "Срочные"}, headers=auth
+    """Создание заявки — главный сценарий двойного клика и ретрая после таймаута."""
+    kam = await factories.make_user(db_session, roles=("kam",))
+    university = await factories.make_university(db_session, kam=kam)
+    client = api.as_user(kam)
+    key = str(uuid.uuid4())
+    headers = {"Idempotency-Key": key}
+    body = {"workflow_type": "b2b", "title": "Стажировка ИТ", "university_id": str(university.id)}
+
+    # 4xx ключ не «сжигает»: исправленный запрос с тем же ключом выполняется
+    invalid = await client.post("/api/v1/requests", json={**body, "title": "Я"}, headers=headers)
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["code"] == "validation_error"
+    assert await _stored_key(app_keys, f"sub:{kam.keycloak_sub}", key) is None
+
+    created = await client.post("/api/v1/requests", json=body, headers=headers)
+    assert created.status_code == 201, created.text
+    retried = await client.post("/api/v1/requests", json=body, headers=headers)
+    assert retried.status_code == 201
+    assert retried.headers[REPLAYED_HEADER] == "true"
+    assert retried.json()["id"] == created.json()["id"]
+
+    deal_ids = (
+        await db_session.execute(sa.select(Deal.id).where(Deal.university_id == university.id))
+    ).scalars()
+    assert [str(deal_id) for deal_id in deal_ids] == [created.json()["id"]]
+    stored = await _stored_key(app_keys, f"sub:{kam.keycloak_sub}", key)
+    assert stored is not None and stored.status == "completed" and stored.replay_count == 1
+
+
+async def test_app_comment_posted_once(
+    api: ApiClients,
+    app_keys: AsyncEngine,
+    db_session: AsyncSession,
+    workflows: dict[str, Any],
+) -> None:
+    """Сценарий `make demo-idempotency` (шаги 1–3, 5) на настоящем приложении."""
+    workflow, stages = workflows["b2b"]
+    kam = await factories.make_user(db_session, roles=("kam",))
+    deal = await factories.make_deal(
+        db_session, workflow=workflow, stages=stages, responsible=kam, title="Демо-заявка"
     )
+    client = api.as_user(kam)
+    path = f"/api/v1/requests/{deal.id}/comments"
+    keyed = {"Idempotency-Key": str(uuid.uuid4())}
+    text = {"text": "Созвон в пятницу"}
+
+    first = await client.post(path, json=text, headers=keyed)
+    again = await client.post(path, json=text, headers=keyed)
+    assert first.status_code == again.status_code == 201, first.text
+    assert again.json()["id"] == first.json()["id"]
+    assert again.headers[REPLAYED_HEADER] == "true"
+
+    reused = await client.post(path, json={"text": "Другое"}, headers=keyed)
+    assert reused.status_code == 422
+    assert reused.json()["error"]["code"] == "idempotency_key_reused"
+
+    second_key = await client.post(path, json=text, headers={"Idempotency-Key": str(uuid.uuid4())})
+    assert second_key.status_code == 201
+    assert REPLAYED_HEADER not in second_key.headers
+
+    bodies = (
+        await db_session.execute(sa.select(DealComment.body).where(DealComment.deal_id == deal.id))
+    ).scalars()
+    assert list(bodies) == ["Созвон в пятницу", "Созвон в пятницу"]  # по записи на ключ
+
+
+async def test_app_delete_replayed_as_204(
+    api: ApiClients, app_keys: AsyncEngine, user_factory: Any
+) -> None:
+    client = api.as_user(await user_factory(roles=("kam",)))
+    created = await client.post("/api/v1/ui/presets", json={"screen": "board", "name": "Срочные"})
     preset_id = created.json()["id"]
-    headers = {**auth, "Idempotency-Key": "delete-once"}
+    headers = {"Idempotency-Key": "delete-once"}
     first = await client.delete(f"/api/v1/ui/presets/{preset_id}", headers=headers)
+    # без middleware второй DELETE получил бы 404 — с ключом это повтор исходного ответа
     second = await client.delete(f"/api/v1/ui/presets/{preset_id}", headers=headers)
     assert first.status_code == second.status_code == 204
     assert second.headers[REPLAYED_HEADER] == "true"
+    assert second.content == b""
+    unkeyed = await client.delete(f"/api/v1/ui/presets/{preset_id}")
+    assert unkeyed.status_code == 404
 
 
-async def test_purge_endpoint_via_internal_token(
-    stack: tuple[httpx.AsyncClient, AppUser, dict[str, str]], db_session: AsyncSession
+async def test_app_purge_endpoint_via_internal_token(
+    api: ApiClients, app_keys: AsyncEngine, db_session: AsyncSession
 ) -> None:
-    client, _, _ = stack
     for n in range(3):
         await db_session.execute(
             sa.text(
@@ -531,17 +588,22 @@ async def test_purge_endpoint_via_internal_token(
             ),
             {"k": f"old{n}", "h": "a" * 64},
         )
-    internal = {"X-Internal-Token": get_settings().internal_api_token}
-    denied = await client.post("/api/v1/internal/jobs/purge-idempotency-keys")
-    assert denied.status_code == 401
-    response = await client.post("/api/v1/internal/jobs/purge-idempotency-keys", headers=internal)
+    path = "/api/v1/internal/jobs/purge-idempotency-keys"
+    denied = await api.anonymous().post(path, headers={"Idempotency-Key": "cron-run-0"})
+    assert denied.status_code == 401  # аноним: middleware пропускает, роутер требует токен
+    internal = api.internal()
+    response = await internal.post(path)
     assert response.status_code == 200
     body = response.json()
     assert body["purged"] == 3
     assert isinstance(body["duration_ms"], int)
     # CronJob с ключом: повтор отдаёт сохранённый ответ, а не новый прогон
-    keyed = {**internal, "Idempotency-Key": "cron-run-1"}
-    first = await client.post("/api/v1/internal/jobs/purge-idempotency-keys", headers=keyed)
-    again = await client.post("/api/v1/internal/jobs/purge-idempotency-keys", headers=keyed)
+    keyed = {"Idempotency-Key": "cron-run-1"}
+    first = await internal.post(path, headers=keyed)
+    again = await internal.post(path, headers=keyed)
+    assert first.status_code == again.status_code == 200
     assert again.headers[REPLAYED_HEADER] == "true"
     assert again.json() == first.json()
+    stored = await _stored_key(app_keys, "internal", "cron-run-1")
+    assert stored is not None and stored.status == "completed"
+    assert await _stored_key(app_keys, "internal", "cron-run-0") is None

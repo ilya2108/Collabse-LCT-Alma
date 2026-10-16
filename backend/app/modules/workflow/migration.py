@@ -16,7 +16,9 @@
   раньше. Тип события прежний (`request.transitioned`): работают те же правила (сидовое и
   созданные админами) и те же личные настройки («Переход заявки по этапу», only_mine), что в
   `core.outbox.emit_event_notifications`, но получатели считаются по группам «целевой
-  этап × ответственный», а не по заявкам. Эквивалентность со старым поштучным путём —
+  этап × ответственный», а не по заявкам. Получатели правила `role` — та же
+  `core.outbox.role_rule_members` (активные с ролью, видящие процесс воронки), «только
+  свои» — по ответственному группы. Эквивалентность со старым поштучным путём —
   tests/db/test_workflow_bulk_migration.py::test_digest_equivalent_to_legacy.
 
 SSE `request.transitioned` и `integration_event` (LMS handover) при переносе не
@@ -40,8 +42,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.events import EVENT_REQUEST_TRANSITIONED
 
 # приватные хелперы outbox — осознанно: строки пишутся тем же кодом (адрес, skipped,
-# ON CONFLICT по dedup_key), что и у поштучных уведомлений; core/outbox.py не меняется
-from app.core.outbox import _address_for, _insert_notification
+# ON CONFLICT по dedup_key), а получатели ролей считаются той же функцией, что и у
+# поштучных уведомлений
+from app.core.outbox import _address_for, _insert_notification, role_rule_members, sees_deal
 from app.models.service import AppSetting, NotificationRule
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
@@ -236,8 +239,13 @@ def _rule_recipients(
     group: MovedGroup,
     users: dict[uuid.UUID, AppUser],
     role_members: dict[str, list[AppUser]],
+    pipeline: str | None = None,
 ) -> list[AppUser]:
-    """Повтор `core.outbox._resolve_rule_users` для заявки ответственного группы."""
+    """Повтор `core.outbox._resolve_rule_users` для заявки ответственного группы.
+
+    `role_members` уже отфильтрованы по процессу воронки (`role_rule_members`); при
+    известном `pipeline` участник роли с областью «только свои» получает лишь группы, где
+    он ответственный (`core.outbox.sees_deal` — как у поштучного пути)."""
     if rule.recipient_type == "responsible":
         user = users.get(group.responsible_user_id)
         return [user] if user is not None else []
@@ -248,7 +256,10 @@ def _rule_recipients(
         manager = users.get(responsible.manager_id)
         return [manager] if manager is not None else []
     if rule.recipient_type == "role":
-        return list(role_members.get(rule.recipient_value or "", ()))
+        members = role_members.get(rule.recipient_value or "", ())
+        if pipeline is None:
+            return list(members)
+        return [m for m in members if sees_deal(m, pipeline, group.responsible_user_id)]
     if rule.recipient_type == "user":
         try:
             user_id = uuid.UUID(rule.recipient_value or "")
@@ -284,11 +295,13 @@ def plan_migration_digests(
     users: dict[uuid.UUID, AppUser],
     role_members: dict[str, list[AppUser]],
     prefs: dict[uuid.UUID, dict[str, Any]],
+    pipeline: str | None = None,
 ) -> list[DigestRow]:
     """Сводки по тем же правилам и настройкам, что поштучный `emit_event_notifications`.
 
     - `users` — ответственные групп, их руководители и пользователи из правил `user`;
-      `role_members` — активные участники ролей из правил `role`;
+      `role_members` — активные участники ролей из правил `role`, видящие процесс воронки
+      (`pipeline` — её код: «только свои» участника роли сверяется с ответственным группы);
     - корзина `(user.id, channel)` / `(channel, address)` хранит множество групп;
       `rule_id` — первого по порядку `(created_at, id)` правила, давшего корзину;
     - `delivery_decision` применяется к каждой группе (`is_responsible` — получатель и есть
@@ -308,7 +321,7 @@ def plan_migration_digests(
                 bucket = address_buckets.setdefault(key, _Bucket(rank=rank, rule_id=rule.id))
                 bucket.add(group, rank, rule.id)
                 continue
-            for user in _rule_recipients(rule, group, users, role_members):
+            for user in _rule_recipients(rule, group, users, role_members, pipeline):
                 decision = delivery_decision(
                     prefs.get(user.id),
                     event_type=EVENT_REQUEST_TRANSITIONED,
@@ -457,20 +470,6 @@ def render_digest(
 # --------------------------------------------------------------------------------------
 
 
-async def load_role_members(
-    session: AsyncSession, role_code: str, *, workflow: Workflow
-) -> list[AppUser]:
-    """Получатели правила `role`: активные пользователи с ролью — нынешняя семантика
-    `core.outbox._resolve_rule_users`. `workflow` — задел волны 2 (F2): там загрузчик
-    заменяется на `outbox.role_rule_members(session, role_code, pipeline=workflow.code)`."""
-    rows = await session.execute(
-        select(AppUser)
-        .where(AppUser.roles.any(role_code), AppUser.is_active.is_(True))
-        .order_by(AppUser.id)
-    )
-    return list(rows.scalars().all())
-
-
 async def _load_users(
     session: AsyncSession, user_ids: Iterable[uuid.UUID]
 ) -> dict[uuid.UUID, AppUser]:
@@ -545,7 +544,7 @@ async def emit_migration_digests(
     role_members: dict[str, list[AppUser]] = {}
     role_codes = {r.recipient_value for r in rules if r.recipient_type == "role"}
     for code in sorted(c for c in role_codes if c):
-        role_members[code] = await load_role_members(session, code, workflow=workflow)
+        role_members[code] = await role_rule_members(session, code, pipeline=workflow.code)
 
     known: dict[uuid.UUID, AppUser] = dict(users)
     for members in role_members.values():
@@ -559,6 +558,7 @@ async def emit_migration_digests(
         users=users,
         role_members=role_members,
         prefs=prefs,
+        pipeline=workflow.code,
     )
     created = 0
     for row in digests:

@@ -9,7 +9,9 @@
 - демо-домен: вузы, контакты, продукты, программы (с приоритетами), договоры
   («1 договор — N продуктов»), заявки B2B/B2C с историей (включая заведомо
   зависшие — фактура для демо CronJob), студентов Talent Pool (ПДн шифруются тем же
-  кодом, что в проде), федпроекты и активности с расписанием.
+  кодом, что в проде), федпроекты и активности с расписанием;
+- историю активности ~20 КАМов для отчёта «Активность КАМов» (`app.tools.seed_activity`:
+  комментарии, файлы заявок, прошедшие мероприятия, исторические заявки).
 
 Идемпотентность — upsert по натуральным ключам: повторный запуск ничего не дублирует.
 """
@@ -128,10 +130,14 @@ APP_SETTINGS = [
     ),
     (
         "feature_flags",
-        {"auto_ranking": False, "report_pdf": False, "llm_features": False},
+        {"auto_ranking": False, "report_pdf": True, "llm_features": False},
         "Фичефлаги приложения (реестр — app.modules.admin.service.KNOWN_FLAGS)",
     ),
-    ("integration_mode", {"value": "http"}, "Транспорт интеграций: http | stream"),
+    (
+        "integration_mode",
+        {"value": "http"},
+        "Транспорт интеграций: http (outbox PostgreSQL → HTTP + HMAC)",
+    ),
     ("file_delivery", {"value": "proxy"}, "Выдача файлов: proxy | presigned"),
     (
         "notification_quiet_hours",
@@ -1443,7 +1449,17 @@ async def run_seed() -> None:
             users,
         )
         await seed_talent_pool(session, universities, programs, counterparties, users)
+        # история активности КАМов (отчёт F1); модуль импортирует seed — импорт ленивый
+        from app.tools.seed_activity import seed_activity_history
+
+        activity = await seed_activity_history(
+            session, workflows, universities, products, programs, users
+        )
         await session.commit()
+    print(  # noqa: T201
+        "seed: активность КАМов — новых заявок {deals}, файлов {files}, "
+        "мероприятий {activities}, студентов {students}".format(**activity)
+    )
     print("seed: демо-данные загружены (повторный запуск безопасен)")  # noqa: T201
 
 

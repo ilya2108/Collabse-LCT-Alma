@@ -202,18 +202,9 @@ NEW_ENDPOINT_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("DELETE", "/requests/{request_id}/files/{file_id}"): AHK,
 }
 
-# маршруты, ещё закрытые прежним require_roles: workflow/router.py переводит на права
-# поток F2 в волне 2 — после этого множество должно опустеть
-PENDING_ROLE_ROUTES: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("POST", "/workflows/{workflow_id}/impact-preview"),
-        ("POST", "/workflows/{workflow_id}/changes"),
-        ("GET", "/workflows/{workflow_id}/changes"),
-        ("GET", "/workflows/changes/{change_id}"),
-        ("POST", "/workflows/changes/{change_id}/approve"),
-        ("POST", "/workflows/changes/{change_id}/reject"),
-    }
-)
+# маршруты, ещё закрытые прежним require_roles (волна 2 перевела workflow/router.py на
+# права — множество пусто; новые исключения не допускаются)
+PENDING_ROLE_ROUTES: frozenset[tuple[str, str]] = frozenset()
 
 _API_PREFIX = "/api/v1"
 

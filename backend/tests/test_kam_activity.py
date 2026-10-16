@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
+from app.core.access import DealScope, compute_access, static_catalog
 from app.core.errors import ApiError
 from app.models.user import AppUser
 from app.modules.import_export.schemas import ExportJobBody
@@ -24,7 +25,6 @@ from app.modules.reporting.kam_activity import (
     StageRef,
     StageStat,
     UniversityRef,
-    ViewerScope,
 )
 from app.modules.reporting.kam_activity_export import (
     SHEET_NAMES,
@@ -36,6 +36,7 @@ from app.modules.reporting.kam_activity_export import (
 )
 from app.modules.reporting.pdf import render_table_pdf
 from app.modules.reporting.schemas import KamActivityReportOut, KamActivitySummaryOut
+from app.modules.reporting.service import ReportParams, _closed_between_stmt, report_scope
 
 MSK = ka.REPORT_TZ
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=MSK)
@@ -123,22 +124,39 @@ class TestPeriod:
 # --- 4–5: зона видимости, фильтры выгрузки, ключ кэша --------------------------------------
 
 
+def _own(user_id: uuid.UUID) -> DealScope:
+    return DealScope(rules=(("b2b", user_id), ("b2c", user_id)))
+
+
+def _report_scope(roles: tuple[str, ...], user_id: uuid.UUID) -> DealScope:
+    """Область отчётов по правам ролей из статического каталога (как `report_scope`)."""
+    access = compute_access(roles, static_catalog())
+    return access.deal_scope("reports:read", user_id, wide_permission="reports:all")
+
+
 class TestScope:
     def test_kam_without_filter_sees_only_self(self) -> None:
         kam = _user("kam")
-        params = ka._resolve_scope(kam, KamActivityParams())
+        scope = _report_scope(("kam",), kam.id)
+        params = ka._resolve_scope(kam, KamActivityParams(), scope)
         assert params.kam_ids == (kam.id,)
+        # без явной области — та же, что у дашборда (report_scope зрителя)
+        assert ka._resolve_scope(kam, KamActivityParams()).kam_ids == (kam.id,)
+        assert ka.viewer_scope(kam) == report_scope(kam) == scope
 
     def test_kam_foreign_id_is_403(self) -> None:
         kam = _user("kam")
+        scope = _report_scope(("kam",), kam.id)
         with pytest.raises(ApiError) as excinfo:
-            ka._resolve_scope(kam, KamActivityParams(kam_ids=(kam.id, uuid.uuid4())))
+            ka._resolve_scope(kam, KamActivityParams(kam_ids=(kam.id, uuid.uuid4())), scope)
         assert excinfo.value.status_code == 403
         assert excinfo.value.message == "КАМ видит отчёт только по своим заявкам"
 
     def test_kam_own_id_is_ok(self) -> None:
         kam = _user("kam")
-        assert ka._resolve_scope(kam, KamActivityParams(kam_ids=(kam.id,))).kam_ids == (kam.id,)
+        scope = _report_scope(("kam",), kam.id)
+        params = ka._resolve_scope(kam, KamActivityParams(kam_ids=(kam.id,)), scope)
+        assert params.kam_ids == (kam.id,)
 
     @pytest.mark.parametrize(
         "roles", [("head_kam",), ("observer",), ("admin",), ("kam", "observer")]
@@ -146,23 +164,38 @@ class TestScope:
     def test_wide_roles_keep_filters(self, roles: tuple[str, ...]) -> None:
         other = uuid.uuid4()
         viewer = _user(*roles)
-        assert ka._resolve_scope(viewer, KamActivityParams()).kam_ids == ()
-        assert ka._resolve_scope(viewer, KamActivityParams(kam_ids=(other,))).kam_ids == (other,)
+        scope = _report_scope(roles, viewer.id)
+        assert scope.is_unrestricted
+        assert ka._resolve_scope(viewer, KamActivityParams(), scope).kam_ids == ()
+        assert ka._resolve_scope(viewer, KamActivityParams(kam_ids=(other,)), scope).kam_ids == (
+            other,
+        )
 
     def test_workflow_outside_scope_is_403(self) -> None:
-        scope = ViewerScope(workflow_types=("b2c",))
+        scope = DealScope(rules=(("b2c", None),))
         with pytest.raises(ApiError) as excinfo:
             ka._resolve_scope(_user("head_kam"), KamActivityParams(workflow_type="b2b"), scope)
         assert excinfo.value.status_code == 403
         assert excinfo.value.message == "Процесс B2B недоступен вашей роли"
 
-    def test_rbac_deal_scope_is_duck_compatible(self) -> None:
-        access = pytest.importorskip("app.core.access")
-        own = uuid.uuid4()
-        scope = access.DealScope(rules=(("b2b", own), ("b2c", own)))
-        params = ka._resolve_scope(_user("kam"), KamActivityParams(), scope)
-        assert params.kam_ids == (own,)
-        assert ka._cache_key("kam-activity", params, scope).startswith("dash:kam-activity:")
+    def test_empty_scope_is_403(self) -> None:
+        with pytest.raises(ApiError) as excinfo:
+            ka._resolve_scope(_user("kam"), KamActivityParams(), DealScope(rules=()))
+        assert excinfo.value.status_code == 403
+
+    def test_mixed_scope_keeps_foreign_kams(self) -> None:
+        """b2b — все, b2c — только свои: чужой КАМ в фильтре допустим (b2c режет apply)."""
+        me, other = uuid.uuid4(), uuid.uuid4()
+        scope = DealScope(rules=(("b2b", None), ("b2c", me)))
+        params = ka._resolve_scope(_user("kam"), KamActivityParams(kam_ids=(other,)), scope)
+        assert params.kam_ids == (other,)
+        sql = _sql(ka.deal_rows_stmt(params, PERIOD, 14, scope))
+        assert "deal.pipeline = " in sql and "deal.responsible_user_id = " in sql
+
+    def test_kam_role_codes_follow_catalog(self) -> None:
+        both = ka.kam_role_codes(KamActivityParams(), DealScope.unrestricted())
+        assert both == ("kam",)  # head_kam/admin без requests:kam — не КАМы отчёта
+        assert ka.kam_role_codes(KamActivityParams(), DealScope(rules=())) == ()
 
     def test_from_filters(self) -> None:
         a, b = uuid.uuid4(), uuid.uuid4()
@@ -185,7 +218,7 @@ class TestScope:
         first = KamActivityParams(kam_ids=(a, b))
         second = KamActivityParams(kam_ids=(b, a))
         assert first.as_json()["kam_id"] == sorted([str(a), str(b)])
-        wide, own = ViewerScope(), ViewerScope(own_user_id=a)
+        wide, own = DealScope.unrestricted(), _own(a)
         assert ka._cache_key("x", first, wide) == ka._cache_key("x", second, wide)
         assert ka._cache_key("x", first, wide) != ka._cache_key("x", first, own)
         assert ka._cache_key("x", first, wide).startswith("dash:x:")
@@ -586,7 +619,7 @@ def _sql(stmt: Any) -> str:
 
 class TestSql:
     def test_deal_rows_stmt(self) -> None:
-        sql = _sql(ka.deal_rows_stmt(KamActivityParams(), PERIOD, 14, ViewerScope()))
+        sql = _sql(ka.deal_rows_stmt(KamActivityParams(), PERIOD, 14, DealScope.unrestricted()))
         assert sql.count("LATERAL") == 5
         assert "dsh_own.actor_user_id = deal.responsible_user_id" in sql
         assert "deal_comment.author_user_id = deal.responsible_user_id" in sql
@@ -603,7 +636,7 @@ class TestSql:
         params = KamActivityParams(
             workflow_type="b2b", kam_ids=(own,), university_ids=(uuid.uuid4(),)
         )
-        sql = _sql(ka.deal_rows_stmt(params, PERIOD, 14, ViewerScope(own_user_id=own)))
+        sql = _sql(ka.deal_rows_stmt(params, PERIOD, 14, _own(own)))
         assert "deal.pipeline =" in sql
         assert "deal.responsible_user_id IN" in sql
         assert "deal.university_id IN" in sql
@@ -636,6 +669,33 @@ class TestSql:
         assert list(compiled.params) == ["deal_ids", "created_at_1"]
         dwell = _sql(ka.stage_dwell_stmt(ids, PERIOD))
         assert "lead(deal_stage_history.created_at) OVER (PARTITION BY" in dwell
+
+
+# --- 14: D16 — «Завершено за период» дашборда по истории переходов -----------------------
+
+
+class TestDashboardClosedKpi:
+    def test_closed_between_uses_stage_history(self) -> None:
+        stmt = _closed_between_stmt(
+            "won",
+            date(2026, 7, 1),
+            date(2026, 9, 30),
+            ReportParams(workflow_type="b2b"),
+            DealScope.unrestricted(),
+        )
+        sql = _sql(stmt)
+        where = sql.split("WHERE", 1)[1]
+        assert "deal_stage_history" in where
+        assert "workflow_stage.terminal_outcome = " in where
+        assert "updated_at" not in sql
+        compiled = stmt.compile(dialect=postgresql.dialect())
+        assert "won" in compiled.params.values()
+
+    def test_closed_between_keeps_scope_and_filters(self) -> None:
+        own = uuid.uuid4()
+        sql = _sql(_closed_between_stmt("lost", None, None, ReportParams(kam_id=own), _own(own)))
+        assert "deal.responsible_user_id = " in sql
+        assert "deal_stage_history" not in sql  # без периода подзапрос не нужен
 
 
 # --- 11–12: выгрузка ---------------------------------------------------------------------
