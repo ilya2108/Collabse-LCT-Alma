@@ -18,6 +18,7 @@ from app.core.db import dispose_engine
 from app.core.errors import RequestIdMiddleware, register_error_handlers
 from app.core.health import router as health_router
 from app.core.idempotency import IdempotencyMiddleware, install_idempotency_openapi
+from app.core.openapi import install_openapi_postprocessing
 from app.core.outbox import outbox_relay_loop
 from app.core.sse import sse_listener_loop
 from app.modules.access.router import router as access_router
@@ -61,7 +62,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="CRM «Вузы» — API",
+        title="Альма — API CRM взаимодействия с вузами",
         version="1.0.0",
         description=(
             "CRM для работы с вузами (ЛЦТ 2026): workflow B2B/B2C, договоры, "
@@ -102,6 +103,9 @@ def create_app() -> FastAPI:
 
     # Swagger: заголовок Idempotency-Key и ответы 409/422 у каждой мутации /api/v1/
     install_idempotency_openapi(app)
+    # Swagger: ErrorEnvelope, 400 вместо 422 FastAPI, 401/403/404/409, Out-модели —
+    # последней обёрткой, поверх описаний Idempotency-Key (core/openapi.py)
+    install_openapi_postprocessing(app)
     return app
 
 

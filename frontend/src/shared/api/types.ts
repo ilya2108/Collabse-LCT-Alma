@@ -214,6 +214,21 @@ export interface UniversityContact {
 /** Статус договора (§3.2). */
 export type ContractStatus = 'draft' | 'negotiation' | 'active' | 'completed' | 'terminated';
 
+/** Статус передачи лицензии вузу; null — не указан. */
+export type LicenseTransferStatus = 'not_started' | 'in_progress' | 'transferred' | 'cancelled';
+
+/** Строка договора как лицензия на ИТ-продукт (§3.2). */
+export interface ContractLicense {
+  product_id: string;
+  license_signed_at: string | null;
+  license_term_years: number | null;
+  /** Дата окончания — включительно. */
+  license_valid_to: string | null;
+  transfer_status: LicenseTransferStatus | null;
+  transfer_status_updated_at?: string | null;
+  note: string | null;
+}
+
 /** Договор (§3.2). */
 export interface Contract {
   id: string;
@@ -227,6 +242,8 @@ export interface Contract {
   amount: string | null;
   currency: string;
   product_ids: string[];
+  /** Лицензии по продуктам договора (строки contract_product, импорт «Таблица КАМов»). */
+  licenses?: ContractLicense[];
   notes?: string | null;
   version: number;
   created_at?: string;
@@ -625,6 +642,7 @@ export type ImportEntityType =
   | 'requests_b2b'
   | 'requests_b2c'
   | 'students'
+  | 'kam_catalog'
   | (string & {});
 
 /** Машина состояний `import_session` (data-model.md §9.1, ответы §6.2–6.4). */
@@ -664,6 +682,8 @@ export interface ImportTargetField {
   field: string;
   label: string;
   required: boolean;
+  /** Справочник, по которому ищется значение (вуз, продукт, КАМ…); null — простое поле. */
+  lookup?: string | null;
 }
 
 export interface ImportSuggestedMapping {
@@ -719,6 +739,8 @@ export interface ImportApplyResult {
   skipped: number;
   failed: number;
   report_file_id?: string | null;
+  /** Разбивка составного импорта (kam_catalog): ключ счётчика → количество. */
+  details?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------

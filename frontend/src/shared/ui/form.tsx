@@ -15,7 +15,7 @@ import { cn } from '@/shared/lib/cn';
 /**
  * Форма shadcn поверх react-hook-form (§5.2): Form/FormField/FormItem/
  * FormLabel/FormControl/FormMessage. Схема — zod + zodResolver рядом с формой,
- * ошибки — inline под полем, 422 → form.setError.
+ * ошибки — inline под полем, 400 `validation_error` → form.setError.
  */
 const Form = FormProvider;
 

@@ -22,7 +22,8 @@ class MappingItem(_ApiModel):
 
 class MappingOptions(_ApiModel):
     sheet: int | str = 0
-    header_row: int = Field(default=0, ge=0)
+    # None — в файле нет строки заголовков: все строки — данные, колонки «Колонка N»
+    header_row: int | None = Field(default=0, ge=0)
     encoding: str | None = None
     update_strategy: Literal["create_only", "upsert", "update_only"] = "upsert"
     match_by: list[str] = Field(default_factory=list)

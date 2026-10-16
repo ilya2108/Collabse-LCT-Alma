@@ -215,8 +215,22 @@ class Contract(TimestampMixin, VersionedMixin, Base):
     )
 
 
+CONTRACT_PRODUCT_TRANSFER_STATUSES: tuple[str, ...] = (
+    "not_started",
+    "in_progress",
+    "transferred",
+    "cancelled",
+)
+
+
 class ContractProduct(Base):
-    """M:N «1 договор — N продуктов»; added_by/added_at — история расширения набора."""
+    """M:N «1 договор — N продуктов»; added_by/added_at — история расширения набора.
+
+    Строка договора — это и лицензия на ИТ-продукт (миграция 0008): дата подписания,
+    срок в годах, дата окончания и статус передачи лицензии вузу
+    (`CONTRACT_PRODUCT_TRANSFER_STATUSES`, NULL — не указан). Поля необязательные:
+    договоры, заведённые без лицензий, остаются валидными.
+    """
 
     __tablename__ = "contract_product"
 
@@ -231,6 +245,11 @@ class ContractProduct(Base):
     added_at: Mapped[datetime] = mapped_column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()
     )
+    license_signed_at: Mapped[date | None] = mapped_column(sa.Date)
+    license_term_years: Mapped[int | None] = mapped_column(sa.SmallInteger)  # 1–99, CHECK
+    license_valid_to: Mapped[date | None] = mapped_column(sa.Date)  # включительно
+    transfer_status: Mapped[str | None] = mapped_column(sa.Text)
+    transfer_status_updated_at: Mapped[datetime | None] = mapped_column(sa.TIMESTAMP(timezone=True))
 
     contract: Mapped[Contract] = relationship(back_populates="products")
     product: Mapped[Product] = relationship()

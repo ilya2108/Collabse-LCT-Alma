@@ -87,9 +87,14 @@ function sanitizeMapping(mapping: ImportMappingEntry[]): ImportMappingEntry[] {
 }
 
 function optionsFromSession(session: ImportSession): WizardOptions {
+  // header_row: null в сохранённых опциях — «без заголовков»; `??` его бы потерял
+  const headerRow =
+    session.options?.header_row !== undefined
+      ? session.options.header_row
+      : (session.detected?.header_row ?? 0);
   return {
     sheet: session.options?.sheet ?? session.detected?.active_sheet ?? 0,
-    headerRow: (session.options?.header_row ?? session.detected?.header_row ?? 0) !== null,
+    headerRow: headerRow !== null,
     encoding: session.options?.encoding ?? null,
     strategy: session.options?.update_strategy ?? 'upsert',
   };

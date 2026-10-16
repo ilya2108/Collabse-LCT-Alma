@@ -165,9 +165,22 @@ class FileOut(_ApiModel):
     created_at: datetime
 
 
+class ContractLicenseOut(_ApiModel):
+    """Строка договора как лицензия на ИТ-продукт (contract_product, миграция 0008)."""
+
+    product_id: UUID
+    license_signed_at: date | None = None
+    license_term_years: int | None = None
+    license_valid_to: date | None = None  # включительно
+    transfer_status: Literal["not_started", "in_progress", "transferred", "cancelled"] | None = None
+    transfer_status_updated_at: datetime | None = None
+    note: str | None = None
+
+
 class ContractOut(ContractBase):
     id: UUID
     product_ids: list[UUID] = Field(default_factory=list)
+    licenses: list[ContractLicenseOut] = Field(default_factory=list)
     version: int = Field(validation_alias=AliasChoices("xmin", "version"))
     created_at: datetime
     updated_at: datetime

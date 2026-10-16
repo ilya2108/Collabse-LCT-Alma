@@ -126,6 +126,27 @@ class TestParseCsv:
         assert table.columns == ["ФИО", "Почта"]
         assert table.rows == [["Иванов", "i@example.com"]]
 
+    def test_without_header_row(self) -> None:
+        # флажок «первая строка — заголовок» снят: все строки — данные, колонки «Колонка N»
+        data = "Иванов;i@example.com\nПетров;p@example.com;лишнее\n".encode("cp1251")
+        table = parse_table(data, "csv", header_row=None)
+        assert table.header_row is None
+        assert table.columns == ["Колонка 1", "Колонка 2", "Колонка 3"]
+        assert table.rows == [
+            ["Иванов", "i@example.com", None],
+            ["Петров", "p@example.com", "лишнее"],
+        ]
+
+    def test_mapping_options_accept_no_header(self) -> None:
+        from app.modules.import_export.schemas import MappingOptions
+        from app.modules.import_export.service import _header_row_option
+
+        options = MappingOptions.model_validate({"header_row": None})
+        assert options.header_row is None
+        assert _header_row_option(options.model_dump()) is None
+        assert _header_row_option({}) == 0
+        assert _header_row_option({"header_row": 2}) == 2
+
 
 class TestParseXlsx:
     def test_roundtrip(self) -> None:
@@ -140,6 +161,12 @@ class TestParseXlsx:
         with pytest.raises(ApiError) as exc:
             parse_table(b"PK\x03\x04" + b"\x00" * 100)
         assert exc.value.code == "import_bad_format"
+
+    def test_without_header_row(self) -> None:
+        data = _xlsx_bytes([["Иванов Иван", "ivanov@example.com"], ["Петров Пётр", None]])
+        table = parse_table(data, header_row=None)
+        assert table.columns == ["Колонка 1", "Колонка 2"]
+        assert table.rows == [["Иванов Иван", "ivanov@example.com"], ["Петров Пётр", None]]
 
     def test_unknown_sheet(self) -> None:
         data = _xlsx_bytes([["a"], [1]])

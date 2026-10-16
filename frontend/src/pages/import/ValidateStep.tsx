@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom';
 import { useOnboarding } from '@/features/onboarding';
 import { downloadFile } from '@/shared/api/endpoints/files';
 import type {
+  ImportApplyResult,
   ImportSession,
   ImportUpdateStrategy,
   ImportValidationReport,
@@ -51,6 +52,26 @@ import { registryPathFor } from './importModel';
  */
 
 const ERRORS_PAGE_SIZE = 10;
+
+/** Разбивка составного импорта (kam_catalog) — `result.details` с сервера. */
+const DETAIL_LABELS: Record<string, string> = {
+  universities_created: 'вузов создано',
+  contracts_created: 'договоров создано',
+  contracts_updated: 'договоров обновлено',
+  licenses_created: 'лицензий добавлено',
+  licenses_updated: 'лицензий обновлено',
+  products_created: 'продуктов создано',
+  products_updated: 'вендоров продуктов обновлено',
+  directions_linked: 'связей с ИТ-направлениями',
+  kam_assigned: 'КАМов назначено',
+  contacts_created: 'контактов вуза добавлено',
+};
+
+function resultDetails(result: ImportApplyResult | null | undefined): [string, number][] {
+  const details = result?.details;
+  if (!details) return [];
+  return Object.entries(details).filter(([key, count]) => count > 0 && key in DETAIL_LABELS);
+}
 
 interface ValidateStepProps {
   session: ImportSession;
@@ -143,6 +164,7 @@ export function ValidateStep({
   // --- Импорт завершён -------------------------------------------------------
   if (session.state === 'completed' && session.result) {
     const { created, updated, skipped, failed, report_file_id } = session.result;
+    const details = resultDetails(session.result);
     return (
       <div className="flex flex-col items-center py-10 text-center">
         <motion.div
@@ -166,6 +188,18 @@ export function ValidateStep({
           Создано {created} · обновлено {updated} · пропущено {skipped}
           {failed > 0 ? ` · с ошибками ${failed}` : ''}
         </p>
+        {details.length > 0 ? (
+          <ul className="mt-3 flex max-w-xl flex-wrap justify-center gap-1.5">
+            {details.map(([key, count]) => (
+              <li
+                key={key}
+                className="tabular rounded-sm bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+              >
+                {DETAIL_LABELS[key]}: {count}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <Button asChild>
             <Link to={registryPathFor(entity)}>Открыть реестр</Link>

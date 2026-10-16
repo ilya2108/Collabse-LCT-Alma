@@ -19,9 +19,128 @@ export const ENTITY_OPTIONS: EntityOption[] = [
   { value: 'universities', label: 'Вузы', registryPath: '/registry/universities' },
   { value: 'requests_b2b', label: 'Заявки B2B (вузы)', registryPath: '/board?wf=b2b' },
   { value: 'requests_b2c', label: 'Заявки B2C (физлица и юрлица)', registryPath: '/board?wf=b2c' },
+  {
+    value: 'kam_catalog',
+    label: 'Таблица КАМов: вузы, ПО, договоры, лицензии',
+    registryPath: '/registry/contracts',
+  },
   { value: 'students', label: 'Студенты (Пул талантов)', registryPath: '/talent-pool' },
   { value: 'dictionary:products', label: 'Справочник: продукты', registryPath: '/admin/dictionaries' },
 ];
+
+// ---------------------------------------------------------------------------
+// Памятка по составному импорту и шаблон файла (шаг 1 мастера)
+// ---------------------------------------------------------------------------
+
+export interface EntityGuideColumn {
+  /** Заголовок колонки в шаблоне — сервер узнаёт его и синонимы автоматически. */
+  name: string;
+  required?: boolean;
+  hint: string;
+}
+
+export interface EntityGuide {
+  summary: string;
+  columns: EntityGuideColumn[];
+  /** Синтетические строки-примеры для шаблона. */
+  example: string[][];
+  templateName: string;
+}
+
+/**
+ * Таблица КАМов (import_export/mapping.py `KAM_CATALOG_FIELDS`): строка — лицензия на
+ * ИТ-продукт по договору с вузом. Договор ищется по номеру (обновляется или создаётся),
+ * вуз и продукт — по справочникам, КАМ — по «Фамилия Имя».
+ */
+const KAM_CATALOG_GUIDE: EntityGuide = {
+  summary:
+    'Одна строка — лицензия на ИТ-продукт по договору с вузом. Договор ищется по номеру: ' +
+    'есть — обновится, нет — создастся. Несколько продуктов одного договора — отдельными ' +
+    'строками или через запятую. Объединённые ячейки Excel (вуз на несколько строк) читаются.',
+  columns: [
+    { name: 'Вуз', required: true, hint: 'название или ИНН; новый вуз — правило «Создавать отсутствующие»' },
+    { name: 'ИТ-направление', hint: 'из справочника, несколько — через запятую' },
+    { name: 'Вендор', hint: 'компания-правообладатель ПО' },
+    { name: 'ИТ-продукт (ПО)', required: true, hint: 'код или название из каталога продуктов' },
+    { name: 'Номер договора', required: true, hint: 'ключ строки: договор обновляется по номеру' },
+    { name: 'Дата подписания лицензии', hint: 'дд.мм.гггг' },
+    { name: 'Срок лицензии, лет', hint: 'число лет, год окончания (2027) или «бессрочно»' },
+    {
+      name: 'Статус передачи лицензии',
+      hint: 'не передана · в процессе передачи · передана · отменена',
+    },
+    { name: 'Ответственный КАМ', hint: 'Фамилия Имя сотрудника' },
+    { name: 'Ответственные от вуза', hint: 'ФИО (должность), телефон, почта; люди — через «;»' },
+    { name: 'Комментарий', hint: 'попадёт в строку договора' },
+  ],
+  example: [
+    [
+      'Северный технологический университет',
+      'Анализ данных',
+      'ООО «Пример Софт»',
+      'Пример.Аналитика',
+      'ЛЦ-2026/001',
+      '01.02.2026',
+      '1',
+      'Передана',
+      'Петров Константин',
+      'Смирнова Анна Олеговна (проректор), +7 900 000-00-01',
+      'Пилот на кафедре ИТ',
+    ],
+    [
+      'Северный технологический университет',
+      'DevOps',
+      'ООО «Пример Софт»',
+      'Пример.Конвейер',
+      'ЛЦ-2026/001',
+      '01.02.2026',
+      '2028',
+      'В процессе передачи',
+      'Петров Константин',
+      '',
+      '',
+    ],
+  ],
+  templateName: 'shablon-tablitsa-kamov.csv',
+};
+
+const ENTITY_GUIDES: Record<string, EntityGuide> = {
+  kam_catalog: KAM_CATALOG_GUIDE,
+};
+
+export function entityGuide(value: string): EntityGuide | null {
+  return ENTITY_GUIDES[value] ?? null;
+}
+
+function csvCell(value: string): string {
+  return /[";\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+/**
+ * CSV-шаблон для Excel: UTF-8 с BOM и разделителем «;» — Excel в русской локали
+ * открывает его без мастера, а импорт определяет кодировку и разделитель сам.
+ */
+export function templateCsv(guide: EntityGuide): string {
+  const lines = [guide.columns.map((c) => c.name), ...guide.example].map((row) =>
+    row.map(csvCell).join(';'),
+  );
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
+export function downloadTemplate(guide: EntityGuide): void {
+  const blob = new Blob([templateCsv(guide)], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = guide.templateName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
 
 /** Целевая сущность-справочник админки: `dictionary:<name>` (api-contract §10.1). */
 export function isDictionaryEntity(value: string): boolean {
@@ -287,6 +406,16 @@ const LOOKUP_RULES: Record<string, LookupOption[]> = {
     { value: 'match_or_create', label: 'Создавать отсутствующие' },
   ],
 };
+
+/** Поля, которые ищутся в справочнике без создания: правило показывается подсказкой. */
+const LOOKUP_HINTS: Record<string, string> = {
+  it_direction: 'Ищется в справочнике ИТ-направлений по коду или названию',
+  kam: 'Сотрудник по «Фамилия Имя», ФИО, логину или email',
+};
+
+export function lookupHintFor(field: string): string | null {
+  return LOOKUP_HINTS[field] ?? null;
+}
 
 export function lookupOptionsFor(field: string): LookupOption[] | null {
   return LOOKUP_RULES[field] ?? null;

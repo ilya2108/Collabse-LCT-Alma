@@ -36,7 +36,7 @@ import { Textarea } from '@/shared/ui/textarea';
  * Создание заявки (ux.md §7.4, redesign.md §5.2): Sheet 480px, react-hook-form
  * + zod. Заявка всегда создаётся в начальном этапе схемы; B2B — вуз
  * обязателен, B2C — контрагент (физлицо/юрлицо) + тип взаимодействия.
- * Ошибки 422 маппятся в поля через form.setError.
+ * Ошибки 400 `validation_error` маппятся в поля через form.setError.
  */
 
 interface CreateRequestDrawerProps {
@@ -123,7 +123,7 @@ const FORM_FIELDS = [
   'description',
 ] as const;
 
-/** 422: `loc/field` бэкенда → имя поля формы (client.full_name → client_full_name). */
+/** 400 `validation_error`: `loc/field` бэкенда → имя поля формы (client.full_name → client_full_name). */
 function apiFieldToFormField(field: string): Path<FormValues> | null {
   const normalized = field.replace(/^body\./, '').replace('client.', 'client_');
   return (FORM_FIELDS as readonly string[]).includes(normalized)
@@ -170,8 +170,12 @@ export function CreateRequestDrawer({
       onCreated?.(request);
     },
     onError: (error) => {
-      // 422 → inline-ошибки полей (§5.2), непривязанные — toast
-      if (isApiError(error) && error.status === 422 && error.details.length > 0) {
+      // 400 validation_error → inline-ошибки полей (§5.2), непривязанные — toast
+      if (
+        isApiError(error) &&
+        (error.code === 'validation_error' || error.status === 422) &&
+        error.details.length > 0
+      ) {
         let unbound = false;
         for (const detail of error.details) {
           const field = detail.field ? apiFieldToFormField(detail.field) : null;

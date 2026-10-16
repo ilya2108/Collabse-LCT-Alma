@@ -17,7 +17,7 @@
 | Р1 | UI-кит: **Tailwind CSS v4 + shadcn/ui** (стиль `new-york`, Radix-примитивы). Ant Design 5 и `@ant-design/icons` полностью удаляются из зависимостей по завершении миграции. |
 | Р2 | Таблицы: **TanStack Table v8** в обёртке `DataTable`, **API-совместимой с текущим `RegistryTable`** (§3.2) — страницы-реестры мигрируют механической заменой импорта. |
 | Р3 | Анимации: пакет **`motion` v12** (это и есть framer-motion 12+; импорт строго `from 'motion/react'`, импорт из `framer-motion` запрещён). Токены/пружины — §2. |
-| Р4 | Формы: **react-hook-form + zod** (`@hookform/resolvers/zod`). Контролируемые формы AntD не сохраняются. Маппинг 422 → `setError` — §5.2. |
+| Р4 | Формы: **react-hook-form + zod** (`@hookform/resolvers/zod`). Контролируемые формы AntD не сохраняются. Маппинг 400 `validation_error` → `setError` — §5.2. |
 | Р5 | Иконки: **lucide-react** (в бандле, tree-shakeable). Эмодзи в UI не используются (кроме сообщений TG-бота). |
 | Р6 | Тосты: **sonner** (`Toaster` внизу справа), обёртки `toastSuccess/toastError` — §3.11. |
 | Р7 | **Остаются и перетемизируются**: Apache ECharts (тема `crm`, §2.6), `@xyflow/react`, `@dnd-kit/*`, `@tanstack/react-query`, `react-router-dom`, `zustand`, `keycloak-js`, `qrcode`, `dayjs`. API-слой (`shared/api`), auth, SSE, guard'ы, `menuConfig` — **не трогаем**. |
@@ -570,7 +570,7 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 
 - Схема zod рядом с формой (`const schema = z.object({...})`), `useForm({ resolver: zodResolver(schema), mode: 'onTouched' })`.
 - Разметка — `Form/FormField/FormItem/FormLabel/FormControl/FormMessage` shadcn; у каждого инпута `name`, семантический `type` (`email/tel/url/number`) и `autocomplete` (`off` для не-auth полей); paste не блокировать; `spellCheck={false}` на email/кодах/ИНН.
-- Ошибки — inline под полем (`FormMessage`, `text-status-danger-deep text-xs`); при submit — фокус на первое поле с ошибкой (`setFocus`). Ошибка 422 API: маппинг `loc → field` (существующий хелпер) → `form.setError(field, { message: detail })`, непривязанные — toast.
+- Ошибки — inline под полем (`FormMessage`, `text-status-danger-deep text-xs`); при submit — фокус на первое поле с ошибкой (`setFocus`). Ошибка 400 `validation_error` API: маппинг `loc → field` (существующий хелпер) → `form.setError(field, { message: detail })`, непривязанные — toast.
 - Submit-кнопка активна до старта запроса; во время — спиннер `Loader2 animate-spin` + текст «Сохраняем…» (`aria-live="polite"` на статус).
 - Плейсхолдеры — образец с `…`: «ИНН, 10 цифр…».
 

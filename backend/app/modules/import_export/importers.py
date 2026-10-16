@@ -1,37 +1,46 @@
 """Построчная валидация и применение импорта по `entity_type` (api-contract.md §6.4).
 
-Стадия B3 покрывает: `universities`, `students`, `requests_b2b`, `requests_b2c`
-и `dictionary:*`. Дедупликация студентов/физлиц — по blind index `email_hmac`
-(data-model.md §7.1); заявки создаются в initial-этапе своей воронки с историей
-`kind='import'`. Валидация (dry-run) ничего не пишет; создание недостающих
-сущностей (`create_missing`) происходит только на apply.
+Покрыты: `universities`, `students`, `requests_b2b`, `requests_b2c`, `kam_catalog`
+(таблица КАМов: вуз — ИТ-продукт — договор — лицензия — КАМ) и `dictionary:*`.
+Дедупликация студентов/физлиц — по blind index `email_hmac` (data-model.md §7.1);
+заявки создаются в initial-этапе своей воронки с историей `kind='import'`. Валидация
+(dry-run) ничего не пишет; создание недостающих сущностей (`create_missing`)
+происходит только на apply.
 """
 
 from __future__ import annotations
 
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.core.audit import write_audit
 from app.core.pii import (
     PiiCrypto,
     display_name_from_full_name,
     mask_email,
+    mask_full_name,
     normalize_email,
 )
 from app.models.crm import (
+    CONTRACT_PRODUCT_TRANSFER_STATUSES,
+    Contract,
+    ContractProduct,
     Counterparty,
     InteractionType,
     ItDirection,
     Product,
     Program,
     University,
+    UniversityContact,
 )
 from app.models.deal import Deal, DealStageHistory
 from app.models.service import AppSetting
@@ -39,7 +48,12 @@ from app.models.talent import FederalProject, Student, StudentStatusHistory
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
 from app.modules.crm.directions import link_product_directions, load_direction_lookup
-from app.modules.import_export.mapping import EntityFields, MappingEntry, entity_fields
+from app.modules.import_export.mapping import (
+    EntityFields,
+    MappingEntry,
+    entity_fields,
+    normalize_phone,
+)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -143,9 +157,18 @@ class ApplyStats:
     created: int = 0
     updated: int = 0
     skipped: int = 0
+    # разбивка составного импорта по сущностям (kam_catalog): договоры, лицензии, КАМы…
+    details: dict[str, int] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, int]:
-        return {"created": self.created, "updated": self.updated, "skipped": self.skipped}
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "created": self.created,
+            "updated": self.updated,
+            "skipped": self.skipped,
+        }
+        if self.details:
+            result["details"] = dict(self.details)
+        return result
 
 
 def _norm(value: str | None) -> str:
@@ -1065,6 +1088,824 @@ async def _apply_value_list(ctx: ImportContext, rows: list[PreparedRow], name: s
 
 
 # --------------------------------------------------------------------------------------
+# Таблица КАМов (kam_catalog): вуз — ИТ-продукт — договор — лицензия — КАМ
+# --------------------------------------------------------------------------------------
+#
+# Строка файла — лицензия на ИТ-продукт по договору с вузом. Ключ upsert — номер договора
+# (уникален без регистра, uq_contract_number); в одном договоре несколько продуктов —
+# несколько строк файла (или несколько продуктов через запятую в одной ячейке). Права —
+# как у карточек: КАМ без «Назначения ответственного КАМа за вуз» не меняет КАМа вуза
+# (новый вуз — только на себя), без «Правки чужих вузов и договоров» не трогает чужие
+# договоры и контакты чужих вузов, без «Создания и правки продуктов» не создаёт продукты
+# и не меняет их вендора. Нарушение — построчная ошибка, а не отказ всего файла.
+
+TRANSFER_STATUS_LABELS: dict[str, str] = {
+    "not_started": "Не передана",
+    "in_progress": "В процессе передачи",
+    "transferred": "Передана",
+    "cancelled": "Отменена",
+}
+
+# русские формулировки статуса передачи лицензии (поверх value_map пользователя)
+_TRANSFER_STATUS_RU: dict[str, str] = {
+    "не передана": "not_started",
+    "не передано": "not_started",
+    "не передан": "not_started",
+    "не начата": "not_started",
+    "ожидает": "not_started",
+    "ожидает передачи": "not_started",
+    "нет": "not_started",
+    "в процессе": "in_progress",
+    "в процессе передачи": "in_progress",
+    "в работе": "in_progress",
+    "передается": "in_progress",
+    "на передаче": "in_progress",
+    "частично": "in_progress",
+    "частично передана": "in_progress",
+    "передана": "transferred",
+    "передано": "transferred",
+    "передан": "transferred",
+    "передана вузу": "transferred",
+    "выдана": "transferred",
+    "активирована": "transferred",
+    "да": "transferred",
+    "отменена": "cancelled",
+    "отменено": "cancelled",
+    "отмена": "cancelled",
+    "отказ": "cancelled",
+    "отозвана": "cancelled",
+    "аннулирована": "cancelled",
+}
+
+_STATUS_TRIM_RE = re.compile(r"[\s.!,;:]+")
+_NAME_SPLIT_RE = re.compile(r"[\s.,]+")
+_INN_RE = re.compile(r"\d{10}|\d{12}")
+_DATE_DMY_RE = re.compile(r"^(\d{1,2})[./-](\d{1,2})[./-](\d{4}|\d{2})(?:\s*г(?:ода|\.)?)?$")
+_TERM_YEARS_RE = re.compile(
+    r"^(?:на\s+)?(\d+(?:[.,]\d+)?)\s*(?:г|год|года|лет|years?|y)?\.?$", re.IGNORECASE
+)
+_TERM_UNTIL_YEAR_RE = re.compile(r"^(?:до\s+)?(\d{4})(?:\s*(?:г|год|года))?\.?$")
+_CONTACT_SPLIT_RE = re.compile(r"[;\n]+")
+_CONTACT_EMAIL_RE = re.compile(r"[^\s@,;()<>]+@[^\s@,;()<>]+\.[^\s@,;()<>]+")
+_CONTACT_PHONE_RE = re.compile(r"\+?\d[\d\s()\-]{8,}\d")
+_CONTACT_POSITION_RE = re.compile(r"\(([^)]*)\)")
+_LIST_SPLIT_RE = re.compile(r"[,;\n/]+")
+_VENDOR_PREFIX = "Вендор:"
+
+MAX_LICENSE_TERM_YEARS = 99  # = CHECK ck_contract_product_license_term
+_MIN_LICENSE_YEAR = 1990
+_MAX_LICENSE_YEAR = 2100
+
+
+def resolve_transfer_status(raw: str) -> str | None:
+    """«Передана», «в процессе передачи», «отказ» или код → код статуса передачи."""
+    value = _STATUS_TRIM_RE.sub(" ", raw.strip().lower().replace("ё", "е")).strip()
+    if value in CONTRACT_PRODUCT_TRANSFER_STATUSES:  # коды CHECK ck_contract_product_…
+        return value
+    for code, label in TRANSFER_STATUS_LABELS.items():
+        if value == label.lower():
+            return code
+    return _TRANSFER_STATUS_RU.get(value)
+
+
+def _name_tokens(raw: str) -> list[str]:
+    return [t for t in _NAME_SPLIT_RE.split(raw.strip().lower().replace("ё", "е")) if t]
+
+
+def person_name_keys(full_name: str) -> set[str]:
+    """Ключи поиска сотрудника по ФИО из таблицы КАМа (`app_user.full_name` — «Ф И О»).
+
+    «Петров Константин Андреевич» → полное ФИО, «петров константин», «константин петров»,
+    «петров к», «петров к а». Одна фамилия — не ключ: слишком неоднозначно.
+    """
+    tokens = _name_tokens(full_name)
+    if len(tokens) < 2:
+        return set()
+    last, first = tokens[0], tokens[1]
+    keys = {" ".join(tokens), f"{last} {first}", f"{first} {last}", f"{last} {first[0]}"}
+    if len(tokens) > 2:
+        keys.add(f"{last} {first[0]} {tokens[2][0]}")
+    return keys
+
+
+def add_years(start: date, years: int) -> date:
+    """Та же дата через N лет; 29 февраля в невисокосный год → 28 февраля."""
+    try:
+        return start.replace(year=start.year + years)
+    except ValueError:
+        return start.replace(year=start.year + years, day=28)
+
+
+def license_end(signed_at: date, years: int) -> date:
+    """Последний день действия лицензии на N лет: 01.02.2026 + 1 год → 31.01.2027."""
+    return add_years(signed_at, years) - timedelta(days=1)
+
+
+def parse_license_date(raw: str) -> date:
+    """Дата из ячейки: дд.мм.гггг, д.м.гг, дд/мм/гггг, ISO (Excel-даты парсер уже
+    привёл к ISO); «г.» в конце допускается."""
+    value = raw.strip().lower()
+    match = _DATE_DMY_RE.match(value)
+    try:
+        if match:
+            day, month, year = (int(g) for g in match.groups())
+            parsed = date(year + 2000 if year < 100 else year, month, day)
+        else:
+            parsed = date.fromisoformat(value[:10])
+    except ValueError as exc:
+        raise ValueError(f"Дата «{raw}» не распознана: ожидается дд.мм.гггг") from exc
+    if not _MIN_LICENSE_YEAR <= parsed.year <= _MAX_LICENSE_YEAR:
+        raise ValueError(f"Дата «{raw}» вне допустимого диапазона")
+    return parsed
+
+
+@dataclass(frozen=True)
+class LicenseTerm:
+    """Срок лицензии из ячейки: число лет, явная дата окончания или «бессрочно»."""
+
+    years: int | None = None
+    valid_to: date | None = None
+    perpetual: bool = False
+
+
+def parse_license_term(raw: str) -> LicenseTerm:
+    """«1», «3 года», «5 лет» → лет; «2027», «до 2027 г.» → до 31.12.2027;
+    «31.12.2027», «до 31.12.2027» → до даты; «бессрочно» → без срока."""
+    value = raw.strip().lower().replace("ё", "е")
+    if value.startswith("бессроч"):
+        return LicenseTerm(perpetual=True)
+    until_year = _TERM_UNTIL_YEAR_RE.match(value)
+    if until_year:
+        year = int(until_year.group(1))
+        if _MIN_LICENSE_YEAR <= year <= _MAX_LICENSE_YEAR:
+            return LicenseTerm(valid_to=date(year, 12, 31))
+    years_match = _TERM_YEARS_RE.match(value)
+    if years_match:
+        number = Decimal(years_match.group(1).replace(",", "."))
+        if number != number.to_integral_value() or not 1 <= number <= MAX_LICENSE_TERM_YEARS:
+            raise ValueError(
+                f"Срок лицензии «{raw}»: укажите целое число лет от 1 до {MAX_LICENSE_TERM_YEARS}"
+            )
+        return LicenseTerm(years=int(number))
+    try:
+        return LicenseTerm(valid_to=parse_license_date(value.removeprefix("до").strip()))
+    except ValueError:
+        pass
+    raise ValueError(
+        f"Срок лицензии «{raw}» не распознан: укажите число лет (1, 3), "
+        "год окончания (2027) или дату окончания (31.12.2027)"
+    )
+
+
+def merge_license(
+    current: tuple[date | None, int | None, date | None],
+    signed_at: date | None,
+    term: LicenseTerm | None,
+) -> tuple[date | None, int | None, date | None]:
+    """Итоговые (подписание, лет, окончание) строки договора после строки файла.
+
+    Пустые ячейки не стирают сохранённое. Новая дата подписания при известном сроке в
+    годах пересчитывает окончание; «бессрочно» снимает срок. Окончание раньше
+    подписания — ValueError (это же проверяет CHECK ck_contract_product_license_dates).
+    """
+    current_signed, years, valid_to = current
+    signed = signed_at or current_signed
+    if term is not None:
+        years, valid_to = term.years, term.valid_to
+    if years is not None and signed is not None and (term is not None or signed_at is not None):
+        valid_to = license_end(signed, years)
+    elif term is None and signed_at is not None and valid_to is not None and valid_to < signed:
+        # переподписание позже прежней явной даты окончания: старая дата устарела
+        valid_to = None
+    if valid_to is not None and signed is not None and valid_to < signed:
+        raise ValueError(
+            f"Окончание лицензии {valid_to:%d.%m.%Y} раньше её подписания {signed:%d.%m.%Y}"
+        )
+    return signed, years, valid_to
+
+
+@dataclass(frozen=True)
+class ContactInfo:
+    full_name: str
+    position: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+
+def parse_contacts(raw: str) -> list[ContactInfo]:
+    """«Ответственные от вуза» → контакты; люди разделяются «;» или переносом строки.
+
+    «Иванова Анна Сергеевна (проректор), +7 916 000-11-22, ivanova@vuz.ru» → ФИО,
+    должность (в скобках или после запятой), телефон (нормализован), email. Фрагмент
+    без ФИО (только телефон или почта) пропускается — его не к кому привязать.
+    """
+    contacts: list[ContactInfo] = []
+    seen: set[str] = set()
+    for chunk in _CONTACT_SPLIT_RE.split(raw):
+        text = chunk.strip()
+        if not text:
+            continue
+        email_match = _CONTACT_EMAIL_RE.search(text)
+        email = email_match.group(0) if email_match else None
+        if email_match:
+            text = text.replace(email_match.group(0), " ")
+        phone: str | None = None
+        for phone_match in _CONTACT_PHONE_RE.finditer(text):
+            digits = re.sub(r"\D", "", phone_match.group(0))
+            if 10 <= len(digits) <= 15:
+                phone = normalize_phone(phone_match.group(0))
+                text = text.replace(phone_match.group(0), " ")
+                break
+        position: str | None = None
+        position_match = _CONTACT_POSITION_RE.search(text)
+        if position_match:
+            position = position_match.group(1).strip() or None
+            text = text.replace(position_match.group(0), " ")
+        name, _, rest = text.partition(",")
+        if position is None:
+            position = rest.strip(" ,-–—") or None
+        for dash in (" — ", " – ", " - "):
+            if dash in name:
+                name, _, tail = name.partition(dash)
+                position = position or tail.strip(" ,-–—") or None
+        name = re.sub(r"\s+", " ", name).strip(" ,-–—:")
+        key = " ".join(_name_tokens(name))
+        if not name or not any(ch.isalpha() for ch in name) or key in seen:
+            continue
+        seen.add(key)
+        contacts.append(ContactInfo(full_name=name, position=position, email=email, phone=phone))
+    return contacts
+
+
+def mask_contacts(raw: str) -> str:
+    """Маска «Ответственных от вуза» для сэмплов и отчёта ошибок: только «И***в И.И.»."""
+    masked = [mask_full_name(contact.full_name) for contact in parse_contacts(raw)]
+    return "; ".join(masked) if masked else "***"
+
+
+def split_direction_names(raw: str | None) -> list[str]:
+    """«DevOps, QA» / «DevOps; QA» → ["DevOps", "QA"] без пустых и повторов."""
+    names: list[str] = []
+    for part in _LIST_SPLIT_RE.split(raw or ""):
+        name = part.strip()
+        if name and _norm(name) not in {_norm(n) for n in names}:
+            names.append(name)
+    return names
+
+
+def product_vendor(description: str | None) -> str | None:
+    """Вендор продукта: первая строка описания «Вендор: …» (так пишет и справочник
+    продуктов — у модели Product нет отдельного поля вендора)."""
+    first_line = (description or "").split("\n", 1)[0].strip()
+    if first_line.startswith(_VENDOR_PREFIX):
+        return first_line[len(_VENDOR_PREFIX) :].strip() or None
+    return None
+
+
+def with_vendor(description: str | None, vendor: str) -> str:
+    """Описание продукта с вендором в первой строке (прочий текст сохраняется)."""
+    line = f"{_VENDOR_PREFIX} {vendor}"
+    if not description:
+        return line
+    if product_vendor(description) is not None or description.startswith(_VENDOR_PREFIX):
+        rest = description.split("\n", 1)[1] if "\n" in description else ""
+        return f"{line}\n{rest}" if rest else line
+    return f"{line}\n{description}"
+
+
+async def _load_kam_catalog_lookups(ctx: ImportContext) -> None:
+    """Договоры с их строками и все сотрудники (в том числе неактивные — чтобы отличить
+    «не найден» от «деактивирован») для таблицы КАМов."""
+    if "contract_by_number" in ctx.lookups:
+        return
+    session = ctx.session
+    contracts = (
+        (await session.execute(select(Contract).options(selectinload(Contract.products))))
+        .scalars()
+        .all()
+    )
+    ctx.lookups["contract_by_number"] = {_norm(c.number): c for c in contracts}
+    users = (await session.execute(select(AppUser))).scalars().all()
+    by_name: dict[str, list[AppUser]] = {}
+    for user in users:
+        for key in person_name_keys(user.full_name or ""):
+            by_name.setdefault(key, []).append(user)
+    ctx.lookups["kam_by_name"] = by_name
+    ctx.lookups["any_user_by_login"] = {_norm(u.username): u for u in users}
+    ctx.lookups["any_user_by_login"].update({_norm(u.email): u for u in users if u.email})
+    ctx.lookups["university_by_id"] = {u.id: u for u in ctx.lookups["university_by_name"].values()}
+    ctx.lookups["contacts_by_university"] = {}
+
+
+def _resolve_kam(ctx: ImportContext, raw: str) -> tuple[AppUser | None, tuple[str, str] | None]:
+    """КАМ по «Фамилия Имя» (а также полному ФИО, «Фамилия И.О.», логину или email).
+
+    Возвращает (пользователь, None) или (None, (код, сообщение)).
+    """
+    value = raw.strip()
+    tokens = _name_tokens(value)
+    login_match = ctx.lookups["any_user_by_login"].get(_norm(value))
+    if login_match is not None:
+        candidates = [login_match]
+    elif len(tokens) < 2:
+        return None, (
+            "invalid_format",
+            f"КАМ «{value}»: укажите фамилию и имя («Иванов Иван») или логин",
+        )
+    else:
+        candidates = ctx.lookups["kam_by_name"].get(" ".join(tokens), [])
+    active = list({u.id: u for u in candidates if u.is_active}.values())
+    if len(active) == 1:
+        return active[0], None
+    if len(active) > 1:
+        return None, (
+            "ambiguous",
+            f"КАМ «{value}»: найдено сотрудников — {len(active)}. Укажите полное ФИО или логин",
+        )
+    if candidates:
+        return None, ("inactive_user", f"Сотрудник «{value}» деактивирован — укажите другого КАМа")
+    return None, (
+        "lookup_not_found",
+        f"Сотрудник «{value}» не найден (поиск по фамилии и имени, ФИО, логину и email)",
+    )
+
+
+def _university_label(university: University) -> str:
+    return university.short_name or university.name
+
+
+def _license_issue(
+    row: PreparedRow,
+    line: ContractProduct | None,
+    signed_at: date | None,
+    term: LicenseTerm | None,
+) -> None:
+    current = (
+        (line.license_signed_at, line.license_term_years, line.license_valid_to)
+        if line is not None
+        else (None, None, None)
+    )
+    try:
+        merge_license(current, signed_at, term)
+    except ValueError as exc:
+        _issue(row, "license_term", "invalid_value", str(exc))
+
+
+async def _validate_kam_catalog(ctx: ImportContext, rows: list[PreparedRow]) -> None:
+    await _load_kam_catalog_lookups(ctx)
+    actor = ctx.actor
+    strategy = ctx.options.update_strategy
+    can_assign = actor.access.has("universities:assign")
+    can_write_any = actor.access.has("crm:write_any")
+    can_write_products = actor.access.has("products:write")
+    product_entry = ctx.entry_for("product")
+    create_products = product_entry is not None and product_entry.create_missing
+    contract_owner: dict[str, tuple[str, int]] = {}  # договор → (вуз, строка) в файле
+    university_kam: dict[str, tuple[uuid.UUID, int]] = {}  # вуз → (КАМ, строка) в файле
+    line_rows: dict[str, int] = {}  # «договор|продукт» → первая строка файла
+
+    for row in rows:
+        values = row.values
+        # --- вуз --------------------------------------------------------------------------
+        university_raw = (values.get("university") or "").strip()
+        university = _lookup_university(ctx, university_raw) if university_raw else None
+        # ключ вуза в файле: найденный — по id (ИНН и название сходятся), новый — по названию
+        university_key = str(university.id) if university is not None else _norm(university_raw)
+        if not university_raw:
+            _issue(row, "university", "required", "Не заполнено обязательное поле «Вуз»")
+        elif university is None and _INN_RE.fullmatch(university_raw):
+            _issue(
+                row,
+                "university",
+                "lookup_not_found",
+                f"Вуз с ИНН {university_raw} не найден — для нового вуза укажите название",
+            )
+        else:
+            _check_reference(
+                ctx, row, target_field="university", found=university is not None, label="Вуз"
+            )
+
+        # --- договор: ключ строки; стратегия дублей решает, будет ли строка применена --------
+        number = (values.get("contract_number") or "").strip()
+        number_key = _norm(number)
+        contract = ctx.lookups["contract_by_number"].get(number_key) if number else None
+        skipped = (contract is not None and strategy == "create_only") or (
+            contract is None and strategy == "update_only"
+        )
+        if not number:
+            _issue(
+                row,
+                "contract_number",
+                "required",
+                "Не заполнено обязательное поле «Номер договора»",
+            )
+        elif contract is not None:
+            owner = ctx.lookups["university_by_id"].get(contract.university_id)
+            if contract.university_id is None:
+                _issue(
+                    row,
+                    "contract_number",
+                    "conflict",
+                    f"Договор №{number} заключён с клиентом B2C, а не с вузом",
+                )
+            elif university_raw and (university is None or university.id != contract.university_id):
+                owner_label = f"«{_university_label(owner)}»" if owner is not None else "другой"
+                _issue(
+                    row,
+                    "contract_number",
+                    "conflict",
+                    f"Договор №{number} уже заведён на вуз {owner_label}",
+                )
+            elif (
+                not skipped
+                and not can_write_any
+                and contract.responsible_user_id not in (None, actor.id)
+            ):
+                _issue(
+                    row,
+                    "contract_number",
+                    "forbidden",
+                    f"Договор №{number} ведёт другой КАМ: изменять чужие договоры может "
+                    "пользователь с правом «Правка чужих вузов и договоров»",
+                )
+        if number and university_raw and contract is None:
+            # новый договор: все его строки в файле — про один вуз (у существующего
+            # владельца определяет БД — проверка выше)
+            first = contract_owner.get(number_key)
+            if first is None:
+                contract_owner[number_key] = (university_key, row.row_number)
+            elif first[0] != university_key:
+                _issue(
+                    row,
+                    "contract_number",
+                    "conflict_in_file",
+                    f"Договор №{number} в строке {first[1]} указан для другого вуза",
+                )
+
+        # --- ИТ-продукты ------------------------------------------------------------------
+        product_names = split_product_names(values.get("product") or "")
+        if not product_names:
+            _issue(row, "product", "required", "Не заполнено обязательное поле «ИТ-продукт»")
+        products: list[Product | None] = []
+        for name in product_names:
+            product = _lookup_product(ctx, name)
+            products.append(product)
+            if number:
+                line_key = f"{number_key}|{product.id if product is not None else _norm(name)}"
+                if line_key in line_rows:
+                    _issue(
+                        row,
+                        "product",
+                        "duplicate_in_file",
+                        f"Договор №{number} и ИТ-продукт «{name}» уже есть в строке "
+                        f"{line_rows[line_key]}",
+                    )
+                else:
+                    line_rows[line_key] = row.row_number
+            if product is not None:
+                continue
+            if not create_products:
+                _issue(
+                    row,
+                    "product",
+                    "lookup_not_found",
+                    f"ИТ-продукт «{name}» не найден в каталоге (поиск по коду и названию). "
+                    "Добавьте его или выберите правило «Создавать отсутствующие»",
+                )
+            elif not can_write_products:
+                _issue(
+                    row,
+                    "product",
+                    "forbidden",
+                    f"ИТ-продукта «{name}» нет в каталоге, а создавать продукты может "
+                    "пользователь с правом «Создание и правка продуктов»",
+                )
+
+        # --- ИТ-направления ---------------------------------------------------------------
+        for direction_name in split_direction_names(values.get("it_direction")):
+            if _lookup_direction(ctx, direction_name) is None:
+                _issue(
+                    row,
+                    "it_direction",
+                    "lookup_not_found",
+                    f"ИТ-направление «{direction_name}» не найдено в справочнике "
+                    "(поиск по коду и названию)",
+                )
+
+        # --- лицензия ---------------------------------------------------------------------
+        signed_at: date | None = None
+        term: LicenseTerm | None = None
+        license_ok = True
+        if values.get("license_signed_at"):
+            try:
+                signed_at = parse_license_date(values["license_signed_at"])
+            except ValueError as exc:
+                license_ok = False
+                _issue(row, "license_signed_at", "invalid_format", str(exc))
+        if values.get("license_term"):
+            try:
+                term = parse_license_term(values["license_term"])
+            except ValueError as exc:
+                license_ok = False
+                _issue(row, "license_term", "invalid_format", str(exc))
+        if license_ok and (signed_at is not None or term is not None):
+            # сверка с уже сохранённой лицензией строки договора (CHECK дат в БД)
+            lines = contract.products if contract is not None else []
+            targets = [
+                next((item for item in lines if p is not None and item.product_id == p.id), None)
+                for p in products
+            ] or [None]
+            issues_before = len(row.issues)
+            for line in targets:
+                _license_issue(row, line, signed_at, term)
+                if len(row.issues) > issues_before:
+                    break
+        status_raw = values.get("transfer_status")
+        if status_raw and resolve_transfer_status(status_raw) is None:
+            _issue(
+                row,
+                "transfer_status",
+                "invalid_value",
+                f"Неизвестный статус передачи лицензии «{status_raw}». Допустимо: "
+                + ", ".join(TRANSFER_STATUS_LABELS.values()),
+            )
+
+        # --- ответственный КАМ ------------------------------------------------------------
+        kam: AppUser | None = None
+        if values.get("kam"):
+            kam, problem = _resolve_kam(ctx, values["kam"])
+            if problem is not None:
+                _issue(row, "kam", *problem)
+        if kam is not None and university_raw:
+            current_kam = university.kam_user_id if university is not None else None
+            if not skipped and kam.id != current_kam and not can_assign:
+                if university is None and kam.id != actor.id:
+                    _issue(
+                        row,
+                        "kam",
+                        "forbidden",
+                        "Без права «Назначение ответственного КАМа за вуз» новый вуз "
+                        "закрепляется только за вами",
+                    )
+                elif university is not None:
+                    _issue(
+                        row,
+                        "kam",
+                        "forbidden",
+                        f"Сменить ответственного КАМа вуза «{_university_label(university)}» "
+                        "может руководитель (право «Назначение ответственного КАМа за вуз»)",
+                    )
+            first_kam = university_kam.get(university_key)
+            if first_kam is None:
+                university_kam[university_key] = (kam.id, row.row_number)
+            elif first_kam[0] != kam.id:
+                _issue(
+                    row,
+                    "kam",
+                    "conflict_in_file",
+                    f"Для этого вуза в строке {first_kam[1]} указан другой КАМ",
+                )
+
+        # --- контакты вуза ----------------------------------------------------------------
+        contacts_raw = values.get("university_contacts")
+        if contacts_raw:
+            if not parse_contacts(contacts_raw):
+                _issue(
+                    row,
+                    "university_contacts",
+                    "invalid_format",
+                    "Ответственные от вуза: не найдено ни одного ФИО (людей разделяйте «;»)",
+                )
+            elif (
+                not skipped
+                and university is not None
+                and not can_write_any
+                and university.kam_user_id not in (None, actor.id)
+            ):
+                _issue(
+                    row,
+                    "university_contacts",
+                    "forbidden",
+                    f"Контакты вуза «{_university_label(university)}» дополняет его КАМ или "
+                    "пользователь с правом «Правка чужих вузов и договоров»",
+                )
+
+
+def _unique_product_code(ctx: ImportContext, name: str) -> str:
+    base = product_code_from_name(name)
+    code, suffix = base, 2
+    while _norm(code) in ctx.lookups["product_by_code"]:
+        code, suffix = f"{base}_{suffix}", suffix + 1
+    return code
+
+
+async def _ensure_kam_product(
+    ctx: ImportContext, name: str, vendor: str | None, details: Counter[str]
+) -> Product:
+    product = _lookup_product(ctx, name)
+    created = product is None
+    if product is None:
+        product = Product(code=_unique_product_code(ctx, name), name=name, product_type="other")
+        ctx.session.add(product)
+        details["products_created"] += 1
+    vendor = (vendor or "").strip()
+    # вендор — атрибут каталога: меняет его создатель продукта или право products:write
+    if vendor and _norm(product_vendor(product.description)) != _norm(vendor):
+        if created or ctx.actor.access.has("products:write"):
+            product.description = with_vendor(product.description, vendor)
+            if not created:
+                details["products_updated"] += 1
+    if created:
+        await ctx.session.flush()
+        ctx.lookups["product_by_code"][_norm(product.code)] = product
+        ctx.lookups["product_by_name"][_norm(name)] = product
+    return product
+
+
+async def _ensure_contacts(
+    ctx: ImportContext, university: University, contacts: list[ContactInfo]
+) -> int:
+    """Дописывает контакты вуза; существующий (то же ФИО) дополняется пустыми полями."""
+    cache: dict[uuid.UUID, dict[str, UniversityContact]] = ctx.lookups["contacts_by_university"]
+    index = cache.get(university.id)
+    if index is None:
+        rows = (
+            (
+                await ctx.session.execute(
+                    select(UniversityContact).where(
+                        UniversityContact.university_id == university.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        index = {" ".join(_name_tokens(c.full_name)): c for c in rows}
+        cache[university.id] = index
+    created = 0
+    for contact in contacts:
+        key = " ".join(_name_tokens(contact.full_name))
+        existing = index.get(key)
+        if existing is not None:
+            existing.position = existing.position or contact.position
+            existing.email = existing.email or contact.email
+            existing.phone = existing.phone or contact.phone
+            continue
+        row = UniversityContact(
+            university_id=university.id,
+            full_name=contact.full_name,
+            position=contact.position,
+            email=contact.email,
+            phone=contact.phone,
+            is_primary=not index,  # первый контакт вуза — основной
+            notes="Импорт таблицы КАМов",
+        )
+        ctx.session.add(row)
+        index[key] = row
+        created += 1
+    return created
+
+
+async def _apply_kam_catalog(ctx: ImportContext, rows: list[PreparedRow]) -> ApplyStats:
+    await _load_kam_catalog_lookups(ctx)
+    stats = ApplyStats()
+    details: Counter[str] = Counter()
+    session = ctx.session
+    now = datetime.now(timezone.utc)
+    strategy = ctx.options.update_strategy
+    created_here: set[str] = set()  # договоры этого файла: их строки — не «дубли»
+    for row in rows:
+        values = row.values
+        number = (values["contract_number"] or "").strip()
+        contract: Contract | None = ctx.lookups["contract_by_number"].get(_norm(number))
+        # стратегия дублей — по ключу строки (номер договора), строка целиком; договор,
+        # созданный строкой выше, дубликатом не считается — его продукты дописываются
+        existed = contract is not None and _norm(number) not in created_here
+        if (existed and strategy == "create_only") or (
+            contract is None and strategy == "update_only"
+        ):
+            stats.skipped += 1
+            continue
+
+        university_raw = values["university"] or ""
+        university = _lookup_university(ctx, university_raw)
+        if university is None:
+            university = await _ensure_university(ctx, university_raw)
+            ctx.lookups["university_by_id"][university.id] = university
+            details["universities_created"] += 1
+
+        kam = _resolve_kam(ctx, values["kam"])[0] if values.get("kam") else None
+        if kam is not None and university.kam_user_id != kam.id:
+            before = university.kam_user_id
+            university.kam_user_id = kam.id
+            await write_audit(
+                session,
+                actor_user_id=ctx.actor.id,
+                action="university.kam_changed",
+                entity_type="university",
+                entity_id=university.id,
+                before={"kam_user_id": str(before) if before else None},
+                after={
+                    "kam_user_id": str(kam.id),
+                    "reason": "import",
+                    "import_session_id": str(ctx.import_session_id),
+                },
+            )
+            details["kam_assigned"] += 1
+
+        signed_at = (
+            parse_license_date(values["license_signed_at"])
+            if values.get("license_signed_at")
+            else None
+        )
+        term = parse_license_term(values["license_term"]) if values.get("license_term") else None
+        status = (
+            resolve_transfer_status(values["transfer_status"])
+            if values.get("transfer_status")
+            else None
+        )
+        comment = (values.get("comment") or "").strip() or None
+
+        row_created = False
+        if contract is None:
+            contract = Contract(
+                number=number,
+                university_id=university.id,
+                # подписанная лицензия — договор действует; без даты — черновик
+                status="active" if signed_at is not None else "draft",
+                responsible_user_id=(kam.id if kam else university.kam_user_id or ctx.actor.id),
+                products=[],
+            )
+            session.add(contract)
+            await session.flush()
+            ctx.lookups["contract_by_number"][_norm(number)] = contract
+            created_here.add(_norm(number))
+            await write_audit(
+                session,
+                actor_user_id=ctx.actor.id,
+                action="contract.created",
+                entity_type="contract",
+                entity_id=contract.id,
+                after={"number": contract.number, "status": contract.status, "source": "import"},
+            )
+            details["contracts_created"] += 1
+            row_created = True
+        elif kam is not None and contract.responsible_user_id != kam.id:
+            contract.responsible_user_id = kam.id
+            details["contracts_updated"] += 1
+
+        directions = [
+            direction
+            for direction in (
+                _lookup_direction(ctx, name)
+                for name in split_direction_names(values.get("it_direction"))
+            )
+            if direction is not None
+        ]
+        for name in split_product_names(values["product"] or ""):
+            product = await _ensure_kam_product(ctx, name, values.get("vendor"), details)
+            if directions:
+                details["directions_linked"] += await link_product_directions(
+                    session, product.id, [d.id for d in directions]
+                )
+            line = next((item for item in contract.products if item.product_id == product.id), None)
+            if line is None:
+                line = ContractProduct(product_id=product.id, added_by=ctx.actor.id)
+                contract.products.append(line)
+                details["licenses_created"] += 1
+                row_created = True
+            else:
+                details["licenses_updated"] += 1
+            (
+                line.license_signed_at,
+                line.license_term_years,
+                line.license_valid_to,
+            ) = merge_license(
+                (line.license_signed_at, line.license_term_years, line.license_valid_to),
+                signed_at,
+                term,
+            )
+            if status is not None and line.transfer_status != status:
+                line.transfer_status = status
+                line.transfer_status_updated_at = now
+            if comment:
+                line.note = comment
+        await session.flush()
+
+        if values.get("university_contacts"):
+            details["contacts_created"] += await _ensure_contacts(
+                ctx, university, parse_contacts(values["university_contacts"])
+            )
+
+        if row_created:
+            stats.created += 1
+        else:
+            stats.updated += 1
+    stats.details = {key: count for key, count in details.items() if count}
+    return stats
+
+
+# --------------------------------------------------------------------------------------
 # Реестр импортёров
 # --------------------------------------------------------------------------------------
 
@@ -1080,6 +1921,7 @@ _IMPORTERS: dict[str, Importer] = {
     "universities": Importer(_validate_universities, _apply_universities),
     "requests_b2b": Importer(_validate_requests_b2b, _apply_requests_b2b),
     "requests_b2c": Importer(_validate_requests_b2c, _apply_requests_b2c),
+    "kam_catalog": Importer(_validate_kam_catalog, _apply_kam_catalog),
 }
 
 

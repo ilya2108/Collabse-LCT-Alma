@@ -45,7 +45,7 @@ import {
   SelectValue,
 } from '@/shared/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
-import { TRANSFORM_OPTIONS, isPiiField, lookupOptionsFor } from './importModel';
+import { TRANSFORM_OPTIONS, isPiiField, lookupHintFor, lookupOptionsFor } from './importModel';
 
 /**
  * Шаг 3 мастера импорта (redesign.md §6.6): интерактивный маппинг карточками-
@@ -295,6 +295,7 @@ export function MappingStep({
         {targetFields.map((field) => {
           const entry = entryFor(field.field);
           const lookupOptions = lookupOptionsFor(field.field);
+          const lookupHint = lookupOptions ? null : lookupHintFor(field.field);
           const sample = sampleFor(entry);
           return (
             <li
@@ -376,6 +377,9 @@ export function MappingStep({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : null}
+              {entry && lookupHint ? (
+                <span className="text-xs text-muted-foreground">{lookupHint}</span>
               ) : null}
               {isAuto(entry) ? (
                 <span className="rounded-sm bg-primary-tint px-1.5 py-0.5 text-xs font-medium text-primary-active">

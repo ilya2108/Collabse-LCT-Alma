@@ -873,7 +873,8 @@ class TestAppWiring:
         create = paths["/api/v1/requests"]["post"]
         assert _idempotency_header(create)
         assert not _idempotency_header(paths["/api/v1/requests"]["get"])
-        # 422 FastAPI (схема HTTPValidationError) сохраняется, описание дополняется
+        # 422 HTTPValidationError FastAPI заменён на 400 (core/openapi.py); у мутаций 422 —
+        # idempotency_key_reused со схемой ErrorEnvelope
         assert "content" in create["responses"]["422"]
         assert "idempotency_key_reused" in create["responses"]["422"]["description"]
         purge = paths["/api/v1/internal/jobs/purge-idempotency-keys"]["post"]

@@ -804,10 +804,34 @@ CREATE TABLE contract_product (
     note        text,
     added_by    uuid REFERENCES app_user(id),
     added_at    timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (contract_id, product_id)
+    -- лицензия на ИТ-продукт (миграция 0008); все поля необязательные
+    license_signed_at          date,
+    license_term_years         smallint,
+    license_valid_to           date,          -- дата окончания, включительно
+    transfer_status            text,          -- NULL — статус передачи не указан
+    transfer_status_updated_at timestamptz,
+    PRIMARY KEY (contract_id, product_id),
+    CONSTRAINT ck_contract_product_license_term
+        CHECK (license_term_years IS NULL OR license_term_years BETWEEN 1 AND 99),
+    CONSTRAINT ck_contract_product_license_dates
+        CHECK (license_valid_to IS NULL OR license_signed_at IS NULL
+               OR license_valid_to >= license_signed_at),
+    CONSTRAINT ck_contract_product_transfer_status
+        CHECK (transfer_status IS NULL
+               OR transfer_status IN ('not_started', 'in_progress', 'transferred', 'cancelled'))
 );
 CREATE INDEX ix_contract_product_product ON contract_product (product_id);
+CREATE INDEX ix_contract_product_license_valid_to ON contract_product (license_valid_to)
+    WHERE license_valid_to IS NOT NULL;
 ```
+
+Строка `contract_product` — это и **лицензия** вуза на ИТ-продукт: дата подписания, срок
+в годах, дата окончания (из срока — «1 год от 01.02.2026» → 31.01.2027 — или явно: «до 2027»,
+«31.12.2027») и статус передачи лицензии вузу (`not_started` — не передана, `in_progress` —
+в процессе, `transferred` — передана, `cancelled` — отменена); `transfer_status_updated_at`
+фиксирует последнюю смену статуса. Заполняются импортом «Таблица КАМов»
+(`import_session.entity_type='kam_catalog'`, api-contract.md §6.1), в API отдаются в
+`ContractOut.licenses` (§3.2). Договоры без лицензий остаются валидными.
 
 Скан договора — файл в MinIO: `file_object` c `entity_type='contract'`, `entity_id=contract.id`.
 
@@ -1394,7 +1418,8 @@ CREATE TABLE import_session (
     id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     entity_type       text NOT NULL CHECK (entity_type IN
                       ('students', 'universities', 'university_contacts', 'counterparties',
-                       'requests_b2b', 'requests_b2c', 'contracts', 'products', 'programs')
+                       'requests_b2b', 'requests_b2c', 'contracts', 'products', 'programs',
+                       'kam_catalog')                        -- «Таблица КАМов», миграция 0008
                       OR entity_type LIKE 'dictionary:%'),   -- справочники админки (разовая предзагрузка)
     file_id           uuid REFERENCES file_object(id),   -- исходный файл в MinIO
     original_filename text,

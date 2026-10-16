@@ -20,7 +20,13 @@ from app.models.crm import Contract, ContractProduct, Counterparty, Product, Uni
 from app.models.service import FileObject
 from app.models.user import AppUser
 from app.modules.crm.deps import check_version, ensure_can_write_owned, get_or_404
-from app.modules.crm.schemas import ContractCreate, ContractOut, ContractUpdate, FileOut
+from app.modules.crm.schemas import (
+    ContractCreate,
+    ContractLicenseOut,
+    ContractOut,
+    ContractUpdate,
+    FileOut,
+)
 from app.modules.files.service import soft_delete_file, store_upload
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
@@ -39,6 +45,7 @@ _SORT_FIELDS = {
 def _to_out(contract: Contract, warning: str | None = None) -> ContractOut:
     out = ContractOut.model_validate(contract)
     out.product_ids = [link.product_id for link in contract.products]
+    out.licenses = [ContractLicenseOut.model_validate(link) for link in contract.products]
     out.warning_duplicate = warning
     return out
 

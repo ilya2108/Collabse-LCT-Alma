@@ -91,10 +91,11 @@ notification-service, lms-stub, cms-stub без дополнительных в�
 | 400 | `import_encoding_error` | Не удалось определить кодировку (после перебора, §8.2) |
 | 400 | `workflow_invalid_schema` | Схема workflow после операции невалидна (нет initial, недостижимый статус, роль перехода не может выполнять переходы) |
 | 400 | `idempotency_key_invalid` | Заголовок `Idempotency-Key` не по формату (§1.6) |
-| 401 | `unauthorized` | Нет/просрочен токен |
-| 403 | `forbidden` | Нет права, процесс B2B/B2C недоступен роли, действие над чужой заявкой без права (§12) |
+| 401 | `unauthorized` | Нет/просрочен токен; неверный `X-Internal-Token`; вебхук без подписи или с неверной подписью (§13.6) |
+| 403 | `forbidden` | Нет права, процесс B2B/B2C недоступен роли, действие над чужой заявкой без права, учётная запись деактивирована или без ролей CRM (§12) |
 | 404 | `not_found` | Объект не найден или вне области роли — существование не раскрываем (§12.2) |
-| 409 | `conflict` | Нарушение уникальности (дубль ИНН вуза и т.п.), пакет изменений уже обработан |
+| 405 | `method_not_allowed` | HTTP-метод не поддерживается для этого пути (ответ фреймворка в едином конверте) |
+| 409 | `conflict` | Нарушение уникальности (дубль ИНН вуза и т.п.), пакет изменений уже обработан, событие вебхука устарело и не является повтором (§13.6) |
 | 409 | `stale_version` | Optimistic lock: version устарел |
 | 409 | `workflow_invalid_transition` | Переход не разрешён схемой workflow |
 | 409 | `workflow_busy` | Схема процесса сейчас применяется: лок воронки не получен за отведённое время (переход — 10 с, применение пакета и удаление роли — 30 с). Операция не выполнена, повтор безопасен; заголовок `Retry-After: 2` (§5.4) |
@@ -103,15 +104,28 @@ notification-service, lms-stub, cms-stub без дополнительных в�
 | 409 | `role_exists`, `role_in_use`, `role_locked`, `role_system` | Роли: код/название заняты; роль назначена или указана в переходах; роль `admin` не редактируется; системную роль нельзя удалить (§10.5) |
 | 409 | `access_lockout` | Изменение лишает актора права `admin:roles` или не оставляет ни одного активного пользователя с ним (§10.5) |
 | 413 | `file_too_large` | Файл > лимита (импорт: 20 МБ; вложения: 50 МБ); тело запроса с `Idempotency-Key` > 60 МБ |
-| 422 | `unprocessable` | Семантическая ошибка (например, target-статус миграции = удаляемый; PDF реестра) |
+| 422 | `unprocessable` | Семантическая ошибка: запрос корректен по форме, но не выполним (target-статус миграции = удаляемый; PDF реестра; формат или фильтры выгрузки не поддерживаются; неизвестный тип события вебхука, нет блока `lead`) |
 | 422 | `idempotency_key_reused` | `Idempotency-Key` уже использован для другого запроса (§1.6) |
-| 429 | `rate_limited` | Превышение лимита (заголовок `Retry-After`) |
 | 500 | `internal_error` | Необработанная ошибка (детали только в логах) |
 | 502 | `integration_unavailable` | Синхронный вызов внешней системы (MinIO, Keycloak Admin API) не удался |
-| 503 | `service_unavailable` | Хранилище ключей идемпотентности недоступно — мутация с ключом не выполнена; `Retry-After: 2` (§1.6) |
+| 503 | `service_unavailable` | Хранилище ключей идемпотентности недоступно — мутация с ключом не выполнена, `Retry-After: 2` (§1.6); хранилище одноразовых кодов привязки Telegram недоступно (§9.2) |
 
 Заголовок `Retry-After` (секунды) приходит вместе с `409 workflow_busy`, `409 idempotency_in_progress`
-и `503 service_unavailable`; клиент повторяет запрос с тем же `Idempotency-Key` (§1.6).
+и `503 service_unavailable` хранилища ключей идемпотентности; клиент повторяет запрос с тем же
+`Idempotency-Key` (§1.6).
+
+Каталог закрыт: других кодов сервер не возвращает. Ограничителя частоты запросов в CRM нет,
+поэтому нет и кода `429`. Если фреймворк отвечает статусом без своего кода, клиент получает
+`validation_error` для 4xx или `internal_error` для 5xx с исходным HTTP-статусом.
+
+**Swagger** (`/api/v1/docs`). Тело любой ошибки описано схемой `ErrorEnvelope`, перечень
+кодов приведён в её описании. Ошибки валидации там показаны так, как отвечает сервер:
+`400 validation_error` вместо `422 HTTPValidationError`, который FastAPI обещает по умолчанию.
+У операций есть стандартные ответы: `401`/`403` при Bearer, `401` при `X-Internal-Token`,
+`404` для путей с параметром, `409` для мутаций, `413` для загрузки файлов, `default` для прочих
+ошибок. Постобработка схемы — `backend/app/core/openapi.py`. Таблица выше, каталог
+`ERROR_CODES` (`backend/app/core/errors.py`) и коды, которые бросает сервер, сверяет тест
+`backend/tests/test_error_catalog.py`.
 
 ### 1.5. Пагинация, сортировка, фильтрация
 
@@ -420,9 +434,25 @@ header-параметр `Idempotency-Key` и описания ответов `40
   "amount": "1200000.00",
   "currency": "RUB",
   "product_ids": ["pr-uuid-1", "pr-uuid-2"],
+  "licenses": [
+    {
+      "product_id": "pr-uuid-1",
+      "license_signed_at": "2026-02-01",
+      "license_term_years": 1,
+      "license_valid_to": "2027-01-31",
+      "transfer_status": "transferred",
+      "transfer_status_updated_at": "2026-02-10T09:30:00Z",
+      "note": null
+    }
+  ],
   "version": 1
 }
 ```
+
+`licenses` — только чтение: строки договора как лицензии на ИТ-продукты (data-model.md §4.6),
+по одной на каждый продукт из `product_ids`. Даты окончания включительно, `transfer_status`:
+`not_started | in_progress | transferred | cancelled | null` (не указан). Заполняются импортом
+«Таблица КАМов» (§6.1); `PATCH` с `product_ids` сохраняет лицензии оставшихся продуктов.
 
 Владелец договора — вуз **или** контрагент (ровно один из `university_id`/`counterparty_id`,
 CHECK в БД).
@@ -962,7 +992,16 @@ sequenceDiagram
 (admin, §10.1). Чужие сессии импорта видны только с `files:others`.
 
 `entity_type`: `universities | university_contacts | contracts | programs | requests_b2b |
-requests_b2c | students | dictionary:<name>`.
+requests_b2c | students | kam_catalog | dictionary:<name>`.
+
+`kam_catalog` — «Таблица КАМов»: составной импорт, одна строка — вуз (название или ИНН), ИТ-продукт
+и номер договора (обязательные), плюс ИТ-направление, вендор, дата подписания и срок лицензии,
+статус передачи, ответственный КАМ, ответственные от вуза и комментарий. Договор ищется по
+номеру без учёта регистра (upsert), строка договора × продукт хранит лицензию (§3.2). Кроме
+`import:run` сессия требует `universities:write` и `contracts:write` (иначе `403 forbidden` при
+создании, валидации и применении); в строках действуют те же правила, что в карточках: смена
+КАМа вуза — `universities:assign`, чужие договоры и контакты — `crm:write_any`, новые продукты
+и вендор — `products:write`. Нарушение — ошибка строки `forbidden`, остальные строки грузятся.
 
 ### 6.2. Распознавание файла и кодировок
 
@@ -1043,6 +1082,10 @@ requests_b2c | students | dictionary:<name>`.
 
 `transform`: `trim | lowercase | uppercase | date_ru (дд.мм.гггг→ISO) | phone_normalize`.
 `update_strategy`: `create_only | upsert | update_only`. `match_by` — поля-ключи дедупликации.
+`header_row: null` — в файле нет строки заголовков: все строки — данные, колонки
+называются «Колонка N». `lookup: "match_or_create"` (правило мастера «Создавать
+отсутствующие») равносилен `create_missing: true` — отсутствующая запись справочника
+создаётся вместо ошибки `lookup_not_found`.
 Неcмаппленные колонки игнорируются; отсутствие required-поля → `400 validation_error` сразу.
 
 ### 6.4. Валидация и применение
@@ -1066,6 +1109,14 @@ requests_b2c | students | dictionary:<name>`.
 ```
 
 В `errors` — первые 200; полный отчёт — XLSX-файл в MinIO (скачать через `GET /files/{id}/download`).
+
+Коды построчных ошибок (`errors[].code`): `required`, `invalid_format`, `invalid_value`,
+`lookup_not_found`, `duplicate_in_file` (та же запись выше в файле), `conflict_in_file` (одна
+сущность в файле описана по-разному — например, новый договор или КАМ вуза), `conflict`
+(запись в БД противоречит строке — договор принадлежит другому вузу или это договор B2C),
+`ambiguous` (под значение подходят несколько записей — например, однофамильцы-КАМы),
+`inactive_user` (найденный пользователь деактивирован), `forbidden` (строка требует прав,
+которых у пользователя нет). Значения ПДн в `errors` и в XLSX-отчёте маскируются.
 (`state: "validated"` в ответе `validate` соответствует состоянию `preview` машины состояний
 `import_session` в data-model.md §9.1 — dry-run выполнен, ждём подтверждения.)
 
@@ -1081,6 +1132,11 @@ requests_b2c | students | dictionary:<name>`.
   "applied_at": "…"
 }
 ```
+
+Составной импорт (`kam_catalog`) добавляет в `result` разбивку `details` — счётчики по реестрам:
+`universities_created`, `contracts_created`, `contracts_updated`, `licenses_created`,
+`licenses_updated`, `products_created`, `products_updated` (вендор), `directions_linked`,
+`kam_assigned`, `contacts_created`.
 
 (финальное состояние — `completed`, как в машине состояний `import_session`, data-model.md §9.1)
 
