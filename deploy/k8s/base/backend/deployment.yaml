@@ -58,7 +58,7 @@ spec:
             periodSeconds: 2
             failureThreshold: 30 # до 60 с на старт
           readinessProbe:
-            httpGet: {path: /healthz/ready, port: http} # PG, KeyDB, MinIO, JWKS-кэш
+            httpGet: {path: /healthz/ready, port: http} # 503 только без PostgreSQL; KeyDB — status degraded, под в балансировке
             periodSeconds: 5
             failureThreshold: 3
           livenessProbe:

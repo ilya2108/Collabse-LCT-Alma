@@ -261,7 +261,7 @@ header-параметр `Idempotency-Key` и описания ответов `40
 | Метод/путь | Назначение |
 |---|---|
 | `GET /healthz` | liveness: процесс жив, всегда `200 {"status":"ok"}` |
-| `GET /readyz` | readiness: проверка коннекта к PG и KeyDB; `503` если нет |
+| `GET /readyz` | readiness: `503` только без PostgreSQL; без KeyDB — `200` и `status: "degraded"` (кэш общий для реплик и необязателен: cache-aside читает PG) |
 
 Есть у всех четырёх сервисов (backend, notification, lms-stub, cms-stub).
 
