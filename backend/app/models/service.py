@@ -200,9 +200,7 @@ class AuditLog(Base):
 
     __tablename__ = "audit_log"
 
-    id: Mapped[int] = mapped_column(
-        sa.BigInteger, sa.Identity(always=True), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(sa.BigInteger, sa.Identity(always=True), primary_key=True)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.ForeignKey("app_user.id")
     )  # NULL = система

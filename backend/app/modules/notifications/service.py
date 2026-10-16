@@ -169,11 +169,7 @@ async def list_feed(
     marker = await _read_marker(session, user.id)
     base = select(Notification).where(Notification.recipient_user_id == user.id)
     rows = list(
-        (
-            await session.execute(
-                base.order_by(Notification.created_at.desc()).limit(1000)
-            )
-        )
+        (await session.execute(base.order_by(Notification.created_at.desc()).limit(1000)))
         .scalars()
         .all()
     )
@@ -208,9 +204,7 @@ async def mark_read(
         merged = list(dict.fromkeys(marker["read_ids"] + [str(i) for i in (ids or [])]))
         marker["read_ids"] = merged[-READ_IDS_LIMIT:]
     if setting is None:
-        setting = AppSetting(
-            key=key, value=marker, description="Маркеры прочтения нотификаций"
-        )
+        setting = AppSetting(key=key, value=marker, description="Маркеры прочтения нотификаций")
         session.add(setting)
     else:
         setting.value = marker
@@ -310,8 +304,7 @@ async def bind_chat(
     ).scalar_one_or_none()
     if occupied is not None:
         raise conflict(
-            "Этот Telegram-аккаунт уже привязан к другому пользователю. "
-            "Сначала выполните /unlink"
+            "Этот Telegram-аккаунт уже привязан к другому пользователю. Сначала выполните /unlink"
         )
     user.tg_chat_id = chat_id
     user.tg_username = (tg_username or "").lstrip("@") or None
@@ -342,9 +335,7 @@ async def user_by_chat_id(session: AsyncSession, chat_id: int) -> AppUser:
 # --------------------------------------------------------------------------------------
 
 
-async def send_test(
-    session: AsyncSession, user: AppUser, channel: str
-) -> dict[str, Any]:
+async def send_test(session: AsyncSession, user: AppUser, channel: str) -> dict[str, Any]:
     if channel not in prefs_module.DELIVERY_CHANNELS:
         raise validation_error(
             f"Канал «{channel}» не поддерживает тестовую отправку. "
@@ -450,9 +441,7 @@ async def validate_rule_payload(
         if not isinstance(params, dict):
             raise validation_error("Поле params должно быть объектом")
         threshold = params.get("threshold_days")
-        if threshold is not None and not (
-            isinstance(threshold, int) and 1 <= threshold <= 60
-        ):
+        if threshold is not None and not (isinstance(threshold, int) and 1 <= threshold <= 60):
             raise validation_error("params.threshold_days — целое число от 1 до 60")
         repeat = params.get("repeat_every_days")
         if repeat is not None and not (isinstance(repeat, int) and repeat >= 1):
@@ -537,8 +526,10 @@ def _bot_scope(user: AppUser, *, stuck_only: bool) -> DealScope:
 async def bot_summary(session: AsyncSession, user: AppUser) -> dict[str, Any]:
     global_default = await _global_stuck_default(session)
 
-    my_open = select(func.count()).select_from(Deal).where(
-        Deal.status == "open", Deal.responsible_user_id == user.id
+    my_open = (
+        select(func.count())
+        .select_from(Deal)
+        .where(Deal.status == "open", Deal.responsible_user_id == user.id)
     )
     my_open = _bot_scope(user, stuck_only=False).apply(my_open)
     active_requests = (await session.execute(my_open)).scalar_one()
@@ -590,9 +581,7 @@ async def bot_requests(
     )
     stmt = _bot_scope(user, stuck_only=stuck_only).apply(stmt)
     if stuck_only:
-        stmt = stmt.where(
-            WorkflowStage.is_terminal.is_(False), _stuck_condition(global_default)
-        )
+        stmt = stmt.where(WorkflowStage.is_terminal.is_(False), _stuck_condition(global_default))
         stmt = stmt.order_by(Deal.stage_entered_at.asc())
     else:
         stmt = stmt.order_by(Deal.created_at.desc())
@@ -623,9 +612,7 @@ async def bot_requests(
                     "color": stage.color,
                 },
                 "stuck_days": days,
-                "is_stuck": deal.status == "open"
-                and not stage.is_terminal
-                and days > threshold,
+                "is_stuck": deal.status == "open" and not stage.is_terminal and days > threshold,
             }
         )
     return items

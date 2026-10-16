@@ -261,9 +261,7 @@ def apply_operations(
         elif isinstance(operation, DeleteStatusOp):
             stage = _require_stage(target, operation.status_id)
             if stage.is_initial:
-                raise OperationUnprocessable(
-                    f"Начальный этап «{stage.name}» удалить нельзя"
-                )
+                raise OperationUnprocessable(f"Начальный этап «{stage.name}» удалить нельзя")
             adjacent = [
                 t.id
                 for t in target.transitions.values()
@@ -271,8 +269,11 @@ def apply_operations(
             ]
             for transition_id in adjacent:
                 del target.transitions[transition_id]
-            migrate_to = target.stages.get(operation.migrate_to_status_id) \
-                if operation.migrate_to_status_id else None
+            migrate_to = (
+                target.stages.get(operation.migrate_to_status_id)
+                if operation.migrate_to_status_id
+                else None
+            )
             plan.deleted_stages.append(
                 DeleteStagePlanItem(
                     stage_id=stage.id,
@@ -587,9 +588,7 @@ def validate_migration(
                 {
                     "code": E_MAPPING_INVALID,
                     "status_id": str(item.stage_id),
-                    "message": (
-                        f"Перенос заявок этапа «{item.stage_name}» невозможен: {problem}"
-                    ),
+                    "message": (f"Перенос заявок этапа «{item.stage_name}» невозможен: {problem}"),
                 }
             )
     return errors

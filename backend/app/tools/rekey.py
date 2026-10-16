@@ -34,10 +34,7 @@ async def _rekey_table(model: type, columns: tuple[str, ...]) -> int:
     while True:
         async with factory() as session:
             stmt = (
-                select(model)
-                .order_by(model.id)
-                .limit(BATCH_SIZE)
-                .with_for_update(skip_locked=True)
+                select(model).order_by(model.id).limit(BATCH_SIZE).with_for_update(skip_locked=True)
             )
             if last_id is not None:
                 stmt = stmt.where(model.id > last_id)

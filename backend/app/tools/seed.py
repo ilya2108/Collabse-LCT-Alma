@@ -362,10 +362,26 @@ CONTRACTS: list[dict[str, Any]] = [
 ]
 
 PERSONS: list[dict[str, str]] = [
-    {"full_name": "Смирнова Ольга Викторовна", "email": "smirnova@example.com", "phone": "+7 916 000-11-22"},
-    {"full_name": "Ковалёв Артём Дмитриевич", "email": "kovalev@example.com", "phone": "+7 903 111-22-33"},
-    {"full_name": "Никитина Дарья Павловна", "email": "nikitina@example.com", "phone": "+7 926 222-33-44"},
-    {"full_name": "Фёдоров Максим Ильич", "email": "fedorov@example.com", "phone": "+7 915 333-44-55"},
+    {
+        "full_name": "Смирнова Ольга Викторовна",
+        "email": "smirnova@example.com",
+        "phone": "+7 916 000-11-22",
+    },
+    {
+        "full_name": "Ковалёв Артём Дмитриевич",
+        "email": "kovalev@example.com",
+        "phone": "+7 903 111-22-33",
+    },
+    {
+        "full_name": "Никитина Дарья Павловна",
+        "email": "nikitina@example.com",
+        "phone": "+7 926 222-33-44",
+    },
+    {
+        "full_name": "Фёдоров Максим Ильич",
+        "email": "fedorov@example.com",
+        "phone": "+7 915 333-44-55",
+    },
 ]
 
 LEGAL_ENTITIES: list[dict[str, str]] = [
@@ -375,27 +391,210 @@ LEGAL_ENTITIES: list[dict[str, str]] = [
 
 # stage_days — сколько дней заявка стоит на текущем этапе (для демо зависших >14 и >21)
 DEALS_B2B: list[dict[str, Any]] = [
-    {"title": "МФТИ — ДПО Data Science, поток весна-2027", "university": "МФТИ", "stage": "in_learning", "kam": "kam1@demo", "amount": "1200000.00", "product": "dpo-ds", "program": "Практикум по ML, весна-2027", "contract": "Д-2026/041", "age": 90, "stage_days": 5},
-    {"title": "МФТИ — корпоративная школа Python для сотрудников", "university": "МФТИ", "stage": "negotiation", "kam": "kam1@demo", "amount": "450000.00", "product": "corp-edu", "program": "Корпоративная школа Python", "contract": "Д-2026/041", "age": 30, "stage_days": 6},
-    {"title": "Бауманка — ИИ-инженер, осенний поток", "university": "Бауманка", "stage": "contract_prep", "kam": "kam1@demo", "amount": "800000.00", "product": "dpo-ai", "program": "ИИ-инженер, 256 ч.", "contract": "Д-2026/052", "age": 45, "stage_days": 10},
-    {"title": "СПбПУ — MLOps для инженеров", "university": "СПбПУ", "stage": "negotiation", "kam": "kam2@demo", "amount": "600000.00", "product": "dpo-ai", "program": "MLOps для инженеров", "age": 40, "stage_days": 20},  # зависшая (порог 14)
-    {"title": "УрФУ — компьютерное зрение на производстве", "university": "УрФУ", "stage": "first_contact", "kam": "kam2@demo", "amount": "350000.00", "product": "dpo-ai", "program": "Компьютерное зрение на производстве", "age": 35, "stage_days": 25},  # эскалация (1.5×порога)
-    {"title": "КФУ — аналитика данных для приёмной комиссии", "university": "КФУ", "stage": "new", "kam": "kam1@demo", "amount": "280000.00", "product": "dpo-ds", "age": 22, "stage_days": 22},  # зависшая на new (порог этапа 7)
-    {"title": "НГУ — сетевая программа Data Science", "university": "НГУ", "stage": "contract_signed", "kam": "kam2@demo", "amount": "950000.00", "product": "dpo-ds", "age": 60, "stage_days": 3},
-    {"title": "ДВФУ — пилот корпоративного обучения", "university": "ДВФУ", "stage": "first_contact", "kam": "kam1@demo", "amount": "150000.00", "product": "corp-edu", "age": 12, "stage_days": 4},
-    {"title": "ЮФУ — ДПО Искусственный интеллект", "university": "ЮФУ", "stage": "rejected", "kam": "kam2@demo", "amount": "500000.00", "product": "dpo-ai", "age": 50, "stage_days": 15, "reject_comment": "Вуз выбрал другого поставщика по итогам конкурса"},
-    {"title": "МФТИ — олимпиадная школа (расширение договора)", "university": "МФТИ", "stage": "completed", "kam": "kam1@demo", "amount": "300000.00", "product": "corp-edu", "contract": "Д-2026/041", "age": 120, "stage_days": 30},
-    {"title": "СПбПУ — второй поток MLOps", "university": "СПбПУ", "stage": "new", "kam": "kam2@demo", "amount": "620000.00", "product": "dpo-ai", "program": "MLOps для инженеров", "age": 3, "stage_days": 3},
-    {"title": "Бауманка — стажировки студентов в индустрии", "university": "Бауманка", "stage": "negotiation", "kam": "kam1@demo", "amount": "200000.00", "product": "corp-edu", "age": 18, "stage_days": 8},
+    {
+        "title": "МФТИ — ДПО Data Science, поток весна-2027",
+        "university": "МФТИ",
+        "stage": "in_learning",
+        "kam": "kam1@demo",
+        "amount": "1200000.00",
+        "product": "dpo-ds",
+        "program": "Практикум по ML, весна-2027",
+        "contract": "Д-2026/041",
+        "age": 90,
+        "stage_days": 5,
+    },
+    {
+        "title": "МФТИ — корпоративная школа Python для сотрудников",
+        "university": "МФТИ",
+        "stage": "negotiation",
+        "kam": "kam1@demo",
+        "amount": "450000.00",
+        "product": "corp-edu",
+        "program": "Корпоративная школа Python",
+        "contract": "Д-2026/041",
+        "age": 30,
+        "stage_days": 6,
+    },
+    {
+        "title": "Бауманка — ИИ-инженер, осенний поток",
+        "university": "Бауманка",
+        "stage": "contract_prep",
+        "kam": "kam1@demo",
+        "amount": "800000.00",
+        "product": "dpo-ai",
+        "program": "ИИ-инженер, 256 ч.",
+        "contract": "Д-2026/052",
+        "age": 45,
+        "stage_days": 10,
+    },
+    {
+        "title": "СПбПУ — MLOps для инженеров",
+        "university": "СПбПУ",
+        "stage": "negotiation",
+        "kam": "kam2@demo",
+        "amount": "600000.00",
+        "product": "dpo-ai",
+        "program": "MLOps для инженеров",
+        "age": 40,
+        "stage_days": 20,
+    },  # зависшая (порог 14)
+    {
+        "title": "УрФУ — компьютерное зрение на производстве",
+        "university": "УрФУ",
+        "stage": "first_contact",
+        "kam": "kam2@demo",
+        "amount": "350000.00",
+        "product": "dpo-ai",
+        "program": "Компьютерное зрение на производстве",
+        "age": 35,
+        "stage_days": 25,
+    },  # эскалация (1.5×порога)
+    {
+        "title": "КФУ — аналитика данных для приёмной комиссии",
+        "university": "КФУ",
+        "stage": "new",
+        "kam": "kam1@demo",
+        "amount": "280000.00",
+        "product": "dpo-ds",
+        "age": 22,
+        "stage_days": 22,
+    },  # зависшая на new (порог этапа 7)
+    {
+        "title": "НГУ — сетевая программа Data Science",
+        "university": "НГУ",
+        "stage": "contract_signed",
+        "kam": "kam2@demo",
+        "amount": "950000.00",
+        "product": "dpo-ds",
+        "age": 60,
+        "stage_days": 3,
+    },
+    {
+        "title": "ДВФУ — пилот корпоративного обучения",
+        "university": "ДВФУ",
+        "stage": "first_contact",
+        "kam": "kam1@demo",
+        "amount": "150000.00",
+        "product": "corp-edu",
+        "age": 12,
+        "stage_days": 4,
+    },
+    {
+        "title": "ЮФУ — ДПО Искусственный интеллект",
+        "university": "ЮФУ",
+        "stage": "rejected",
+        "kam": "kam2@demo",
+        "amount": "500000.00",
+        "product": "dpo-ai",
+        "age": 50,
+        "stage_days": 15,
+        "reject_comment": "Вуз выбрал другого поставщика по итогам конкурса",
+    },
+    {
+        "title": "МФТИ — олимпиадная школа (расширение договора)",
+        "university": "МФТИ",
+        "stage": "completed",
+        "kam": "kam1@demo",
+        "amount": "300000.00",
+        "product": "corp-edu",
+        "contract": "Д-2026/041",
+        "age": 120,
+        "stage_days": 30,
+    },
+    {
+        "title": "СПбПУ — второй поток MLOps",
+        "university": "СПбПУ",
+        "stage": "new",
+        "kam": "kam2@demo",
+        "amount": "620000.00",
+        "product": "dpo-ai",
+        "program": "MLOps для инженеров",
+        "age": 3,
+        "stage_days": 3,
+    },
+    {
+        "title": "Бауманка — стажировки студентов в индустрии",
+        "university": "Бауманка",
+        "stage": "negotiation",
+        "kam": "kam1@demo",
+        "amount": "200000.00",
+        "product": "corp-edu",
+        "age": 18,
+        "stage_days": 8,
+    },
 ]
 
 DEALS_B2C: list[dict[str, Any]] = [
-    {"title": "Смирнова О.В. — Практикум по ML", "person": "smirnova@example.com", "interaction": "dpo_course", "stage": "payment_pending", "kam": "kam2@demo", "amount": "120000.00", "program": "Практикум по ML, весна-2027", "product": "dpo-ds", "age": 14, "stage_days": 4},
-    {"title": "Ковалёв А.Д. — ИИ-инженер", "person": "kovalev@example.com", "interaction": "dpo_course", "stage": "consultation", "kam": "kam2@demo", "amount": "135000.00", "program": "ИИ-инженер, 256 ч.", "product": "dpo-ai", "age": 6, "stage_days": 2},
-    {"title": "Никитина Д.П. — Аналитик данных с нуля", "person": "nikitina@example.com", "interaction": "dpo_course", "stage": "in_learning", "kam": "kam1@demo", "amount": "90000.00", "program": "Аналитик данных с нуля", "product": "dpo-ds", "age": 55, "stage_days": 20},
-    {"title": "Фёдоров М.И. — участие в хакатоне", "person": "fedorov@example.com", "interaction": "event", "stage": "rejected", "kam": "kam1@demo", "amount": None, "age": 25, "stage_days": 10, "reject_comment": "Не вышел на связь после двух напоминаний"},
-    {"title": "ООО «ТехноСофт» — корпоративная школа Python", "legal": "ООО «ТехноСофт»", "interaction": "corporate_training", "stage": "proposal", "kam": "kam2@demo", "amount": "540000.00", "program": "Корпоративная школа Python", "product": "corp-edu", "age": 20, "stage_days": 16},  # зависшая B2C
-    {"title": "АО «ПромАвтоматика» — обучение отдела АСУ ТП", "legal": "АО «ПромАвтоматика»", "interaction": "corporate_training", "stage": "new", "kam": "kam1@demo", "amount": "700000.00", "product": "corp-edu", "age": 2, "stage_days": 2},
+    {
+        "title": "Смирнова О.В. — Практикум по ML",
+        "person": "smirnova@example.com",
+        "interaction": "dpo_course",
+        "stage": "payment_pending",
+        "kam": "kam2@demo",
+        "amount": "120000.00",
+        "program": "Практикум по ML, весна-2027",
+        "product": "dpo-ds",
+        "age": 14,
+        "stage_days": 4,
+    },
+    {
+        "title": "Ковалёв А.Д. — ИИ-инженер",
+        "person": "kovalev@example.com",
+        "interaction": "dpo_course",
+        "stage": "consultation",
+        "kam": "kam2@demo",
+        "amount": "135000.00",
+        "program": "ИИ-инженер, 256 ч.",
+        "product": "dpo-ai",
+        "age": 6,
+        "stage_days": 2,
+    },
+    {
+        "title": "Никитина Д.П. — Аналитик данных с нуля",
+        "person": "nikitina@example.com",
+        "interaction": "dpo_course",
+        "stage": "in_learning",
+        "kam": "kam1@demo",
+        "amount": "90000.00",
+        "program": "Аналитик данных с нуля",
+        "product": "dpo-ds",
+        "age": 55,
+        "stage_days": 20,
+    },
+    {
+        "title": "Фёдоров М.И. — участие в хакатоне",
+        "person": "fedorov@example.com",
+        "interaction": "event",
+        "stage": "rejected",
+        "kam": "kam1@demo",
+        "amount": None,
+        "age": 25,
+        "stage_days": 10,
+        "reject_comment": "Не вышел на связь после двух напоминаний",
+    },
+    {
+        "title": "ООО «ТехноСофт» — корпоративная школа Python",
+        "legal": "ООО «ТехноСофт»",
+        "interaction": "corporate_training",
+        "stage": "proposal",
+        "kam": "kam2@demo",
+        "amount": "540000.00",
+        "program": "Корпоративная школа Python",
+        "product": "corp-edu",
+        "age": 20,
+        "stage_days": 16,
+    },  # зависшая B2C
+    {
+        "title": "АО «ПромАвтоматика» — обучение отдела АСУ ТП",
+        "legal": "АО «ПромАвтоматика»",
+        "interaction": "corporate_training",
+        "stage": "new",
+        "kam": "kam1@demo",
+        "amount": "700000.00",
+        "product": "corp-edu",
+        "age": 2,
+        "stage_days": 2,
+    },
 ]
 
 FEDERAL_PROJECTS = [
@@ -438,8 +637,30 @@ ACTIVITIES: list[dict[str, Any]] = [
     },
 ]
 
-_FIRST = ["Алексей", "Мария", "Иван", "Дарья", "Сергей", "Анна", "Павел", "Елена", "Никита", "Ольга"]
-_LAST = ["Соловьев", "Козлова", "Романов", "Белова", "Тихонов", "Орлова", "Захаров", "Киселева", "Громов", "Панина"]
+_FIRST = [
+    "Алексей",
+    "Мария",
+    "Иван",
+    "Дарья",
+    "Сергей",
+    "Анна",
+    "Павел",
+    "Елена",
+    "Никита",
+    "Ольга",
+]
+_LAST = [
+    "Соловьев",
+    "Козлова",
+    "Романов",
+    "Белова",
+    "Тихонов",
+    "Орлова",
+    "Захаров",
+    "Киселева",
+    "Громов",
+    "Панина",
+]
 _MID_M = ["Андреевич", "Игоревич", "Владимирович", "Сергеевич", "Дмитриевич"]
 _MID_F = ["Андреевна", "Игоревна", "Владимировна", "Сергеевна", "Дмитриевна"]
 _FUNNEL_SPREAD = ["candidate"] * 7 + ["studying"] * 6 + ["graduate"] * 4 + ["talent_pool"] * 3
@@ -478,9 +699,7 @@ async def seed_users(session: AsyncSession) -> dict[str, AppUser]:
     for spec in DEMO_USERS:
         user = (
             await session.execute(
-                select(AppUser).where(
-                    func.lower(AppUser.username) == spec["username"].lower()
-                )
+                select(AppUser).where(func.lower(AppUser.username) == spec["username"].lower())
             )
         ).scalar_one_or_none()
         if user is None:
@@ -793,9 +1012,7 @@ async def seed_catalog(
     products: dict[str, Product] = {}
     for code, name, product_type, description in PRODUCTS:
         row = (
-            await session.execute(
-                select(Product).where(func.lower(Product.code) == code)
-            )
+            await session.execute(select(Product).where(func.lower(Product.code) == code))
         ).scalar_one_or_none()
         if row is None:
             row = Product(code=code, name=name, product_type=product_type, description=description)
@@ -813,9 +1030,7 @@ async def seed_catalog(
             row = Program(
                 name=spec["name"],
                 product_id=products[spec["product"]].id,
-                university_id=(
-                    universities[spec["university"]].id if spec["university"] else None
-                ),
+                university_id=(universities[spec["university"]].id if spec["university"] else None),
                 priority_rank=spec["priority_rank"],
                 duration_hours=spec["duration_hours"],
                 seats=spec["seats"],
@@ -879,9 +1094,7 @@ async def seed_counterparties(session: AsyncSession) -> dict[str, Counterparty]:
     for person in PERSONS:
         email_hmac = crypto.email_hmac(person["email"])
         row = (
-            await session.execute(
-                select(Counterparty).where(Counterparty.email_hmac == email_hmac)
-            )
+            await session.execute(select(Counterparty).where(Counterparty.email_hmac == email_hmac))
         ).scalar_one_or_none()
         if row is None:
             row = Counterparty(
@@ -919,13 +1132,9 @@ async def seed_counterparties(session: AsyncSession) -> dict[str, Counterparty]:
     return result
 
 
-def _stage_path(
-    stages: dict[str, WorkflowStage], target_code: str
-) -> list[WorkflowStage]:
+def _stage_path(stages: dict[str, WorkflowStage], target_code: str) -> list[WorkflowStage]:
     """Путь заявки от initial до целевого этапа для правдоподобной истории."""
-    ordered = sorted(
-        (s for s in stages.values() if not s.is_terminal), key=lambda s: s.sort_order
-    )
+    ordered = sorted((s for s in stages.values() if not s.is_terminal), key=lambda s: s.sort_order)
     target = stages[target_code]
     if target.is_terminal and target.terminal_outcome == "lost":
         # отказ: пара шагов по основной линии, затем переход в rejected
@@ -944,9 +1153,7 @@ async def _create_deal_with_history(
     responsible: AppUser,
     fields: dict[str, Any],
 ) -> None:
-    exists = (
-        await session.execute(select(Deal.id).where(Deal.title == spec["title"]))
-    ).first()
+    exists = (await session.execute(select(Deal.id).where(Deal.title == spec["title"]))).first()
     if exists is not None:
         return
 
@@ -1022,9 +1229,7 @@ async def _create_deal_with_history(
                 kind="manual",
                 comment=spec.get("reject_comment") if is_last and status == "lost" else None,
                 created_at=(
-                    stage_entered_at
-                    if is_last
-                    else created_at + timedelta(days=step_delta * index)
+                    stage_entered_at if is_last else created_at + timedelta(days=step_delta * index)
                 ),
             )
         )
@@ -1131,9 +1336,7 @@ async def seed_talent_pool(
                 program_id=program.id,
                 counterparty_id=counterparty.id if counterparty else None,
                 federal_project_id=(
-                    fed_projects[spec["federal_project"]].id
-                    if spec["federal_project"]
-                    else None
+                    fed_projects[spec["federal_project"]].id if spec["federal_project"] else None
                 ),
                 funnel_status=spec["funnel_status"],
                 status_changed_at=_NOW - timedelta(days=10 + index),
@@ -1164,13 +1367,9 @@ async def seed_talent_pool(
                 name=spec["name"],
                 activity_type=spec["activity_type"],
                 federal_project_id=(
-                    fed_projects[spec["federal_project"]].id
-                    if spec["federal_project"]
-                    else None
+                    fed_projects[spec["federal_project"]].id if spec["federal_project"] else None
                 ),
-                university_id=(
-                    universities[spec["university"]].id if spec["university"] else None
-                ),
+                university_id=(universities[spec["university"]].id if spec["university"] else None),
                 program_id=programs[spec["program"]].id if spec["program"] else None,
                 responsible_user_id=users["head@demo"].id,
             )
@@ -1183,9 +1382,7 @@ async def seed_talent_pool(
                         activity_id=activity.id,
                         starts_at=starts_at,
                         ends_at=(
-                            starts_at + timedelta(hours=duration_hours)
-                            if duration_hours
-                            else None
+                            starts_at + timedelta(hours=duration_hours) if duration_hours else None
                         ),
                         format=fmt,
                         location="Онлайн" if fmt == "online" else "Кампус вуза",

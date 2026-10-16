@@ -212,9 +212,7 @@ def serialize_history_row(
         "is_return": row.is_return,
         "reason": row.reason,
         "comment": row.comment,
-        "actor": (
-            {"id": str(actor.id), "full_name": actor.full_name} if actor else None
-        ),
+        "actor": ({"id": str(actor.id), "full_name": actor.full_name} if actor else None),
         "created_at": row.created_at.isoformat(),
     }
 
@@ -237,8 +235,6 @@ def serialize_audit_history_item(
         "reason": None,
         "comment": None,
         "changes": {"before": row.before, "after": row.after},
-        "actor": (
-            {"id": str(actor.id), "full_name": actor.full_name} if actor else None
-        ),
+        "actor": ({"id": str(actor.id), "full_name": actor.full_name} if actor else None),
         "created_at": row.created_at.isoformat(),
     }

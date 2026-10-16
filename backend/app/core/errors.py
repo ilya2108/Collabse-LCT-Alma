@@ -99,9 +99,9 @@ def conflict(message: str = "Конфликт данных") -> ApiError:
     return ApiError(409, "conflict", message)
 
 
-def stale_version(message: str = "Объект был изменён другим пользователем, обновите данные") -> (
-    ApiError
-):
+def stale_version(
+    message: str = "Объект был изменён другим пользователем, обновите данные",
+) -> ApiError:
     return ApiError(409, "stale_version", message)
 
 
@@ -178,9 +178,7 @@ async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
     return _error_response(exc.status_code, exc.code, exc.message, exc.details, exc.headers)
 
 
-async def _handle_validation_error(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
+async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     details = [
         {
             "field": ".".join(str(part) for part in err.get("loc", []) if part != "body"),
@@ -193,9 +191,7 @@ async def _handle_validation_error(
     return _error_response(400, "validation_error", "Ошибка валидации данных", details)
 
 
-async def _handle_http_exception(
-    request: Request, exc: StarletteHTTPException
-) -> JSONResponse:
+async def _handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     code = _STATUS_CODES.get(exc.status_code, "http_error")
     message = (
         exc.detail

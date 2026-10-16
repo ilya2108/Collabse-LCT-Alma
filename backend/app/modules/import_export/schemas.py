@@ -14,9 +14,7 @@ class _ApiModel(BaseModel):
 class MappingItem(_ApiModel):
     source_column: int = Field(ge=0)
     target_field: str = Field(min_length=1)
-    transform: Literal["trim", "lowercase", "uppercase", "date_ru", "phone_normalize"] | None = (
-        None
-    )
+    transform: Literal["trim", "lowercase", "uppercase", "date_ru", "phone_normalize"] | None = None
     lookup: str | None = None
     create_missing: bool = False
     value_map: dict[str, str] = Field(default_factory=dict)

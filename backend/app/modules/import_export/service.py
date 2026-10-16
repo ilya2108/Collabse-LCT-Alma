@@ -184,8 +184,7 @@ async def create_import_session(
             "columns": sample_columns,
         },
         "target_fields": [
-            {"field": f.field, "label": f.label, "required": f.required}
-            for f in spec.fields
+            {"field": f.field, "label": f.label, "required": f.required} for f in spec.fields
         ],
         "suggested_mapping": suggestions,
     }
@@ -224,16 +223,13 @@ def serialize_session(import_session: ImportSession) -> dict[str, Any]:
             "columns": import_session.sample_rows or [],
         },
         "target_fields": [
-            {"field": f.field, "label": f.label, "required": f.required}
-            for f in spec.fields
+            {"field": f.field, "label": f.label, "required": f.required} for f in spec.fields
         ],
         "mapping": (import_session.column_mapping or {}).get("mapping"),
         "options": import_session.options or {},
         "stats": import_session.stats,
         "error_message": import_session.error_message,
-        "created_at": import_session.created_at.isoformat()
-        if import_session.created_at
-        else None,
+        "created_at": import_session.created_at.isoformat() if import_session.created_at else None,
         "finished_at": import_session.finished_at.isoformat()
         if import_session.finished_at
         else None,
@@ -399,9 +395,7 @@ async def _persist_row_errors(
     return flat
 
 
-def _build_error_report_xlsx(
-    rows: list[PreparedRow], pii_fields: dict[str, str]
-) -> bytes:
+def _build_error_report_xlsx(rows: list[PreparedRow], pii_fields: dict[str, str]) -> bytes:
     """XLSX-отчёт об ошибках (§6.4): строка, колонка, код, сообщение, данные (маскированы)."""
     import openpyxl
 
@@ -586,9 +580,7 @@ async def run_apply(
     }
 
 
-async def cancel_session(
-    session: AsyncSession, import_session: ImportSession
-) -> dict[str, Any]:
+async def cancel_session(session: AsyncSession, import_session: ImportSession) -> dict[str, Any]:
     if import_session.status not in _EDITABLE_STATUSES:
         raise conflict("Сессию в финальном состоянии отменить нельзя")
     import_session.status = "cancelled"

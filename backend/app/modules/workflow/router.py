@@ -52,9 +52,7 @@ async def list_workflows(
     session: Annotated[AsyncSession, Depends(get_session)],
     _user: Annotated[AppUser, Depends(get_current_user)],
 ) -> list[dict[str, Any]]:
-    workflows = (
-        (await session.execute(select(Workflow).order_by(Workflow.code))).scalars().all()
-    )
+    workflows = (await session.execute(select(Workflow).order_by(Workflow.code))).scalars().all()
     result: list[dict[str, Any]] = []
     for wf in workflows:
         statuses_count = (
@@ -66,9 +64,7 @@ async def list_workflows(
         ).scalar_one()
         active_requests = (
             await session.execute(
-                select(func.count()).where(
-                    Deal.workflow_id == wf.id, Deal.status == "open"
-                )
+                select(func.count()).where(Deal.workflow_id == wf.id, Deal.status == "open")
             )
         ).scalar_one()
         result.append(
@@ -215,9 +211,7 @@ async def create_change(
     user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
     request: Request,
 ) -> dict[str, Any]:
-    raw_operations = [
-        op.model_dump(mode="json", exclude_none=True) for op in body.operations
-    ]
+    raw_operations = [op.model_dump(mode="json", exclude_none=True) for op in body.operations]
     wcr = await service.create_change(
         session,
         workflow_id=workflow_id,
@@ -246,14 +240,10 @@ async def list_changes(
 ) -> dict[str, Any]:
     if await session.get(Workflow, workflow_id) is None:
         raise not_found("Воронка не найдена")
-    stmt = select(WorkflowChangeRequest).where(
-        WorkflowChangeRequest.workflow_id == workflow_id
-    )
+    stmt = select(WorkflowChangeRequest).where(WorkflowChangeRequest.workflow_id == workflow_id)
     if status:
         stmt = stmt.where(WorkflowChangeRequest.status == status)
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         (
             await session.execute(

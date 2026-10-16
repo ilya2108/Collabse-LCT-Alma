@@ -88,9 +88,7 @@ async def list_presets(
     user: Annotated[AppUser, Depends(get_current_user)],
     screen: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
-    items = presets_service.filter_presets(
-        await presets_service.load_items(session, user), screen
-    )
+    items = presets_service.filter_presets(await presets_service.load_items(session, user), screen)
     return {"items": items, "total": len(items)}
 
 
@@ -114,9 +112,7 @@ async def update_preset(
     user: Annotated[AppUser, Depends(get_current_user)],
 ) -> dict[str, Any]:
     items = await presets_service.load_items(session, user)
-    preset = presets_service.patch_preset(
-        items, preset_id, body.model_dump(exclude_unset=True)
-    )
+    preset = presets_service.patch_preset(items, preset_id, body.model_dump(exclude_unset=True))
     await presets_service.save_items(session, user, items)
     return preset
 

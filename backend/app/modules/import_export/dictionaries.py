@@ -85,9 +85,7 @@ async def list_dictionaries(session: AsyncSession) -> list[dict[str, Any]]:
                 await session.execute(select(func.count()).select_from(University))
             ).scalar_one()
         elif name == "products":
-            count = (
-                await session.execute(select(func.count()).select_from(Product))
-            ).scalar_one()
+            count = (await session.execute(select(func.count()).select_from(Product))).scalar_one()
         else:
             setting = await session.get(AppSetting, f"dict:{name}")
             count = len((setting.value or {}).get("items") or []) if setting else 0
@@ -167,9 +165,7 @@ async def dictionary_items(
     stmt = select(model)
     if search:
         stmt = stmt.where(name_column.ilike(f"%{search.strip()}%"))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         (await session.execute(stmt.order_by(name_column).limit(limit).offset(offset)))
         .scalars()
@@ -260,9 +256,11 @@ async def update_item(
                 if payload.get("name"):
                     item["name"] = str(payload["name"]).strip()
                 if "code" in payload:
-                    item["code"] = (str(payload["code"]).strip() or None) if payload[
-                        "code"
-                    ] is not None else None
+                    item["code"] = (
+                        (str(payload["code"]).strip() or None)
+                        if payload["code"] is not None
+                        else None
+                    )
                 setting.value = {"items": items}
                 setting.updated_by = user.id
                 await session.commit()
@@ -282,8 +280,20 @@ async def update_item(
         row = None
     if row is None:
         raise not_found("Элемент справочника не найден")
-    editable = {"name", "code", "description", "starts_on", "ends_on", "is_active",
-                "short_name", "inn", "kpp", "region", "city", "website"}
+    editable = {
+        "name",
+        "code",
+        "description",
+        "starts_on",
+        "ends_on",
+        "is_active",
+        "short_name",
+        "inn",
+        "kpp",
+        "region",
+        "city",
+        "website",
+    }
     for key, value in payload.items():
         if key in editable and hasattr(row, key):
             setattr(row, key, value)
@@ -291,9 +301,7 @@ async def update_item(
     return serializer(row)
 
 
-async def delete_item(
-    session: AsyncSession, name: str, item_id: str, user: AppUser
-) -> None:
+async def delete_item(session: AsyncSession, name: str, item_id: str, user: AppUser) -> None:
     _ensure_known(name)
     if _is_value_list(name):
         setting = await _value_list_setting(session, name)

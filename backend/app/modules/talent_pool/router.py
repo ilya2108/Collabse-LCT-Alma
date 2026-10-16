@@ -132,17 +132,13 @@ async def list_students(
             )
             .exists()
         )
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _STUDENT_SORT, default="display_name")
     students = (
         (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     )
     counts = await talent.files_count_map(session, [s.id for s in students])
-    items = [
-        talent.serialize_student(s, files_count=counts.get(s.id, 0)) for s in students
-    ]
+    items = [talent.serialize_student(s, files_count=counts.get(s.id, 0)) for s in students]
     return list_envelope(items, total, params)
 
 
@@ -155,9 +151,7 @@ async def create_student(
 ) -> dict[str, Any]:
     existing = await talent.find_student_by_email(session, body.email)
     if existing is not None:
-        raise conflict(
-            f"Студент с таким email уже существует: {existing.display_name}"
-        )
+        raise conflict(f"Студент с таким email уже существует: {existing.display_name}")
     student = Student(
         phone=body.phone,
         university_id=body.university_id,
@@ -590,17 +584,13 @@ async def list_activities(
     if is_active is not None:
         stmt = stmt.where(Activity.is_active.is_(is_active))
     if date_from or date_to:
-        slot = select(ActivitySchedule.id).where(
-            ActivitySchedule.activity_id == Activity.id
-        )
+        slot = select(ActivitySchedule.id).where(ActivitySchedule.activity_id == Activity.id)
         if date_from:
             slot = slot.where(ActivitySchedule.starts_at >= date_from)
         if date_to:
             slot = slot.where(ActivitySchedule.starts_at < date_to + timedelta(days=1))
         stmt = stmt.where(slot.exists())
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     # сквозной календарь: сортировка по ближайшему слоту (data-model.md §7.3)
     next_slot = (
         select(func.min(ActivitySchedule.starts_at))
@@ -609,16 +599,14 @@ async def list_activities(
     )
     stmt = stmt.order_by(sa.nulls_last(next_slot.asc()), Activity.name)
     activities = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset)))
-        .scalars()
-        .all()
+        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     )
     participants = await _participants_map(session, [a.id for a in activities])
     fp_refs = await _federal_project_refs(session, list(activities))
     items = [
-        _activity_out(
-            a, participants.get(a.id, 0), fp_refs.get(a.federal_project_id)
-        ).model_dump(mode="json")
+        _activity_out(a, participants.get(a.id, 0), fp_refs.get(a.federal_project_id)).model_dump(
+            mode="json"
+        )
         for a in activities
     ]
     return list_envelope(items, total, params)
@@ -702,11 +690,7 @@ async def add_participants(
 ) -> dict[str, Any]:
     await get_or_404(session, Activity, activity_id, "Активность не найдена")
     found = (
-        (
-            await session.execute(
-                select(Student.id).where(Student.id.in_(body.student_ids))
-            )
-        )
+        (await session.execute(select(Student.id).where(Student.id.in_(body.student_ids))))
         .scalars()
         .all()
     )

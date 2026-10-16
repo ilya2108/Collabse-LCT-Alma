@@ -58,13 +58,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def find_seen_event(
-    session: AsyncSession, event_id: uuid.UUID
-) -> IntegrationEvent | None:
+async def find_seen_event(session: AsyncSession, event_id: uuid.UUID) -> IntegrationEvent | None:
     return (
-        await session.execute(
-            select(IntegrationEvent).where(IntegrationEvent.event_id == event_id)
-        )
+        await session.execute(select(IntegrationEvent).where(IntegrationEvent.event_id == event_id))
     ).scalar_one_or_none()
 
 
@@ -135,13 +131,13 @@ async def _upsert_external_link(
     await session.execute(
         pg_insert(ExternalLink)
         .values(
-            entity_type=entity_type, entity_id=entity_id, system=system,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            system=system,
             external_id=external_id,
         )
         .on_conflict_do_update(
-            index_elements=[
-                ExternalLink.entity_type, ExternalLink.entity_id, ExternalLink.system
-            ],
+            index_elements=[ExternalLink.entity_type, ExternalLink.entity_id, ExternalLink.system],
             set_={"external_id": external_id},
         )
     )
@@ -152,9 +148,7 @@ async def _upsert_external_link(
 # --------------------------------------------------------------------------------------
 
 
-async def handle_lms_event(
-    session: AsyncSession, envelope: InboundEnvelope
-) -> dict[str, Any]:
+async def handle_lms_event(session: AsyncSession, envelope: InboundEnvelope) -> dict[str, Any]:
     """Эффект в CRM (§13.3): запись в историю заявки + нотификация ответственному.
 
     Автоперехода по workflow нет — движение только людьми (открытое допущение №2
@@ -239,18 +233,14 @@ async def handle_lms_event(
 # --------------------------------------------------------------------------------------
 
 
-async def _find_or_create_counterparty(
-    session: AsyncSession, lead: LeadBlock
-) -> Counterparty:
+async def _find_or_create_counterparty(session: AsyncSession, lead: LeadBlock) -> Counterparty:
     crypto = get_pii_crypto()
     if lead.client_kind == "person":
         if not lead.full_name or not lead.email:
             raise unprocessable("Для физлица в lead обязательны full_name и email")
         email_hmac = crypto.email_hmac(lead.email)
         existing = (
-            await session.execute(
-                select(Counterparty).where(Counterparty.email_hmac == email_hmac)
-            )
+            await session.execute(select(Counterparty).where(Counterparty.email_hmac == email_hmac))
         ).scalar_one_or_none()
         if existing is not None:
             return existing
@@ -362,16 +352,12 @@ async def handle_cms_lead(
     product = None
     if program_block.get("crm_program_id"):
         try:
-            program = await session.get(
-                Program, uuid.UUID(str(program_block["crm_program_id"]))
-            )
+            program = await session.get(Program, uuid.UUID(str(program_block["crm_program_id"])))
         except ValueError:
             program = None
     if product_block.get("crm_product_id"):
         try:
-            product = await session.get(
-                Product, uuid.UUID(str(product_block["crm_product_id"]))
-            )
+            product = await session.get(Product, uuid.UUID(str(product_block["crm_product_id"])))
         except ValueError:
             product = None
 

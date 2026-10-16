@@ -129,9 +129,7 @@ class TestParseCsv:
 
 class TestParseXlsx:
     def test_roundtrip(self) -> None:
-        data = _xlsx_bytes(
-            [["ФИО", "Email"], ["Иванов Иван", "ivanov@example.com"], [None, None]]
-        )
+        data = _xlsx_bytes([["ФИО", "Email"], ["Иванов Иван", "ivanov@example.com"], [None, None]])
         table = parse_table(data)
         assert table.file_format == "xlsx"
         assert table.columns == ["ФИО", "Email"]
@@ -162,7 +160,10 @@ class TestParseXls:
         assert table.sheets == [{"index": 0, "name": "Студенты", "rows": 3}]
         # дата → ISO, целое без «.0», дробное как есть, пустая ячейка → None
         assert table.rows[0] == [
-            "Иванов Иван Иванович", "ivanov@example.com", "2000-05-01", "42",
+            "Иванов Иван Иванович",
+            "ivanov@example.com",
+            "2000-05-01",
+            "42",
         ]
         assert table.rows[1] == ["Петрова Анна", None, "1999-12-31", "3.5"]
 
@@ -269,7 +270,7 @@ class TestParseJson:
     def test_array_of_only_invalid_elements_rejected(self) -> None:
         # сообщение о формате остаётся для случая «объектов нет вообще»
         with pytest.raises(ApiError) as exc:
-            parse_table(b"[null, 1, \"x\"]")
+            parse_table(b'[null, 1, "x"]')
         assert exc.value.code == "import_bad_format"
 
 

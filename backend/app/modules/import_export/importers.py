@@ -172,9 +172,7 @@ def resolve_funnel_status(raw: str) -> str | None:
     return FUNNEL_STATUS_RU.get(value)
 
 
-def find_file_duplicates(
-    rows: list[tuple[int, str]], *, column: str
-) -> dict[int, RowIssue]:
+def find_file_duplicates(rows: list[tuple[int, str]], *, column: str) -> dict[int, RowIssue]:
     """Дубликаты внутри файла по нормализованному ключу: первая строка выигрывает.
 
     `rows` — (row_number, normalized_key); возвращает issues для строк-дублей.
@@ -219,9 +217,7 @@ async def _load_lookups(ctx: ImportContext) -> None:
     ctx.lookups["itype_by_code"] = {_norm(t.code): t for t in itypes}
     ctx.lookups["itype_by_name"] = {_norm(t.name): t for t in itypes}
     users = (
-        (await session.execute(select(AppUser).where(AppUser.is_active.is_(True))))
-        .scalars()
-        .all()
+        (await session.execute(select(AppUser).where(AppUser.is_active.is_(True)))).scalars().all()
     )
     ctx.lookups["user_by_username"] = {_norm(u.username): u for u in users}
     ctx.lookups["user_by_email"] = {_norm(u.email): u for u in users if u.email}
@@ -238,15 +234,15 @@ def _lookup_program(ctx: ImportContext, raw: str) -> Program | None:
 
 
 def _lookup_product(ctx: ImportContext, raw: str) -> Product | None:
-    return ctx.lookups["product_by_code"].get(_norm(raw)) or ctx.lookups[
-        "product_by_name"
-    ].get(_norm(raw))
+    return ctx.lookups["product_by_code"].get(_norm(raw)) or ctx.lookups["product_by_name"].get(
+        _norm(raw)
+    )
 
 
 def _lookup_user(ctx: ImportContext, raw: str) -> AppUser | None:
-    return ctx.lookups["user_by_username"].get(_norm(raw)) or ctx.lookups[
-        "user_by_email"
-    ].get(_norm(raw))
+    return ctx.lookups["user_by_username"].get(_norm(raw)) or ctx.lookups["user_by_email"].get(
+        _norm(raw)
+    )
 
 
 def _issue(row: PreparedRow, column: str | None, code: str, message: str) -> None:
@@ -530,9 +526,7 @@ async def _apply_universities(ctx: ImportContext, rows: list[PreparedRow]) -> Ap
 # --------------------------------------------------------------------------------------
 
 
-async def _initial_stage(
-    ctx: ImportContext, pipeline: str
-) -> tuple[Workflow, WorkflowStage]:
+async def _initial_stage(ctx: ImportContext, pipeline: str) -> tuple[Workflow, WorkflowStage]:
     cache_lookup_key = f"workflow:{pipeline}"
     cached = ctx.lookups.get(cache_lookup_key)
     if cached:
@@ -783,8 +777,10 @@ async def _find_or_create_counterparty_row(
     company = (values["company_name"] or "").strip()
     inn = (values.get("inn") or "").strip() or None
     stmt = select(Counterparty).where(Counterparty.kind == "legal_entity")
-    stmt = stmt.where(Counterparty.inn == inn) if inn else stmt.where(
-        func.lower(Counterparty.org_name) == company.lower()
+    stmt = (
+        stmt.where(Counterparty.inn == inn)
+        if inn
+        else stmt.where(func.lower(Counterparty.org_name) == company.lower())
     )
     existing = (await ctx.session.execute(stmt)).scalars().first()
     if existing is not None:
@@ -815,9 +811,7 @@ async def _apply_requests_b2c(ctx: ImportContext, rows: list[PreparedRow]) -> Ap
             else None
         )
         subject = values.get("program") or values.get("product") or "импорт"
-        title = (values.get("title") or "").strip() or (
-            f"{counterparty.display_name} — {subject}"
-        )
+        title = (values.get("title") or "").strip() or (f"{counterparty.display_name} — {subject}")
         await _create_deal_row(
             ctx,
             row,
@@ -999,9 +993,7 @@ async def _apply_interaction_types(ctx: ImportContext, rows: list[PreparedRow]) 
     return stats
 
 
-async def _apply_value_list(
-    ctx: ImportContext, rows: list[PreparedRow], name: str
-) -> ApplyStats:
+async def _apply_value_list(ctx: ImportContext, rows: list[PreparedRow], name: str) -> ApplyStats:
     """Справочники-списки без таблиц (регионы, источники, теги…) — app_setting['dict:*'].
 
     Резолюция: DDL data-model.md не содержит универсальной таблицы справочников,

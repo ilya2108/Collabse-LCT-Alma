@@ -152,16 +152,16 @@ async def _validate_refs(session: AsyncSession, fields: dict[str, Any]) -> None:
     for field_name, model, message in lookups:
         value = fields.get(field_name)
         if value is not None and await session.get(model, value) is None:
-            details.append(
-                {"field": field_name, "code": "lookup_not_found", "message": message}
-            )
+            details.append({"field": field_name, "code": "lookup_not_found", "message": message})
     if details:
         raise validation_error("Ошибка валидации данных", details)
 
 
 def _stuck_condition(default_days: int = 14):
     return func.now() - Deal.stage_entered_at > func.make_interval(
-        0, 0, 0,
+        0,
+        0,
+        0,
         func.coalesce(
             WorkflowStage.stuck_threshold_days, Workflow.stuck_threshold_days, default_days
         ),
@@ -232,13 +232,9 @@ async def list_requests(
             )
             .exists()
         )
-        stmt = stmt.where(
-            sa.or_(Deal.title.ilike(pattern), university_match, counterparty_match)
-        )
+        stmt = stmt.where(sa.or_(Deal.title.ilike(pattern), university_match, counterparty_match))
 
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="-created_at")
     rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).all()
     items = [
@@ -297,9 +293,7 @@ async def board(
             deals_stmt = deals_stmt.where(Deal.responsible_user_id == assignee_id)
         deals_stmt = scope.apply(deals_stmt)
         count = (
-            await session.execute(
-                select(func.count()).select_from(deals_stmt.subquery())
-            )
+            await session.execute(select(func.count()).select_from(deals_stmt.subquery()))
         ).scalar_one()
         deals = (
             (
@@ -322,9 +316,7 @@ async def board(
                 counterparty = await session.get(Counterparty, deal.counterparty_id)
                 if counterparty:
                     client_display = counterparty.display_name
-            cards.append(
-                serialize_board_card(deal, stage, workflow, assignee, client_display)
-            )
+            cards.append(serialize_board_card(deal, stage, workflow, assignee, client_display))
         columns.append(
             {
                 "status": {
@@ -448,7 +440,11 @@ async def create_request(
     )
     await session.commit()
     payload = await serialize_deal(
-        session, deal, viewer=user, stage=initial_stage, workflow=workflow,
+        session,
+        deal,
+        viewer=user,
+        stage=initial_stage,
+        workflow=workflow,
         available_transitions=await available_transitions(session, deal, user),
     )
     if warning is not None:
@@ -512,14 +508,24 @@ async def update_request(
     if deal.pipeline == "b2b" and updates.get("university_id", deal.university_id) is None:
         raise validation_error(
             "Ошибка валидации данных",
-            [{"field": "university_id", "code": "required",
-              "message": "B2B-заявка не может остаться без вуза"}],
+            [
+                {
+                    "field": "university_id",
+                    "code": "required",
+                    "message": "B2B-заявка не может остаться без вуза",
+                }
+            ],
         )
     if deal.pipeline == "b2c" and updates.get("counterparty_id", deal.counterparty_id) is None:
         raise validation_error(
             "Ошибка валидации данных",
-            [{"field": "counterparty_id", "code": "required",
-              "message": "B2C-заявка не может остаться без клиента"}],
+            [
+                {
+                    "field": "counterparty_id",
+                    "code": "required",
+                    "message": "B2C-заявка не может остаться без клиента",
+                }
+            ],
         )
 
     before: dict[str, Any] = {}
@@ -545,7 +551,9 @@ async def update_request(
     await session.commit()
     await get_cache().delete(f"deal:{deal.id}")
     return await serialize_deal(
-        session, deal, viewer=user,
+        session,
+        deal,
+        viewer=user,
         available_transitions=await available_transitions(session, deal, user),
     )
 
@@ -570,8 +578,13 @@ async def assign_request(
     if new_assignee is None or not new_assignee.is_active:
         raise validation_error(
             "Ошибка валидации данных",
-            [{"field": "assignee_id", "code": "lookup_not_found",
-              "message": "Пользователь не найден или деактивирован"}],
+            [
+                {
+                    "field": "assignee_id",
+                    "code": "lookup_not_found",
+                    "message": "Пользователь не найден или деактивирован",
+                }
+            ],
         )
     if not user.access.has("requests:assign_any", deal.pipeline):
         # без assign_any — только взять «свободную» заявку на себя (см. докстринг модуля)
@@ -618,7 +631,9 @@ async def assign_request(
     await session.commit()
     await get_cache().delete(f"deal:{deal.id}")
     return await serialize_deal(
-        session, deal, viewer=user,
+        session,
+        deal,
+        viewer=user,
         available_transitions=await available_transitions(session, deal, user),
     )
 
@@ -665,7 +680,9 @@ async def perform_transition(
         ip=client_ip(request),
     )
     return await serialize_deal(
-        session, deal, viewer=user,
+        session,
+        deal,
+        viewer=user,
         available_transitions=await available_transitions(session, deal, user),
     )
 
@@ -721,8 +738,7 @@ async def request_history(
     if actor_ids:
         users = {
             row.id: row
-            for row in (
-                await session.execute(select(AppUser).where(AppUser.id.in_(actor_ids))))
+            for row in (await session.execute(select(AppUser).where(AppUser.id.in_(actor_ids))))
             .scalars()
             .all()
         }
@@ -761,8 +777,7 @@ async def list_comments(
     if author_ids:
         authors = {
             row.id: row
-            for row in (
-                await session.execute(select(AppUser).where(AppUser.id.in_(author_ids))))
+            for row in (await session.execute(select(AppUser).where(AppUser.id.in_(author_ids))))
             .scalars()
             .all()
         }
@@ -861,7 +876,9 @@ async def reopen_request(
         ip=client_ip(request),
     )
     return await serialize_deal(
-        session, deal, viewer=user,
+        session,
+        deal,
+        viewer=user,
         available_transitions=await available_transitions(session, deal, user),
     )
 

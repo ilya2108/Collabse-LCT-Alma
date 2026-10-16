@@ -83,9 +83,7 @@ class TestPresets:
 
     def test_patch_and_filter(self) -> None:
         items: list[dict] = []
-        preset = add_preset(
-            items, {"screen": "registry.universities", "name": "Мои вузы"}
-        )
+        preset = add_preset(items, {"screen": "registry.universities", "name": "Мои вузы"})
         patched = patch_preset(
             items, preset["id"], {"name": "Вузы ЦФО", "state": {"page_size": 50}}
         )

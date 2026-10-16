@@ -131,9 +131,7 @@ class ContractBase(_ApiModel):
     @model_validator(mode="after")
     def _check_owner_and_dates(self) -> ContractBase:
         if (self.university_id is None) == (self.counterparty_id is None):
-            raise ValueError(
-                "У договора должен быть ровно один владелец: вуз или контрагент"
-            )
+            raise ValueError("У договора должен быть ровно один владелец: вуз или контрагент")
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValueError("Дата окончания договора не может быть раньше даты начала")
         return self

@@ -134,9 +134,7 @@ REQUEST_B2B_FIELDS = EntityFields(
     entity_type="requests_b2b",
     label="Заявки B2B",
     fields=(
-        TargetField(
-            "title", "Название заявки", synonyms=("название", "заявка", "тема", "title")
-        ),
+        TargetField("title", "Название заявки", synonyms=("название", "заявка", "тема", "title")),
         TargetField(
             "university",
             "Вуз (название или ИНН)",
@@ -160,9 +158,7 @@ REQUEST_B2B_FIELDS = EntityFields(
             lookup="by_username_or_email",
         ),
         TargetField("amount", "Сумма", synonyms=("сумма", "бюджет", "стоимость", "amount")),
-        TargetField(
-            "description", "Описание", synonyms=("описание", "комментарий", "примечание")
-        ),
+        TargetField("description", "Описание", synonyms=("описание", "комментарий", "примечание")),
     ),
 )
 
@@ -201,9 +197,7 @@ REQUEST_B2C_FIELDS = EntityFields(
         ),
         TargetField("title", "Название заявки", synonyms=("название", "заявка", "тема")),
         TargetField("amount", "Сумма", synonyms=("сумма", "стоимость", "amount")),
-        TargetField(
-            "description", "Описание", synonyms=("описание", "комментарий", "примечание")
-        ),
+        TargetField("description", "Описание", synonyms=("описание", "комментарий", "примечание")),
     ),
     default_match_by=("email",),
 )
@@ -230,9 +224,7 @@ _DICTIONARY_FIELDS: dict[str, EntityFields] = {
         label="Справочник «Типы взаимодействия B2C»",
         fields=(
             TargetField("code", "Код", required=True, synonyms=("код", "code")),
-            TargetField(
-                "name", "Название", required=True, synonyms=("название", "наименование")
-            ),
+            TargetField("name", "Название", required=True, synonyms=("название", "наименование")),
             TargetField("description", "Описание", synonyms=("описание", "комментарий")),
         ),
         default_match_by=("code",),

@@ -28,12 +28,10 @@ class SettingsIn(BaseModel):
     def as_storage(self) -> dict[str, Any]:
         return {
             "channels": {
-                code: patch.model_dump(exclude_none=True)
-                for code, patch in self.channels.items()
+                code: patch.model_dump(exclude_none=True) for code, patch in self.channels.items()
             },
             "events": {
-                code: patch.model_dump(exclude_none=True)
-                for code, patch in self.events.items()
+                code: patch.model_dump(exclude_none=True) for code, patch in self.events.items()
             },
             "version": self.version,
         }
@@ -73,9 +71,7 @@ class RulePatch(BaseModel):
     event_type: str | None = None
     channel: Literal["telegram", "email", "max"] | None = None
     recipient_type: (
-        Literal[
-            "responsible", "manager_of_responsible", "role", "user", "tg_username", "email"
-        ]
+        Literal["responsible", "manager_of_responsible", "role", "user", "tg_username", "email"]
         | None
     ) = None
     recipient_value: str | None = None

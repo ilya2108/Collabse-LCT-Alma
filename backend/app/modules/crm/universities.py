@@ -92,13 +92,9 @@ async def list_universities(
         )
         stmt = stmt.where(active_contract if has_active_contract else ~active_contract)
 
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="name")
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
-    )
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     items = [UniversityOut.model_validate(row).model_dump(mode="json") for row in rows]
     return list_envelope(items, total, params)
 
@@ -141,21 +137,15 @@ async def get_university(
 ) -> UniversityOut:
     university = await get_or_404(session, University, university_id, "Вуз не найден")
     contracts_count = (
-        await session.execute(
-            select(func.count()).where(Contract.university_id == university_id)
-        )
+        await session.execute(select(func.count()).where(Contract.university_id == university_id))
     ).scalar_one()
     active_requests = (
         await session.execute(
-            select(func.count()).where(
-                Deal.university_id == university_id, Deal.status == "open"
-            )
+            select(func.count()).where(Deal.university_id == university_id, Deal.status == "open")
         )
     ).scalar_one()
     students_count = (
-        await session.execute(
-            select(func.count()).where(Student.university_id == university_id)
-        )
+        await session.execute(select(func.count()).where(Student.university_id == university_id))
     ).scalar_one()
     out = UniversityOut.model_validate(university)
     out.aggregates = UniversityAggregates(
@@ -196,15 +186,11 @@ async def delete_university(
     university = await get_or_404(session, University, university_id, "Вуз не найден")
     open_deals = (
         await session.execute(
-            select(func.count()).where(
-                Deal.university_id == university_id, Deal.status == "open"
-            )
+            select(func.count()).where(Deal.university_id == university_id, Deal.status == "open")
         )
     ).scalar_one()
     if open_deals:
-        raise conflict(
-            f"Нельзя деактивировать вуз: по нему {open_deals} активных заявок"
-        )
+        raise conflict(f"Нельзя деактивировать вуз: по нему {open_deals} активных заявок")
     university.is_active = False
     await write_audit(
         session,

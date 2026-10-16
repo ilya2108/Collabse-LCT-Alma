@@ -128,8 +128,12 @@ def test_v3_added_stage_without_incoming_is_unreachable() -> None:
             {"op": "add_status", "status": {"code": "pilot", "name": "Пилот", "position": 3}},
             {
                 "op": "add_transition",
-                "transition": {"from_code": "pilot", "to_code": "rejected", "name": "Отказ",
-                               "requires_comment": True},
+                "transition": {
+                    "from_code": "pilot",
+                    "to_code": "rejected",
+                    "name": "Отказ",
+                    "requires_comment": True,
+                },
             },
         ]
     )
@@ -145,7 +149,9 @@ def test_v4_dead_end_stage_rejected() -> None:
             {
                 "op": "add_transition",
                 "transition": {
-                    "from_code": "negotiation", "to_code": "pilot", "name": "Запустить пилот"
+                    "from_code": "negotiation",
+                    "to_code": "pilot",
+                    "name": "Запустить пилот",
                 },
             },
         ]
@@ -159,14 +165,26 @@ def test_valid_branch_addition_passes() -> None:
     graph = graph_from_seed("b2c")
     ops = parse_ops(
         [
-            {"op": "add_status", "status": {"code": "corp", "name": "Корпоративное обучение",
-                                            "position": 2}},
-            {"op": "add_transition",
-             "transition": {"from_code": "consultation", "to_code": "corp",
-                            "name": "Корпоративный сценарий"}},
-            {"op": "add_transition",
-             "transition": {"from_code": "corp", "to_code": "proposal",
-                            "name": "Сформировать предложение"}},
+            {
+                "op": "add_status",
+                "status": {"code": "corp", "name": "Корпоративное обучение", "position": 2},
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "consultation",
+                    "to_code": "corp",
+                    "name": "Корпоративный сценарий",
+                },
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "corp",
+                    "to_code": "proposal",
+                    "name": "Сформировать предложение",
+                },
+            },
         ]
     )
     target, plan = apply_operations(graph, ops)
@@ -183,8 +201,7 @@ def test_v5_duplicate_edge_rejected() -> None:
         [
             {
                 "op": "add_transition",
-                "transition": {"from_code": "new", "to_code": "first_contact",
-                               "name": "Дубль"},
+                "transition": {"from_code": "new", "to_code": "first_contact", "name": "Дубль"},
             }
         ]
     )
@@ -225,11 +242,19 @@ def test_v7_duplicate_name_rejected() -> None:
     ops = parse_ops(
         [
             {"op": "add_status", "status": {"code": "new2", "name": "Новая", "position": 9}},
-            {"op": "add_transition",
-             "transition": {"from_code": "negotiation", "to_code": "new2", "name": "Вбок"}},
-            {"op": "add_transition",
-             "transition": {"from_code": "new2", "to_code": "rejected", "name": "Отказ",
-                            "requires_comment": True}},
+            {
+                "op": "add_transition",
+                "transition": {"from_code": "negotiation", "to_code": "new2", "name": "Вбок"},
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "new2",
+                    "to_code": "rejected",
+                    "name": "Отказ",
+                    "requires_comment": True,
+                },
+            },
         ]
     )
     target, _plan = apply_operations(graph, ops)
@@ -261,8 +286,12 @@ def test_pydantic_rejects_unknown_role_in_package() -> None:
             [
                 {
                     "op": "add_transition",
-                    "transition": {"from_code": "a", "to_code": "b", "name": "x",
-                                   "allowed_roles": ["observer"]},
+                    "transition": {
+                        "from_code": "a",
+                        "to_code": "b",
+                        "name": "x",
+                        "allowed_roles": ["observer"],
+                    },
                 }
             ]
         )
@@ -274,8 +303,14 @@ def test_pydantic_rejects_unknown_role_in_package() -> None:
 def test_unknown_status_id_is_conflict() -> None:
     graph = graph_from_seed("b2b")
     ops = parse_ops(
-        [{"op": "rename_status", "status_id": str(uuid.uuid4()), "new_name": "X",
-          "confirm_name": "Y"}]
+        [
+            {
+                "op": "rename_status",
+                "status_id": str(uuid.uuid4()),
+                "new_name": "X",
+                "confirm_name": "Y",
+            }
+        ]
     )
     with pytest.raises(OperationConflict):
         apply_operations(graph, ops)
@@ -284,8 +319,7 @@ def test_unknown_status_id_is_conflict() -> None:
 def test_delete_initial_stage_forbidden() -> None:
     graph = graph_from_seed("b2b")
     ops = parse_ops(
-        [{"op": "delete_status", "status_id": str(stage_id(graph, "new")),
-          "confirm_name": "Новая"}]
+        [{"op": "delete_status", "status_id": str(stage_id(graph, "new")), "confirm_name": "Новая"}]
     )
     with pytest.raises(OperationUnprocessable):
         apply_operations(graph, ops)
@@ -295,13 +329,25 @@ def test_confirm_name_checked_charwise() -> None:
     graph = graph_from_seed("b2b")
     sid = str(stage_id(graph, "first_contact"))
     ok_ops = parse_ops(
-        [{"op": "rename_status", "status_id": sid, "new_name": "Первый контакт",
-          "confirm_name": "Первичный контакт"}]
+        [
+            {
+                "op": "rename_status",
+                "status_id": sid,
+                "new_name": "Первый контакт",
+                "confirm_name": "Первичный контакт",
+            }
+        ]
     )
     verify_confirm_names(graph, ok_ops)  # не бросает
     bad_ops = parse_ops(
-        [{"op": "rename_status", "status_id": sid, "new_name": "Первый контакт",
-          "confirm_name": "первичный контакт"}]  # регистр не совпал — посимвольная сверка
+        [
+            {
+                "op": "rename_status",
+                "status_id": sid,
+                "new_name": "Первый контакт",
+                "confirm_name": "первичный контакт",
+            }
+        ]  # регистр не совпал — посимвольная сверка
     )
     with pytest.raises(ConfirmNameMismatch) as excinfo:
         verify_confirm_names(graph, bad_ops)
@@ -312,8 +358,14 @@ def test_rename_applies_and_keeps_stage_id() -> None:
     graph = graph_from_seed("b2b")
     sid = stage_id(graph, "first_contact")
     ops = parse_ops(
-        [{"op": "rename_status", "status_id": str(sid), "new_name": "Первый контакт",
-          "confirm_name": "Первичный контакт"}]
+        [
+            {
+                "op": "rename_status",
+                "status_id": str(sid),
+                "new_name": "Первый контакт",
+                "confirm_name": "Первичный контакт",
+            }
+        ]
     )
     target, plan = apply_operations(graph, ops)
     assert target.stages[sid].name == "Первый контакт"  # UUID этапа не меняется (§2.2)
@@ -326,20 +378,26 @@ def test_delete_stage_removes_adjacent_transitions() -> None:
     sid = stage_id(graph, "first_contact")
     ops = parse_ops(
         [
-            {"op": "delete_status", "status_id": str(sid),
-             "migrate_to_status_id": str(stage_id(graph, "new")),
-             "confirm_name": "Первичный контакт"},
+            {
+                "op": "delete_status",
+                "status_id": str(sid),
+                "migrate_to_status_id": str(stage_id(graph, "new")),
+                "confirm_name": "Первичный контакт",
+            },
             # без замыкания new → negotiation этап new стал бы тупиком (V-4)
-            {"op": "add_transition",
-             "transition": {"from_code": "new", "to_code": "negotiation",
-                            "name": "Сразу в переговоры"}},
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "new",
+                    "to_code": "negotiation",
+                    "name": "Сразу в переговоры",
+                },
+            },
         ]
     )
     target, plan = apply_operations(graph, ops)
     assert sid not in target.stages
-    assert all(
-        sid not in (t.from_stage_id, t.to_stage_id) for t in target.transitions.values()
-    )
+    assert all(sid not in (t.from_stage_id, t.to_stage_id) for t in target.transitions.values())
     assert len(plan.deleted_stages) == 1
     assert len(plan.deleted_stages[0].deleted_transition_ids) == 3  # new→fc, fc→neg, fc→rej
     assert validate_graph(target) == []
@@ -382,9 +440,7 @@ def test_v8_mapping_not_required_without_deals() -> None:
 def test_v8_terminal_target_invalid() -> None:
     graph = graph_from_seed("b2b")
     sid = stage_id(graph, "first_contact")
-    _target, plan = apply_operations(
-        graph, _delete_package(graph, stage_id(graph, "rejected"))
-    )
+    _target, plan = apply_operations(graph, _delete_package(graph, stage_id(graph, "rejected")))
     errors = validate_migration(graph, plan, {sid: 1})
     assert E_MAPPING_INVALID in codes(errors)
 
@@ -415,13 +471,26 @@ def test_v8_target_deleted_in_same_package_invalid() -> None:
     neg = stage_id(graph, "negotiation")
     ops = parse_ops(
         [
-            {"op": "delete_status", "status_id": str(neg),
-             "migrate_to_status_id": str(fc), "confirm_name": "Переговоры"},
-            {"op": "delete_status", "status_id": str(fc),
-             "migrate_to_status_id": str(neg), "confirm_name": "Первичный контакт"},
-            {"op": "add_transition",
-             "transition": {"from_code": "new", "to_code": "contract_prep",
-                            "name": "Сразу к договору"}},
+            {
+                "op": "delete_status",
+                "status_id": str(neg),
+                "migrate_to_status_id": str(fc),
+                "confirm_name": "Переговоры",
+            },
+            {
+                "op": "delete_status",
+                "status_id": str(fc),
+                "migrate_to_status_id": str(neg),
+                "confirm_name": "Первичный контакт",
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "new",
+                    "to_code": "contract_prep",
+                    "name": "Сразу к договору",
+                },
+            },
         ]
     )
     target, plan = apply_operations(graph, ops)

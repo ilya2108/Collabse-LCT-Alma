@@ -232,10 +232,14 @@ async def _talent_pool_hook_on_won(
     if deal.pipeline != "b2c" or deal.counterparty_id is None:
         return
     student = (
-        await session.execute(
-            select(Student).where(Student.counterparty_id == deal.counterparty_id)
+        (
+            await session.execute(
+                select(Student).where(Student.counterparty_id == deal.counterparty_id)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if student is None or student.funnel_status not in ("candidate", "studying"):
         return
     previous = student.funnel_status
@@ -302,9 +306,7 @@ async def transition_deal(
             (
                 await session.execute(
                     select(WorkflowTransition.name)
-                    .join(
-                        WorkflowStage, WorkflowStage.id == WorkflowTransition.to_stage_id
-                    )
+                    .join(WorkflowStage, WorkflowStage.id == WorkflowTransition.to_stage_id)
                     .where(
                         WorkflowTransition.workflow_id == deal.workflow_id,
                         WorkflowTransition.from_stage_id == deal.stage_id,
@@ -462,11 +464,7 @@ async def reopen_deal(
     if current_stage is None or not current_stage.is_terminal:
         raise conflict("Переоткрыть можно только заявку в терминальном статусе")
     target = await session.get(WorkflowStage, to_status_id)
-    if (
-        target is None
-        or target.deleted_at is not None
-        or target.workflow_id != deal.workflow_id
-    ):
+    if target is None or target.deleted_at is not None or target.workflow_id != deal.workflow_id:
         raise unprocessable("Целевой этап не найден в воронке заявки")
     if target.is_terminal:
         raise unprocessable("Переоткрытие в терминальный этап невозможно")
@@ -1044,9 +1042,7 @@ async def _global_stuck_default(session: AsyncSession) -> int:
     return STUCK_DEFAULT_THRESHOLD_DAYS
 
 
-def _pick_stuck_rule(
-    rules: list[NotificationRule], deal: Deal
-) -> NotificationRule | None:
+def _pick_stuck_rule(rules: list[NotificationRule], deal: Deal) -> NotificationRule | None:
     """Наиболее специфичное правило: stage > workflow > глобальное."""
     matching = [
         r
@@ -1146,28 +1142,28 @@ async def check_stuck_requests(session: AsyncSession) -> dict[str, Any]:
     ).scalar_one()
 
     candidates = (
-        (
-            await session.execute(
-                select(Deal, WorkflowStage, Workflow)
-                .join(WorkflowStage, WorkflowStage.id == Deal.stage_id)
-                .join(Workflow, Workflow.id == Deal.workflow_id)
-                .where(
-                    Deal.status == "open",
-                    WorkflowStage.is_terminal.is_(False),
-                    func.now() - Deal.stage_entered_at
-                    > func.make_interval(
-                        0, 0, 0,
-                        func.coalesce(
-                            WorkflowStage.stuck_threshold_days,
-                            Workflow.stuck_threshold_days,
-                            global_default,
-                        ),
+        await session.execute(
+            select(Deal, WorkflowStage, Workflow)
+            .join(WorkflowStage, WorkflowStage.id == Deal.stage_id)
+            .join(Workflow, Workflow.id == Deal.workflow_id)
+            .where(
+                Deal.status == "open",
+                WorkflowStage.is_terminal.is_(False),
+                func.now() - Deal.stage_entered_at
+                > func.make_interval(
+                    0,
+                    0,
+                    0,
+                    func.coalesce(
+                        WorkflowStage.stuck_threshold_days,
+                        Workflow.stuck_threshold_days,
+                        global_default,
                     ),
-                )
-                .with_for_update(of=Deal, skip_locked=True)
+                ),
             )
-        ).all()
-    )
+            .with_for_update(of=Deal, skip_locked=True)
+        )
+    ).all()
 
     stuck_found = len(candidates)
     newly_stuck = 0
@@ -1220,9 +1216,7 @@ async def check_stuck_requests(session: AsyncSession) -> dict[str, Any]:
             payload=payload,
             deal=deal,
             recipient_types=("responsible",),
-            dedup_key=stuck_dedup_key(
-                deal.id, deal.stage_id, "responsible", days, repeat_days
-            ),
+            dedup_key=stuck_dedup_key(deal.id, deal.stage_id, "responsible", days, repeat_days),
         )
         notifications_sent += created
 
@@ -1244,9 +1238,7 @@ async def check_stuck_requests(session: AsyncSession) -> dict[str, Any]:
                 payload={**payload, "escalation": True},
                 deal=deal,
                 recipient_types=("manager_of_responsible",),
-                dedup_key=stuck_dedup_key(
-                    deal.id, deal.stage_id, "manager", days, mgr_repeat
-                ),
+                dedup_key=stuck_dedup_key(deal.id, deal.stage_id, "manager", days, mgr_repeat),
             )
             escalations_sent += created
 

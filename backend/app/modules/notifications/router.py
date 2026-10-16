@@ -73,16 +73,12 @@ async def get_settings(session: SessionDep, user: CurrentUser) -> dict[str, Any]
 
 
 @router.put("/notifications/settings", summary="Изменить настройки нотификаций")
-async def put_settings(
-    body: SettingsIn, session: SessionDep, user: CurrentUser
-) -> dict[str, Any]:
+async def put_settings(body: SettingsIn, session: SessionDep, user: CurrentUser) -> dict[str, Any]:
     return await service.put_user_settings(session, user, body.as_storage())
 
 
 @router.post("/notifications/test", status_code=202, summary="Тестовая отправка в канал")
-async def send_test(
-    body: TestSendIn, session: SessionDep, user: CurrentUser
-) -> dict[str, Any]:
+async def send_test(body: TestSendIn, session: SessionDep, user: CurrentUser) -> dict[str, Any]:
     return await service.send_test(session, user, body.channel)
 
 
@@ -110,15 +106,11 @@ async def list_notifications(
     limit: Annotated[int, Query(ge=1, le=200)] = 25,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict[str, Any]:
-    return await service.list_feed(
-        session, user, unread=unread, limit=limit, offset=offset
-    )
+    return await service.list_feed(session, user, unread=unread, limit=limit, offset=offset)
 
 
 @router.post("/notifications/read", summary="Отметить уведомления прочитанными")
-async def mark_read(
-    body: MarkReadIn, session: SessionDep, user: CurrentUser
-) -> dict[str, Any]:
+async def mark_read(body: MarkReadIn, session: SessionDep, user: CurrentUser) -> dict[str, Any]:
     return await service.mark_read(session, user, ids=body.ids, mark_all=body.all)
 
 
@@ -235,9 +227,7 @@ async def update_rule(
     return service.serialize_rule(rule)
 
 
-@router.delete(
-    "/notifications/rules/{rule_id}", status_code=204, summary="Удалить правило"
-)
+@router.delete("/notifications/rules/{rule_id}", status_code=204, summary="Удалить правило")
 async def delete_rule(
     rule_id: uuid.UUID,
     request: Request,

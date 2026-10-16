@@ -56,9 +56,7 @@ def import_bad_format(message: str = "Файл импорта не распоз�
 
 
 def import_too_big(detail: str) -> ApiError:
-    return import_bad_format(
-        f"Файл импорта слишком велик ({detail}) — разбейте его на части"
-    )
+    return import_bad_format(f"Файл импорта слишком велик ({detail}) — разбейте его на части")
 
 
 def import_encoding_error(tried: tuple[str, ...] = ENCODING_CHAIN) -> ApiError:
@@ -123,9 +121,7 @@ def _non_ascii_score(text: str) -> float:
     Подозрительные — всё не-ASCII плюс управляющие байты (кроме \\t\\r\\n): мусор
     вроде UTF-16, прочитанного как однобайтовая кодировка, роняет оценку ниже порога.
     """
-    considered = [
-        ch for ch in text if ord(ch) > 127 or (ord(ch) < 32 and ch not in "\t\r\n")
-    ]
+    considered = [ch for ch in text if ord(ch) > 127 or (ord(ch) < 32 and ch not in "\t\r\n")]
     if not considered:
         return 1.0
     expected = sum(1 for ch in considered if ch in _EXPECTED_NON_ASCII)
@@ -244,9 +240,7 @@ def _normalize_grid(
     if header_row >= len(grid):
         raise import_bad_format("В файле нет строки заголовков")
     raw_header = grid[header_row]
-    columns = [
-        (_cell_to_str(cell) or f"Колонка {idx + 1}") for idx, cell in enumerate(raw_header)
-    ]
+    columns = [(_cell_to_str(cell) or f"Колонка {idx + 1}") for idx, cell in enumerate(raw_header)]
     width = len(columns)
     rows: list[list[str | None]] = []
     for raw in grid[header_row + 1 :]:

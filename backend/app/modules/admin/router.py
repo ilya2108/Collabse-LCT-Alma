@@ -82,8 +82,13 @@ async def list_users(
     if permission is not None and permission not in PERMISSION_CODES:
         raise validation_error(
             "Ошибка валидации данных",
-            [{"field": "permission", "code": "unknown_permission",
-              "message": f"Неизвестное право «{permission}»"}],
+            [
+                {
+                    "field": "permission",
+                    "code": "unknown_permission",
+                    "message": f"Неизвестное право «{permission}»",
+                }
+            ],
         )
     items, total = await service.list_users(
         session,
@@ -146,9 +151,7 @@ async def put_settings(
     body: SettingsPut, request: Request, session: SessionDep, admin: SettingsAdmin
 ) -> dict[str, Any]:
     before = await service.get_system_settings(session)
-    result = await service.put_system_settings(
-        session, admin, body.model_dump(exclude_unset=True)
-    )
+    result = await service.put_system_settings(session, admin, body.model_dump(exclude_unset=True))
     await write_audit(
         session,
         actor_user_id=admin.id,

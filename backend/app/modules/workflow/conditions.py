@@ -26,9 +26,7 @@ CONDITION_FIELDS = frozenset(
     }
 )
 
-CONDITION_OPS = frozenset(
-    {"eq", "neq", "gt", "gte", "lt", "lte", "in", "not_in", "is_set"}
-)
+CONDITION_OPS = frozenset({"eq", "neq", "gt", "gte", "lt", "lte", "in", "not_in", "is_set"})
 
 
 def _coerce_pair(left: Any, right: Any) -> tuple[Any, Any] | None:
@@ -73,7 +71,9 @@ def _eval_leaf(node: dict[str, Any], context: dict[str, Any]) -> bool:
     if pair is None:
         logger.warning(
             "condition: несравнимые типы %r и %r (поле %s) — условие ложно",
-            actual, expected, field,
+            actual,
+            expected,
+            field,
         )
         return False
     left, right = pair

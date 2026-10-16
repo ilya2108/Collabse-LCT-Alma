@@ -135,10 +135,7 @@ async def put_system_settings(
 
 def merge_flags(stored: dict[str, Any] | None) -> dict[str, bool]:
     stored = stored or {}
-    return {
-        name: bool(stored.get(name, spec["default"]))
-        for name, spec in KNOWN_FLAGS.items()
-    }
+    return {name: bool(stored.get(name, spec["default"])) for name, spec in KNOWN_FLAGS.items()}
 
 
 async def get_flags(session: AsyncSession) -> dict[str, bool]:
@@ -150,16 +147,12 @@ async def set_flag(
     session: AsyncSession, user: AppUser, name: str, enabled: bool
 ) -> dict[str, Any]:
     if name not in KNOWN_FLAGS:
-        raise not_found(
-            f"Фичефлаг «{name}» не найден. Доступно: {', '.join(sorted(KNOWN_FLAGS))}"
-        )
+        raise not_found(f"Фичефлаг «{name}» не найден. Доступно: {', '.join(sorted(KNOWN_FLAGS))}")
     setting = await session.get(AppSetting, FEATURE_FLAGS_KEY)
     flags = merge_flags(setting.value if setting else None)
     flags[name] = enabled
     if setting is None:
-        setting = AppSetting(
-            key=FEATURE_FLAGS_KEY, value=flags, description="Фичефлаги приложения"
-        )
+        setting = AppSetting(key=FEATURE_FLAGS_KEY, value=flags, description="Фичефлаги приложения")
         session.add(setting)
     else:
         setting.value = flags
@@ -227,9 +220,7 @@ async def list_users(
                 AppUser.email.ilike(needle),
             )
         )
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(
         stmt,
         params.sort,
@@ -241,11 +232,7 @@ async def list_users(
         },
         default="username",
     )
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset)))
-        .scalars()
-        .all()
-    )
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     return [serialize_user(u) for u in rows], int(total)
 
 
@@ -269,9 +256,7 @@ async def set_manager(
             if cursor is None or cursor.manager_id is None:
                 break
             if cursor.manager_id == user_id:
-                raise validation_error(
-                    "Назначение создаёт цикл в иерархии руководителей"
-                )
+                raise validation_error("Назначение создаёт цикл в иерархии руководителей")
             cursor = await session.get(AppUser, cursor.manager_id)
     user.manager_id = manager_id
     return user, previous
@@ -314,9 +299,7 @@ async def sync_users_from_keycloak(session: AsyncSession) -> dict[str, int]:
                 },
             )
             token_response.raise_for_status()
-            headers = {
-                "Authorization": f"Bearer {token_response.json()['access_token']}"
-            }
+            headers = {"Authorization": f"Bearer {token_response.json()['access_token']}"}
             users_response = await client.get(
                 f"{base}/admin/realms/{realm}/users",
                 params={"max": 500, "briefRepresentation": "false"},
@@ -333,15 +316,14 @@ async def sync_users_from_keycloak(session: AsyncSession) -> dict[str, int]:
                 ):
                     continue  # сервисные аккаунты клиентов — не люди CRM
                 sub = uuid.UUID(kc_user["id"])
-                full_name = " ".join(
-                    part
-                    for part in (kc_user.get("firstName"), kc_user.get("lastName"))
-                    if part
-                ) or None
-                user = (
-                    await session.execute(
-                        select(AppUser).where(AppUser.keycloak_sub == sub)
+                full_name = (
+                    " ".join(
+                        part for part in (kc_user.get("firstName"), kc_user.get("lastName")) if part
                     )
+                    or None
+                )
+                user = (
+                    await session.execute(select(AppUser).where(AppUser.keycloak_sub == sub))
                 ).scalar_one_or_none()
                 if user is None:
                     user = (
@@ -355,14 +337,11 @@ async def sync_users_from_keycloak(session: AsyncSession) -> dict[str, int]:
                 if user is None:
                     # стартовое назначение — как при первом входе (sync_app_user)
                     roles_response = await client.get(
-                        f"{base}/admin/realms/{realm}/users/{kc_user['id']}"
-                        "/role-mappings/realm",
+                        f"{base}/admin/realms/{realm}/users/{kc_user['id']}/role-mappings/realm",
                         headers=headers,
                     )
                     roles_response.raise_for_status()
-                    roles = sorted(
-                        {r["name"] for r in roles_response.json()} & set(PEOPLE_ROLES)
-                    )
+                    roles = sorted({r["name"] for r in roles_response.json()} & set(PEOPLE_ROLES))
                     user = AppUser(
                         keycloak_sub=sub,
                         username=kc_user["username"],
@@ -410,9 +389,7 @@ async def list_audit(
     date_to: datetime | None,
     params: ListParams,
 ) -> tuple[list[dict[str, Any]], int]:
-    stmt = select(AuditLog, AppUser).outerjoin(
-        AppUser, AppUser.id == AuditLog.actor_user_id
-    )
+    stmt = select(AuditLog, AppUser).outerjoin(AppUser, AppUser.id == AuditLog.actor_user_id)
     if entity_type:
         stmt = stmt.where(AuditLog.entity_type == entity_type)
     if entity_id:
@@ -425,9 +402,7 @@ async def list_audit(
         stmt = stmt.where(AuditLog.created_at >= date_from)
     if date_to:
         stmt = stmt.where(AuditLog.created_at <= date_to)
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         await session.execute(
             stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
@@ -442,8 +417,7 @@ async def list_audit(
             "entity_type": entry.entity_type,
             "entity_id": str(entry.entity_id) if entry.entity_id else None,
             "actor": (
-                {"id": str(actor.id), "username": actor.username,
-                 "full_name": actor.full_name}
+                {"id": str(actor.id), "username": actor.username, "full_name": actor.full_name}
                 if actor
                 else None
             ),

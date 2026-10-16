@@ -51,9 +51,7 @@ async def _parse_envelope(request: Request, secret: str) -> InboundEnvelope:
     return envelope
 
 
-async def _check_replay(
-    session: AsyncSession, envelope: InboundEnvelope
-) -> None:
+async def _check_replay(session: AsyncSession, envelope: InboundEnvelope) -> None:
     """Свежесть occurred_at ЛИБО уже виденный event_id (корректный duplicate) — §13.6."""
     if occurred_at_fresh(envelope.occurred_at):
         return
@@ -146,9 +144,7 @@ async def integration_events(
         stmt = stmt.where(IntegrationEvent.created_at >= from_)
     if to:
         stmt = stmt.where(IntegrationEvent.created_at < to + timedelta(days=1))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         (
             await session.execute(

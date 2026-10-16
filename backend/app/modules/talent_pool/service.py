@@ -46,9 +46,7 @@ def _now() -> datetime:
 # --------------------------------------------------------------------------------------
 
 
-def validate_funnel_transition(
-    from_status: str, to_status: str, comment: str | None
-) -> str | None:
+def validate_funnel_transition(from_status: str, to_status: str, comment: str | None) -> str | None:
     """None — переход допустим; иначе код ошибки.
 
     Правила §8.2: соседний вперёд; любой назад — с комментарием (исправление
@@ -183,9 +181,7 @@ def serialize_history_row(
         "from_status": row.from_status,
         "to_status": row.to_status,
         "actor": (
-            {"id": str(actor.id), "full_name": actor.full_name or actor.username}
-            if actor
-            else None
+            {"id": str(actor.id), "full_name": actor.full_name or actor.username} if actor else None
         ),
         "reason": row.reason,
         "created_at": row.created_at.isoformat() if row.created_at else None,

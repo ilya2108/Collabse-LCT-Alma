@@ -28,9 +28,7 @@ class TestFunnelTransitions:
         )
 
     def test_backward_requires_comment(self) -> None:
-        assert (
-            validate_funnel_transition("studying", "candidate", None) == "comment_required"
-        )
+        assert validate_funnel_transition("studying", "candidate", None) == "comment_required"
         assert validate_funnel_transition("studying", "candidate", "  ") == "comment_required"
         assert validate_funnel_transition("studying", "candidate", "отчислен") is None
         # назад можно на любой статус, не только соседний
@@ -50,9 +48,7 @@ class TestExportWriters:
         assert "МФТИ;Долгопрудный" in text
 
     def test_csv_cp1251(self) -> None:
-        data = render_export(
-            COLUMNS, ROWS, export_format="csv", encoding="cp1251", delimiter=";"
-        )
+        data = render_export(COLUMNS, ROWS, export_format="csv", encoding="cp1251", delimiter=";")
         text = data.decode("cp1251")
         assert "МГУ;Москва" in text
 

@@ -54,13 +54,9 @@ async def list_products(
         stmt = stmt.where(sa.or_(Product.name.ilike(pattern), Product.code.ilike(pattern)))
     if is_active is not None:
         stmt = stmt.where(Product.is_active.is_(is_active))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="name")
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
-    )
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     items = [ProductOut.model_validate(row).model_dump(mode="json") for row in rows]
     return list_envelope(items, total, params)
 

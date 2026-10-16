@@ -106,8 +106,8 @@ class PiiCrypto:
         if not fernet_keys:
             raise PiiConfigurationError(
                 "PII_FERNET_KEYS не задан: сгенерируйте ключ командой "
-                "python -c \"from cryptography.fernet import Fernet; "
-                "print(Fernet.generate_key().decode())\""
+                'python -c "from cryptography.fernet import Fernet; '
+                'print(Fernet.generate_key().decode())"'
             )
         if not hmac_key or len(hmac_key.encode("utf-8")) < 32:
             raise PiiConfigurationError(

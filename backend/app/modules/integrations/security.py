@@ -25,7 +25,7 @@ def signature_valid(secret: str, raw_body: bytes, header_value: str | None) -> b
     if not header_value or not header_value.startswith("sha256="):
         return False
     expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(header_value[len("sha256="):].lower(), expected)
+    return hmac.compare_digest(header_value[len("sha256=") :].lower(), expected)
 
 
 def occurred_at_fresh(occurred_at: datetime, now: datetime | None = None) -> bool:
@@ -44,7 +44,7 @@ async def authenticate_webhook(request: Request, raw_body: bytes, secret: str) -
         raise unauthorized("Неверная подпись вебхука")
     authorization = request.headers.get("Authorization", "")
     if authorization.startswith("Bearer "):
-        claims = await decode_token(authorization[len("Bearer "):])
+        claims = await decode_token(authorization[len("Bearer ") :])
         if "svc_integration" in claims.roles:
             return
         raise unauthorized("Токен не имеет роли svc_integration")

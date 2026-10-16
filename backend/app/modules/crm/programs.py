@@ -98,17 +98,11 @@ async def list_programs(
         stmt = stmt.where(Program.is_active.is_(is_active))
     if search:
         stmt = stmt.where(Program.name.ilike(f"%{search.strip()}%"))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="priority_rank")
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
-    )
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     links = await _external_ids(session, [row.id for row in rows])
-    items = [
-        _to_out(row, links.get(row.id)).model_dump(mode="json") for row in rows
-    ]
+    items = [_to_out(row, links.get(row.id)).model_dump(mode="json") for row in rows]
     return list_envelope(items, total, params)
 
 

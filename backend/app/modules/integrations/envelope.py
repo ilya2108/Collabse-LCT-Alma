@@ -60,9 +60,7 @@ async def build_deal_envelope(
 ) -> dict[str, Any]:
     """Конверт события по заявке (например, `crm.request.handed_over`)."""
     responsible = await session.get(AppUser, deal.responsible_user_id)
-    university = (
-        await session.get(University, deal.university_id) if deal.university_id else None
-    )
+    university = await session.get(University, deal.university_id) if deal.university_id else None
     program = await session.get(Program, deal.program_id) if deal.program_id else None
     product = await session.get(Product, deal.product_id) if deal.product_id else None
 

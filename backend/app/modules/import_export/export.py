@@ -169,9 +169,12 @@ async def _dataset_requests(
 async def _dataset_universities(
     session: AsyncSession, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
-    stmt = select(University, AppUser).outerjoin(
-        AppUser, AppUser.id == University.kam_user_id
-    ).order_by(University.name).limit(MAX_EXPORT_ROWS)
+    stmt = (
+        select(University, AppUser)
+        .outerjoin(AppUser, AppUser.id == University.kam_user_id)
+        .order_by(University.name)
+        .limit(MAX_EXPORT_ROWS)
+    )
     if filters.get("region"):
         stmt = stmt.where(University.region == filters["region"])
     if filters.get("is_active") is not None:
@@ -229,9 +232,9 @@ async def _dataset_contracts(
     rows = [
         {
             "number": c.number,
-            "owner": university.name if university else (
-                counterparty.display_name if counterparty else None
-            ),
+            "owner": university.name
+            if university
+            else (counterparty.display_name if counterparty else None),
             "status": c.status,
             "signed_at": _fmt(c.signed_at),
             "valid_from": _fmt(c.valid_from),
@@ -378,15 +381,13 @@ async def _dataset_report(
     if "series" in report:
         first = report["series"][0] if report["series"] else {}
         if "points" in first:  # dynamics: строка на дату, колонка на серию
-            columns = [("date", "Дата")] + [
-                (s["key"], s["label"]) for s in report["series"]
-            ]
+            columns = [("date", "Дата")] + [(s["key"], s["label"]) for s in report["series"]]
             by_date: dict[str, dict[str, Any]] = {}
             for series in report["series"]:
                 for point in series["points"]:
-                    by_date.setdefault(point["date"], {"date": point["date"]})[
-                        series["key"]
-                    ] = point["value"]
+                    by_date.setdefault(point["date"], {"date": point["date"]})[series["key"]] = (
+                        point["value"]
+                    )
             return columns, [by_date[key] for key in sorted(by_date)]
         columns = [("label", "Показатель"), ("value", "Значение")]
         if any("amount" in s for s in report["series"]):
@@ -423,9 +424,7 @@ async def _dataset_report(
             continue
         value = kpi[key]
         if isinstance(value, dict):
-            rows.append(
-                {"metric": label, "value": value.get("value"), "delta": value.get("delta")}
-            )
+            rows.append({"metric": label, "value": value.get("value"), "delta": value.get("delta")})
         else:
             rows.append({"metric": label, "value": value, "delta": None})
     period = kpi.get("period")
@@ -663,9 +662,7 @@ async def create_export_job(
     payload = _job_status_payload(
         file_object, entity_type=entity_type, export_format=export_format, rows=len(rows)
     )
-    await get_cache().set_json(
-        f"export:{file_object.id}", payload, EXPORT_STATUS_TTL_SECONDS
-    )
+    await get_cache().set_json(f"export:{file_object.id}", payload, EXPORT_STATUS_TTL_SECONDS)
     return payload
 
 

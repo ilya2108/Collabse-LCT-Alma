@@ -72,9 +72,7 @@ class TestHmacDedup:
 
     def test_hmac_ignores_case_and_spaces(self) -> None:
         crypto = _crypto()
-        assert crypto.email_hmac("  Ivanov@Example.COM ") == crypto.email_hmac(
-            "ivanov@example.com"
-        )
+        assert crypto.email_hmac("  Ivanov@Example.COM ") == crypto.email_hmac("ivanov@example.com")
 
     def test_hmac_differs_for_other_email(self) -> None:
         crypto = _crypto()

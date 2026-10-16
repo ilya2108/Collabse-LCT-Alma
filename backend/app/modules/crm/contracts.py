@@ -88,16 +88,12 @@ async def _validate_products(session: AsyncSession, product_ids: list[uuid.UUID]
         )
 
 
-def _sync_products(
-    contract: Contract, product_ids: list[uuid.UUID], actor_id: uuid.UUID
-) -> None:
+def _sync_products(contract: Contract, product_ids: list[uuid.UUID], actor_id: uuid.UUID) -> None:
     """Расширение набора = добавление строк contract_product (added_by/added_at — история)."""
     existing = {link.product_id: link for link in contract.products}
     target = set(product_ids)
     for product_id in target - set(existing):
-        contract.products.append(
-            ContractProduct(product_id=product_id, added_by=actor_id)
-        )
+        contract.products.append(ContractProduct(product_id=product_id, added_by=actor_id))
     for product_id, link in existing.items():
         if product_id not in target:
             contract.products.remove(link)
@@ -122,13 +118,9 @@ async def list_contracts(
         stmt = stmt.where(Contract.status == status)
     if search:
         stmt = stmt.where(Contract.number.ilike(f"%{search.strip()}%"))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="-created_at")
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
-    )
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     items = [_to_out(row).model_dump(mode="json", exclude={"files"}) for row in rows]
     return list_envelope(items, total, params)
 

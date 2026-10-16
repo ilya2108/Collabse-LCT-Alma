@@ -272,9 +272,7 @@ async def emit_event_notifications(
     # выключить целиком, канал — перевести в skipped (останется в in-app ленте)
     from app.modules.notifications.prefs import delivery_decision, load_prefs_for_users
 
-    prefs = await load_prefs_for_users(
-        session, [user.id for _, user, _ in unique_targets]
-    )
+    prefs = await load_prefs_for_users(session, [user.id for _, user, _ in unique_targets])
 
     created = 0
     multiple = len(unique_targets) + len(direct_addresses) > 1
@@ -283,9 +281,7 @@ async def emit_event_notifications(
             prefs.get(user.id),
             event_type=event_type,
             channel=channel,
-            is_responsible=(
-                user.id == deal.responsible_user_id if deal is not None else None
-            ),
+            is_responsible=(user.id == deal.responsible_user_id if deal is not None else None),
         )
         if decision == "drop":
             continue
@@ -306,9 +302,7 @@ async def emit_event_notifications(
             payload=payload,
             dedup_key=row_dedup,
             skipped_reason=(
-                "Канал отключён настройками получателя"
-                if decision == "skip_channel"
-                else None
+                "Канал отключён настройками получателя" if decision == "skip_channel" else None
             ),
         )
         if inserted:
@@ -386,12 +380,16 @@ async def _store_external_ids(
         await session.execute(
             pg_insert(ExternalLink)
             .values(
-                entity_type=entity_type, entity_id=entity_id, system=system,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                system=system,
                 external_id=external_id,
             )
             .on_conflict_do_update(
                 index_elements=[
-                    ExternalLink.entity_type, ExternalLink.entity_id, ExternalLink.system
+                    ExternalLink.entity_type,
+                    ExternalLink.entity_id,
+                    ExternalLink.system,
                 ],
                 set_={"external_id": external_id},
             )
@@ -491,9 +489,7 @@ async def run_integration_relay_pass(session: AsyncSession) -> int:
 def build_send_envelope(notification: Notification) -> dict[str, Any]:
     """Тело `POST /api/v1/send` notification-service (api-contract.md §9.4)."""
     recipient: dict[str, Any] = {
-        "user_id": str(notification.recipient_user_id)
-        if notification.recipient_user_id
-        else None,
+        "user_id": str(notification.recipient_user_id) if notification.recipient_user_id else None,
         "channels": [notification.channel],
         "telegram_chat_id": None,
         "email": None,

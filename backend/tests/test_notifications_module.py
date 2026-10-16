@@ -110,9 +110,7 @@ class TestLinkCodeDegradation:
     а не молча выдавать непроверяемый код (Р-8: код живёт только в KeyDB)."""
 
     async def test_create_code_unavailable(self) -> None:
-        user = AppUser(
-            id=uuid.uuid4(), keycloak_sub=uuid.uuid4(), username="kam1", roles=["kam"]
-        )
+        user = AppUser(id=uuid.uuid4(), keycloak_sub=uuid.uuid4(), username="kam1", roles=["kam"])
         with pytest.raises(ApiError) as exc_info:
             await service.create_link_code(user)
         assert exc_info.value.status_code == 503
@@ -226,9 +224,7 @@ class TestFeedReadMarkers:
             address="1",
             body="…",
         )
-        row.created_at = datetime.now(timezone.utc) - timedelta(
-            minutes=created_delta_minutes
-        )
+        row.created_at = datetime.now(timezone.utc) - timedelta(minutes=created_delta_minutes)
         return row
 
     def test_all_before_marks_older_rows(self) -> None:

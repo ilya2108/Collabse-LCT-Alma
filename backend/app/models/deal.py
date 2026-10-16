@@ -24,9 +24,7 @@ class Deal(TimestampMixin, VersionedMixin, Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     pipeline: Mapped[str] = mapped_column(sa.Text, nullable=False)  # b2b | b2c
     workflow_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("workflow.id"), nullable=False)
-    stage_id: Mapped[uuid.UUID] = mapped_column(
-        sa.ForeignKey("workflow_stage.id"), nullable=False
-    )
+    stage_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("workflow_stage.id"), nullable=False)
     title: Mapped[str] = mapped_column(sa.Text, nullable=False)
     university_id: Mapped[uuid.UUID | None] = mapped_column(sa.ForeignKey("university.id"))
     counterparty_id: Mapped[uuid.UUID | None] = mapped_column(sa.ForeignKey("counterparty.id"))
@@ -85,9 +83,7 @@ class DealStageHistory(CreatedAtMixin, Base):
     )
     from_stage_name: Mapped[str | None] = mapped_column(sa.Text)
     to_stage_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
-    transition_id: Mapped[uuid.UUID | None] = mapped_column(
-        sa.ForeignKey("workflow_transition.id")
-    )
+    transition_id: Mapped[uuid.UUID | None] = mapped_column(sa.ForeignKey("workflow_transition.id"))
     is_return: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, server_default=sa.false(), default=False
     )
@@ -112,9 +108,7 @@ class DealComment(CreatedAtMixin, Base):
     deal_id: Mapped[uuid.UUID] = mapped_column(
         sa.ForeignKey("deal.id", ondelete="CASCADE"), nullable=False
     )
-    author_user_id: Mapped[uuid.UUID] = mapped_column(
-        sa.ForeignKey("app_user.id"), nullable=False
-    )
+    author_user_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("app_user.id"), nullable=False)
     body: Mapped[str] = mapped_column(sa.Text, nullable=False)
     edited_at: Mapped[datetime | None] = mapped_column(sa.TIMESTAMP(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(sa.TIMESTAMP(timezone=True))
