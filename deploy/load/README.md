@@ -118,7 +118,7 @@ make load-test
 Цель сама достаёт `LOADTEST_CLIENT_SECRET` из секрета кластера (если переменная
 не задана) и пишет артефакты в `docs/defense/`:
 `load-raw.json` (посекундные метрики) и `load-summary.json` (итоговая сводка) —
-оба в `.gitignore`; в git попадает только отчёт `docs/defense/load-report.md`.
+оба в `.gitignore`; в git попадает только отчёт `docs/evidence/load-report.md`.
 
 ## Запуск: k6 в Docker (бинарь не нужен)
 
@@ -180,5 +180,5 @@ kubectl -n crm get hpa backend -w     # реплики backend: 2 → 4..6 на 
 kubectl top pods -n crm               # CPU/Mem внутри limits (metrics-server)
 ```
 
-Лог HPA и сводка k6 — фактура для `docs/defense/load-report.md`
+Лог HPA и сводка k6 — фактура для `docs/evidence/load-report.md`
 (отчёт нагрузочного тестирования по требованию кейсодержателя).
