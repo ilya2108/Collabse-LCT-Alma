@@ -92,15 +92,11 @@ async def load_items(session: AsyncSession, user: AppUser) -> list[dict[str, Any
     return []
 
 
-async def save_items(
-    session: AsyncSession, user: AppUser, items: list[dict[str, Any]]
-) -> None:
+async def save_items(session: AsyncSession, user: AppUser, items: list[dict[str, Any]]) -> None:
     key = presets_key(user.id)
     setting = await session.get(AppSetting, key)
     if setting is None:
-        setting = AppSetting(
-            key=key, value={"items": items}, description="Пресеты UI пользователя"
-        )
+        setting = AppSetting(key=key, value={"items": items}, description="Пресеты UI пользователя")
         session.add(setting)
     else:
         setting.value = {"items": items}

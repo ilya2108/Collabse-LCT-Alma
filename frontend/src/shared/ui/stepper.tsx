@@ -29,10 +29,10 @@ export function Stepper({ steps, current }: StepperProps): ReactNode {
         return (
           <li
             key={step.id}
-            className={cn('flex items-start gap-2', index < steps.length - 1 && 'flex-1')}
+            className={cn('flex min-w-0 items-start gap-2', index < steps.length - 1 && 'flex-1')}
             aria-current={active ? 'step' : undefined}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <span
                 className={cn(
                   'flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold transition-[color,background-color,border-color] duration-150',
@@ -44,7 +44,8 @@ export function Stepper({ steps, current }: StepperProps): ReactNode {
               >
                 {done ? <Check className="size-4" aria-hidden="true" /> : index + 1}
               </span>
-              <span className="min-w-0">
+              {/* < sm подпись только у текущего шага: четыре подписи в 375 px не помещаются */}
+              <span className={cn('min-w-0', !active && 'max-sm:sr-only')}>
                 <span
                   className={cn(
                     'block truncate text-sm',

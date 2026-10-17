@@ -73,7 +73,7 @@ export function NotificationsBell(): ReactNode {
           aria-label={
             unreadCount > 0 ? `Уведомления, непрочитанных: ${unreadCount}` : 'Уведомления'
           }
-          className="relative text-muted-foreground hover:text-foreground"
+          className="relative shrink-0 text-muted-foreground hover:text-foreground"
         >
           <motion.span
             key={ringKey}
@@ -93,7 +93,8 @@ export function NotificationsBell(): ReactNode {
           ) : null}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[340px] p-0">
+      {/* на 375 px поповер не шире экрана: 340 px или ширина вьюпорта минус поля */}
+      <PopoverContent align="end" collisionPadding={8} className="w-[min(340px,calc(100vw-1rem))] p-0">
         <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2.5">
           <span className="text-sm font-semibold">Уведомления</span>
           {unreadCount > 0 ? (

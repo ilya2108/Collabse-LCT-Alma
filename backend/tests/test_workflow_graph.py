@@ -1,7 +1,9 @@
 """Юнит-тесты движка: валидации графа V-1..V-8, применение операций, миграция.
 
 Инварианты — workflow-engine.md §6.7, §10 (I-1, I-2, I-7). Seed-графы обязаны
-проходить тот же validate_graph, что и пользовательские пакеты.
+проходить тот же validate_graph, что и пользовательские пакеты. Роли переходов (V-7,
+Р-F2-12): Pydantic проверяет только формат кода, строгий `check_operation_roles` — роли,
+добавляемые пакетом, мягкий `validate_graph(known_roles=…)` — существование ролей.
 """
 
 from __future__ import annotations
@@ -33,12 +35,17 @@ from app.modules.workflow.graph import (
     OperationUnprocessable,
     WorkflowGraph,
     apply_operations,
+    check_operation_roles,
     default_migration_target,
     validate_graph,
     validate_migration,
     verify_confirm_names,
 )
-from app.modules.workflow.schemas import Operation
+from app.modules.workflow.schemas import (
+    DEFAULT_TRANSITION_ROLES,
+    MAX_ALLOWED_ROLES,
+    Operation,
+)
 
 SEEDS_DIR = Path(__file__).resolve().parents[1] / "app" / "modules" / "workflow" / "seeds"
 
@@ -128,8 +135,12 @@ def test_v3_added_stage_without_incoming_is_unreachable() -> None:
             {"op": "add_status", "status": {"code": "pilot", "name": "Пилот", "position": 3}},
             {
                 "op": "add_transition",
-                "transition": {"from_code": "pilot", "to_code": "rejected", "name": "Отказ",
-                               "requires_comment": True},
+                "transition": {
+                    "from_code": "pilot",
+                    "to_code": "rejected",
+                    "name": "Отказ",
+                    "requires_comment": True,
+                },
             },
         ]
     )
@@ -145,7 +156,9 @@ def test_v4_dead_end_stage_rejected() -> None:
             {
                 "op": "add_transition",
                 "transition": {
-                    "from_code": "negotiation", "to_code": "pilot", "name": "Запустить пилот"
+                    "from_code": "negotiation",
+                    "to_code": "pilot",
+                    "name": "Запустить пилот",
                 },
             },
         ]
@@ -159,14 +172,26 @@ def test_valid_branch_addition_passes() -> None:
     graph = graph_from_seed("b2c")
     ops = parse_ops(
         [
-            {"op": "add_status", "status": {"code": "corp", "name": "Корпоративное обучение",
-                                            "position": 2}},
-            {"op": "add_transition",
-             "transition": {"from_code": "consultation", "to_code": "corp",
-                            "name": "Корпоративный сценарий"}},
-            {"op": "add_transition",
-             "transition": {"from_code": "corp", "to_code": "proposal",
-                            "name": "Сформировать предложение"}},
+            {
+                "op": "add_status",
+                "status": {"code": "corp", "name": "Корпоративное обучение", "position": 2},
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "consultation",
+                    "to_code": "corp",
+                    "name": "Корпоративный сценарий",
+                },
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "corp",
+                    "to_code": "proposal",
+                    "name": "Сформировать предложение",
+                },
+            },
         ]
     )
     target, plan = apply_operations(graph, ops)
@@ -183,8 +208,7 @@ def test_v5_duplicate_edge_rejected() -> None:
         [
             {
                 "op": "add_transition",
-                "transition": {"from_code": "new", "to_code": "first_contact",
-                               "name": "Дубль"},
+                "transition": {"from_code": "new", "to_code": "first_contact", "name": "Дубль"},
             }
         ]
     )
@@ -225,11 +249,19 @@ def test_v7_duplicate_name_rejected() -> None:
     ops = parse_ops(
         [
             {"op": "add_status", "status": {"code": "new2", "name": "Новая", "position": 9}},
-            {"op": "add_transition",
-             "transition": {"from_code": "negotiation", "to_code": "new2", "name": "Вбок"}},
-            {"op": "add_transition",
-             "transition": {"from_code": "new2", "to_code": "rejected", "name": "Отказ",
-                            "requires_comment": True}},
+            {
+                "op": "add_transition",
+                "transition": {"from_code": "negotiation", "to_code": "new2", "name": "Вбок"},
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "new2",
+                    "to_code": "rejected",
+                    "name": "Отказ",
+                    "requires_comment": True,
+                },
+            },
         ]
     )
     target, _plan = apply_operations(graph, ops)
@@ -255,17 +287,139 @@ def test_v7_unknown_role_and_bad_condition_on_live_rows() -> None:
     assert E_UNKNOWN_ROLE in found and E_BAD_CONDITION in found
 
 
-def test_pydantic_rejects_unknown_role_in_package() -> None:
+# --- V-7: роли переходов из динамического каталога (Р-F2-12) --------------------------------
+
+CAPABLE = frozenset({"admin", "head_kam", "kam"})  # requests:transition в процессе
+KNOWN = CAPABLE | {"observer", "kam_b2c", "analyst"}  # все роли каталога
+
+
+def _add_transition(roles: list[str], name: str = "Сразу в переговоры") -> dict[str, Any]:
+    return {
+        "op": "add_transition",
+        "transition": {
+            "from_code": "new",
+            "to_code": "negotiation",
+            "name": name,
+            "allowed_roles": roles,
+        },
+    }
+
+
+def test_default_transition_roles() -> None:
+    assert DEFAULT_TRANSITION_ROLES == ("admin", "head_kam", "kam")
+
+
+def test_pydantic_accepts_any_role_code_format() -> None:
+    # существование роли и её право на переходы — забота V-7, а не схемы запроса
+    (op,) = parse_ops([_add_transition(["observer", "kam_b2c"])])
+    assert op.transition.allowed_roles == ["observer", "kam_b2c"]
+
+
+@pytest.mark.parametrize("bad", ["Bad Role!", "KAM", "1kam", "k", "x" * 41, ""])
+def test_pydantic_rejects_bad_role_code(bad: str) -> None:
     with pytest.raises(ValidationError):
-        parse_ops(
-            [
-                {
-                    "op": "add_transition",
-                    "transition": {"from_code": "a", "to_code": "b", "name": "x",
-                                   "allowed_roles": ["observer"]},
-                }
-            ]
-        )
+        parse_ops([_add_transition([bad])])
+
+
+def test_pydantic_limits_and_dedupes_allowed_roles() -> None:
+    too_many = [f"role_{i:02d}" for i in range(MAX_ALLOWED_ROLES + 1)]
+    with pytest.raises(ValidationError):
+        parse_ops([_add_transition(too_many)])
+    (op,) = parse_ops([_add_transition(["kam", "head_kam", "kam"])])
+    assert op.transition.allowed_roles == ["kam", "head_kam"]
+    (patch_op,) = parse_ops(
+        [
+            {
+                "op": "update_transition",
+                "transition_id": str(uuid.uuid4()),
+                "patch": {"allowed_roles": ["kam", "kam"]},
+            }
+        ]
+    )
+    assert patch_op.patch.allowed_roles == ["kam"]
+
+
+def test_strict_v7_rejects_role_without_transition_right() -> None:
+    # прежний запрет «observer в allowed_roles» — теперь строгий V-7 по каталогу
+    ops = parse_ops([_add_transition(["kam", "observer"])])
+    errors = check_operation_roles(ops, CAPABLE)
+    assert codes(errors) == {E_UNKNOWN_ROLE}
+    (error,) = errors
+    assert error["role"] == "observer"
+    assert error["message"] == (
+        "Переход «Сразу в переговоры»: роль «observer» не может выполнять переходы в этом процессе"
+    )
+
+
+def test_strict_v7_rejects_unknown_and_foreign_process_roles() -> None:
+    # kam_b2c существует, но в B2B переходов не выполняет; ghost — нет в каталоге
+    ops = parse_ops([_add_transition(["kam_b2c", "ghost", "ghost"])])
+    errors = check_operation_roles(ops, CAPABLE)
+    assert [e["role"] for e in errors] == ["kam_b2c", "ghost"]  # дубль — одна ошибка
+    assert check_operation_roles(ops, CAPABLE | {"kam_b2c", "ghost"}) == []
+
+
+def test_strict_v7_accepts_capable_and_empty_roles() -> None:
+    ops = parse_ops([_add_transition(["kam", "head_kam"]), _add_transition([], "Без ролей")])
+    assert check_operation_roles(ops, CAPABLE) == []
+
+
+def test_strict_v7_update_checks_only_added_roles() -> None:
+    graph = graph_from_seed("b2b")
+    transition = next(iter(graph.transitions.values()))
+    transition.allowed_roles = ["kam", "observer"]  # observer уже в живой строке
+    patch = {
+        "op": "update_transition",
+        "transition_id": str(transition.id),
+        "patch": {"allowed_roles": ["observer"]},  # сняли kam — правка не блокируется
+    }
+    assert check_operation_roles(parse_ops([patch]), CAPABLE, live=graph) == []
+    patch["patch"] = {"allowed_roles": ["observer", "analyst"]}
+    errors = check_operation_roles(parse_ops([patch]), CAPABLE, live=graph)
+    assert [e["role"] for e in errors] == ["analyst"]
+    assert transition.name in errors[0]["message"]
+    # без живой схемы — весь новый список
+    errors = check_operation_roles(parse_ops([patch]), CAPABLE)
+    assert [e["role"] for e in errors] == ["observer", "analyst"]
+    assert errors[0]["message"].startswith("Роль «observer»")
+
+
+def test_strict_v7_ignores_other_operations() -> None:
+    graph = graph_from_seed("b2b")
+    transition = next(iter(graph.transitions.values()))
+    ops = parse_ops(
+        [
+            {
+                "op": "update_transition",
+                "transition_id": str(transition.id),
+                "patch": {"name": "Новое имя"},
+            },
+            {"op": "delete_transition", "transition_id": str(transition.id)},
+        ]
+    )
+    assert check_operation_roles(ops, frozenset(), live=graph) == []
+
+
+def test_soft_v7_live_rows_need_only_existing_roles() -> None:
+    graph = graph_from_seed("b2b")
+    transition = next(iter(graph.transitions.values()))
+    # роль есть в каталоге, но переходы не выполняет (право сняли) — схема не блокируется
+    transition.allowed_roles = ["kam", "observer", "kam_b2c"]
+    assert validate_graph(graph, known_roles=KNOWN) == []
+    # удалённая из каталога роль — E_UNKNOWN_ROLE с её кодом
+    transition.allowed_roles = ["kam", "gone_role"]
+    errors = [e for e in validate_graph(graph, known_roles=KNOWN) if e["code"] == E_UNKNOWN_ROLE]
+    (error,) = errors
+    assert error["roles"] == ["gone_role"]
+    assert "«gone_role»" in error["message"] and transition.name in error["message"]
+
+
+def test_soft_v7_default_known_roles_are_system_transition_roles() -> None:
+    graph = graph_from_seed("b2b")
+    transition = next(iter(graph.transitions.values()))
+    transition.allowed_roles = ["observer"]
+    assert E_UNKNOWN_ROLE in codes(validate_graph(graph))
+    assert validate_graph(graph, known_roles=KNOWN) == []
 
 
 # --- операции: конфликты, confirm_name, запреты --------------------------------------------
@@ -274,8 +428,14 @@ def test_pydantic_rejects_unknown_role_in_package() -> None:
 def test_unknown_status_id_is_conflict() -> None:
     graph = graph_from_seed("b2b")
     ops = parse_ops(
-        [{"op": "rename_status", "status_id": str(uuid.uuid4()), "new_name": "X",
-          "confirm_name": "Y"}]
+        [
+            {
+                "op": "rename_status",
+                "status_id": str(uuid.uuid4()),
+                "new_name": "X",
+                "confirm_name": "Y",
+            }
+        ]
     )
     with pytest.raises(OperationConflict):
         apply_operations(graph, ops)
@@ -284,8 +444,7 @@ def test_unknown_status_id_is_conflict() -> None:
 def test_delete_initial_stage_forbidden() -> None:
     graph = graph_from_seed("b2b")
     ops = parse_ops(
-        [{"op": "delete_status", "status_id": str(stage_id(graph, "new")),
-          "confirm_name": "Новая"}]
+        [{"op": "delete_status", "status_id": str(stage_id(graph, "new")), "confirm_name": "Новая"}]
     )
     with pytest.raises(OperationUnprocessable):
         apply_operations(graph, ops)
@@ -295,13 +454,25 @@ def test_confirm_name_checked_charwise() -> None:
     graph = graph_from_seed("b2b")
     sid = str(stage_id(graph, "first_contact"))
     ok_ops = parse_ops(
-        [{"op": "rename_status", "status_id": sid, "new_name": "Первый контакт",
-          "confirm_name": "Первичный контакт"}]
+        [
+            {
+                "op": "rename_status",
+                "status_id": sid,
+                "new_name": "Первый контакт",
+                "confirm_name": "Первичный контакт",
+            }
+        ]
     )
     verify_confirm_names(graph, ok_ops)  # не бросает
     bad_ops = parse_ops(
-        [{"op": "rename_status", "status_id": sid, "new_name": "Первый контакт",
-          "confirm_name": "первичный контакт"}]  # регистр не совпал — посимвольная сверка
+        [
+            {
+                "op": "rename_status",
+                "status_id": sid,
+                "new_name": "Первый контакт",
+                "confirm_name": "первичный контакт",
+            }
+        ]  # регистр не совпал — посимвольная сверка
     )
     with pytest.raises(ConfirmNameMismatch) as excinfo:
         verify_confirm_names(graph, bad_ops)
@@ -312,8 +483,14 @@ def test_rename_applies_and_keeps_stage_id() -> None:
     graph = graph_from_seed("b2b")
     sid = stage_id(graph, "first_contact")
     ops = parse_ops(
-        [{"op": "rename_status", "status_id": str(sid), "new_name": "Первый контакт",
-          "confirm_name": "Первичный контакт"}]
+        [
+            {
+                "op": "rename_status",
+                "status_id": str(sid),
+                "new_name": "Первый контакт",
+                "confirm_name": "Первичный контакт",
+            }
+        ]
     )
     target, plan = apply_operations(graph, ops)
     assert target.stages[sid].name == "Первый контакт"  # UUID этапа не меняется (§2.2)
@@ -326,20 +503,26 @@ def test_delete_stage_removes_adjacent_transitions() -> None:
     sid = stage_id(graph, "first_contact")
     ops = parse_ops(
         [
-            {"op": "delete_status", "status_id": str(sid),
-             "migrate_to_status_id": str(stage_id(graph, "new")),
-             "confirm_name": "Первичный контакт"},
+            {
+                "op": "delete_status",
+                "status_id": str(sid),
+                "migrate_to_status_id": str(stage_id(graph, "new")),
+                "confirm_name": "Первичный контакт",
+            },
             # без замыкания new → negotiation этап new стал бы тупиком (V-4)
-            {"op": "add_transition",
-             "transition": {"from_code": "new", "to_code": "negotiation",
-                            "name": "Сразу в переговоры"}},
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "new",
+                    "to_code": "negotiation",
+                    "name": "Сразу в переговоры",
+                },
+            },
         ]
     )
     target, plan = apply_operations(graph, ops)
     assert sid not in target.stages
-    assert all(
-        sid not in (t.from_stage_id, t.to_stage_id) for t in target.transitions.values()
-    )
+    assert all(sid not in (t.from_stage_id, t.to_stage_id) for t in target.transitions.values())
     assert len(plan.deleted_stages) == 1
     assert len(plan.deleted_stages[0].deleted_transition_ids) == 3  # new→fc, fc→neg, fc→rej
     assert validate_graph(target) == []
@@ -382,9 +565,7 @@ def test_v8_mapping_not_required_without_deals() -> None:
 def test_v8_terminal_target_invalid() -> None:
     graph = graph_from_seed("b2b")
     sid = stage_id(graph, "first_contact")
-    _target, plan = apply_operations(
-        graph, _delete_package(graph, stage_id(graph, "rejected"))
-    )
+    _target, plan = apply_operations(graph, _delete_package(graph, stage_id(graph, "rejected")))
     errors = validate_migration(graph, plan, {sid: 1})
     assert E_MAPPING_INVALID in codes(errors)
 
@@ -415,13 +596,26 @@ def test_v8_target_deleted_in_same_package_invalid() -> None:
     neg = stage_id(graph, "negotiation")
     ops = parse_ops(
         [
-            {"op": "delete_status", "status_id": str(neg),
-             "migrate_to_status_id": str(fc), "confirm_name": "Переговоры"},
-            {"op": "delete_status", "status_id": str(fc),
-             "migrate_to_status_id": str(neg), "confirm_name": "Первичный контакт"},
-            {"op": "add_transition",
-             "transition": {"from_code": "new", "to_code": "contract_prep",
-                            "name": "Сразу к договору"}},
+            {
+                "op": "delete_status",
+                "status_id": str(neg),
+                "migrate_to_status_id": str(fc),
+                "confirm_name": "Переговоры",
+            },
+            {
+                "op": "delete_status",
+                "status_id": str(fc),
+                "migrate_to_status_id": str(neg),
+                "confirm_name": "Первичный контакт",
+            },
+            {
+                "op": "add_transition",
+                "transition": {
+                    "from_code": "new",
+                    "to_code": "contract_prep",
+                    "name": "Сразу к договору",
+                },
+            },
         ]
     )
     target, plan = apply_operations(graph, ops)

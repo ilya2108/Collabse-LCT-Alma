@@ -3,9 +3,10 @@ import { Pencil, Trash2, TriangleAlert, Undo2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
-import type { WorkflowSchema } from '@/shared/api/types';
-import { ROLE_LABELS } from '@/shared/auth/roles';
+import type { WorkflowSchema, WorkflowType } from '@/shared/api/types';
+import { WORKFLOW_TYPE_LABELS } from '@/shared/auth/permissions';
 import { cn } from '@/shared/lib/cn';
+import { useRoleCatalog } from '@/shared/lib/useRoleCatalog';
 import { LocalSegmented } from '@/components/wp5/PageChrome';
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert';
 import { Button } from '@/shared/ui/button';
@@ -24,6 +25,7 @@ import { RadioGroup, RadioGroupItem } from '@/shared/ui/radio-group';
 import { Separator } from '@/shared/ui/separator';
 import { Switch } from '@/shared/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
+import { STAGE_COLOR_NAMES } from '@/shared/config/tokens';
 import {
   STAGE_COLOR_PRESETS,
   aliveTransitions,
@@ -46,21 +48,15 @@ export interface CanvasSelection {
   id: string;
 }
 
-const TRANSITION_ROLES = ['kam', 'head_kam', 'admin'] as const;
-
 /** Русские имена пресетных цветов этапа (§1.2) — для aria-label свотчей. */
-const COLOR_NAMES: Record<string, string> = {
-  '#1E56A0': 'синий',
-  '#C46A00': 'оранжевый',
-  '#12917E': 'морской',
-  '#8250C8': 'фиолетовый',
-  '#C13B63': 'малиновый',
-  '#946300': 'охра',
-  '#2E9E5B': 'зелёный',
-  '#5A6B80': 'серый',
-};
+const COLOR_NAMES = STAGE_COLOR_NAMES;
+
+/** Предел порога зависания этапа — как CHECK в БД и MAX_STAGE_STUCK_DAYS на сервере (0006). */
+const MAX_STAGE_STUCK_DAYS = 365;
 
 interface PropertiesPanelProps {
+  /** Процесс схемы: роли перехода — из каталога ролей, способных переводить заявки в нём. */
+  workflowType: WorkflowType;
   editing: boolean;
   schema: WorkflowSchema;
   draft: WorkflowDraft | null;
@@ -212,8 +208,10 @@ const numbersSchema = z.object({
   stuck: z
     .string()
     .refine(
-      (value) => value === '' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 60),
-      'От 1 до 60 дней; пусто — наследуется',
+      (value) =>
+        value === '' ||
+        (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_STAGE_STUCK_DAYS),
+      `От 1 до ${MAX_STAGE_STUCK_DAYS} дней; пусто — наследуется`,
     ),
   position: z.string().refine((value) => /^\d+$/.test(value), 'Целое число от 0'),
 });
@@ -248,14 +246,18 @@ function StageNumberFields({
                   type="number"
                   inputMode="numeric"
                   min={1}
-                  max={60}
+                  max={MAX_STAGE_STUCK_DAYS}
                   placeholder="наследуется от процесса…"
                   onChange={(event) => {
                     field.onChange(event);
                     const value = event.target.value;
                     if (value === '') {
                       onPatchStage(stage.id, { stuck_threshold_days: null });
-                    } else if (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 60) {
+                    } else if (
+                      /^\d+$/.test(value) &&
+                      Number(value) >= 1 &&
+                      Number(value) <= MAX_STAGE_STUCK_DAYS
+                    ) {
                       onPatchStage(stage.id, { stuck_threshold_days: Number(value) });
                     }
                   }}
@@ -341,10 +343,48 @@ function TransitionNameField({
   );
 }
 
+// --- Роли перехода (F2) -----------------------------------------------------------
+
+interface TransitionRoleOption {
+  code: string;
+  name: string;
+  /** Роль может выполнять переходы в процессе (право requests:transition). */
+  capable: boolean;
+}
+
+/** Бейдж роли, которая указана в переходе, но не может выполнять переходы в процессе. */
+function IncapableRoleBadge({ workflowType }: { workflowType: WorkflowType }): ReactNode {
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-sm bg-status-warning-tint px-1.5 py-px text-[11px] font-medium text-status-warning-deep">
+      <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
+      не может выполнять переходы в {WORKFLOW_TYPE_LABELS[workflowType]}
+    </span>
+  );
+}
+
 // --- Панель ---------------------------------------------------------------------
 
 export function PropertiesPanel(props: PropertiesPanelProps): ReactNode {
-  const { editing, schema, draft, selection, issues } = props;
+  const { editing, schema, draft, selection, issues, workflowType } = props;
+  const roleCatalog = useRoleCatalog();
+
+  /** Роли для флажков перехода: способные к переходам + уже указанные в нём. */
+  const roleOptionsFor = (allowed: readonly string[]): TransitionRoleOption[] => {
+    const capable = roleCatalog.transitionCapable(workflowType);
+    const capableCodes = new Set(capable.map((role) => role.code));
+    const options: TransitionRoleOption[] = capable.map((role) => ({
+      code: role.code,
+      name: role.name,
+      capable: true,
+    }));
+    for (const code of allowed) {
+      if (capableCodes.has(code)) continue;
+      // каталог ещё не загружен — не пугаем предупреждением
+      const known = roleCatalog.roles.length > 0;
+      options.push({ code, name: roleCatalog.nameOf(code), capable: !known });
+    }
+    return options;
+  };
   const [confirmRemove, setConfirmRemove] = useState<
     { kind: 'stage' | 'transition'; id: string } | null
   >(null);
@@ -560,11 +600,20 @@ export function PropertiesPanel(props: PropertiesPanelProps): ReactNode {
               <dd>{transition.kind === 'return' ? 'возврат (с комментарием)' : 'обычный'}</dd>
               <dt className="text-muted-foreground">Роли</dt>
               <dd>
-                {transition.allowed_roles.length > 0
-                  ? transition.allowed_roles
-                      .map((r) => ROLE_LABELS[r as keyof typeof ROLE_LABELS] ?? r)
-                      .join(', ')
-                  : 'все (по доступу к заявке)'}
+                {transition.allowed_roles.length > 0 ? (
+                  <ul className="space-y-1">
+                    {roleOptionsFor(transition.allowed_roles)
+                      .filter((option) => transition.allowed_roles.includes(option.code))
+                      .map((option) => (
+                        <li key={option.code} className="flex flex-col gap-0.5">
+                          <span>{option.name}</span>
+                          {!option.capable ? <IncapableRoleBadge workflowType={workflowType} /> : null}
+                        </li>
+                      ))}
+                  </ul>
+                ) : (
+                  'все, кто может переводить заявки'
+                )}
               </dd>
             </dl>
           ) : (
@@ -605,21 +654,40 @@ export function PropertiesPanel(props: PropertiesPanelProps): ReactNode {
                 Требуется комментарий
                 {transition.kind === 'return' ? ' (для возврата — всегда)' : ''}
               </label>
-              <FieldBlock label="Кому доступен переход (никого — всем по доступу к заявке)">
+              <FieldBlock label="Кому доступен переход (никого — всем, кто может переводить заявки)">
                 <div className="space-y-1.5">
-                  {TRANSITION_ROLES.map((role) => (
-                    <label key={role} className="flex items-center gap-2 text-sm">
+                  {roleCatalog.isLoading ? (
+                    <p className="text-xs text-muted-foreground">Загрузка ролей…</p>
+                  ) : null}
+                  {roleCatalog.isError ? (
+                    <p className="text-xs text-status-danger-deep">
+                      Не удалось загрузить каталог ролей —{' '}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={roleCatalog.refetch}
+                      >
+                        повторить
+                      </button>
+                    </p>
+                  ) : null}
+                  {roleOptionsFor(transition.allowed_roles).map((option) => (
+                    <label key={option.code} className="flex items-start gap-2 text-sm">
                       <Checkbox
-                        checked={transition.allowed_roles.includes(role)}
+                        className="mt-0.5"
+                        checked={transition.allowed_roles.includes(option.code)}
                         onCheckedChange={(checked) => {
                           const next =
                             checked === true
-                              ? [...transition.allowed_roles, role]
-                              : transition.allowed_roles.filter((r) => r !== role);
+                              ? [...transition.allowed_roles, option.code]
+                              : transition.allowed_roles.filter((r) => r !== option.code);
                           props.onPatchTransition(transition.id, { allowed_roles: next });
                         }}
                       />
-                      {ROLE_LABELS[role]}
+                      <span className="flex min-w-0 flex-col gap-0.5">
+                        <span>{option.name}</span>
+                        {!option.capable ? <IncapableRoleBadge workflowType={workflowType} /> : null}
+                      </span>
                     </label>
                   ))}
                 </div>
@@ -761,7 +829,7 @@ export function PropertiesPanel(props: PropertiesPanelProps): ReactNode {
 export function ViewOnlyHint(): ReactNode {
   return (
     <p className="text-sm text-muted-foreground">
-      Режим просмотра: редактирование доступно ролям admin и head_kam
+      Режим просмотра: у вашей роли нет права «Правка схемы процесса»
     </p>
   );
 }

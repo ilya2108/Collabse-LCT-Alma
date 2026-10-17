@@ -22,8 +22,8 @@ import { Textarea } from '@/shared/ui/textarea';
 /**
  * Impact-preview отправки пакета операций (redesign.md §6.6): Dialog с диффом
  * плашками added/renamed/deleted + «будет перенесено N заявок» + комментарий
- * для администратора. Безопасный пакет от admin применяется сразу,
- * опасный всегда уходит в pending.
+ * для согласующего. Безопасный пакет автора с правом «Согласование и публикация»
+ * (workflow:approve в процессе) применяется сразу, опасный всегда уходит в pending.
  */
 
 interface SubmitChangesModalProps {
@@ -34,7 +34,8 @@ interface SubmitChangesModalProps {
   /** impact-preview не ответил — отправка возможна, но без предпросмотра. */
   impactUnavailable: boolean;
   dangerous: boolean;
-  isAdmin: boolean;
+  /** Право workflow:approve в процессе схемы — безопасный пакет публикуется сразу. */
+  canPublish: boolean;
   submitting: boolean;
   onSubmit: (comment: string) => void;
   onCancel: () => void;
@@ -47,7 +48,7 @@ export function SubmitChangesModal({
   impact,
   impactUnavailable,
   dangerous,
-  isAdmin,
+  canPublish,
   submitting,
   onSubmit,
   onCancel,
@@ -58,7 +59,7 @@ export function SubmitChangesModal({
     if (open) setComment('');
   }, [open]);
 
-  const appliesImmediately = isAdmin && !dangerous;
+  const appliesImmediately = canPublish && !dangerous;
   const okText = appliesImmediately ? 'Опубликовать изменения' : 'Отправить на согласование';
 
   return (
@@ -78,8 +79,8 @@ export function SubmitChangesModal({
             {dangerous ? <TriangleAlert aria-hidden="true" /> : <Info aria-hidden="true" />}
             <AlertTitle className="text-balance">
               {dangerous
-                ? 'Пакет содержит переименование или удаление этапа — потребуется согласование администратора'
-                : 'Пакет уйдёт на согласование администратору'}
+                ? 'Пакет содержит переименование или удаление этапа — потребуется согласование'
+                : 'Пакет уйдёт на согласование — опубликует роль с правом «Согласование и публикация»'}
             </AlertTitle>
           </Alert>
         )}
@@ -96,7 +97,7 @@ export function SubmitChangesModal({
         )}
 
         <div className="space-y-1.5">
-          <Label htmlFor={commentId}>Комментарий для администратора</Label>
+          <Label htmlFor={commentId}>Комментарий для согласующего</Label>
           <Textarea
             id={commentId}
             value={comment}

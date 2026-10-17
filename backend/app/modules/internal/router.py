@@ -1,8 +1,10 @@
-"""Внутренние джобы: CronJob «зависшие заявки» и отладочный прогон outbox.
+"""Внутренние джобы: CronJob «зависшие заявки», очистка soft-deleted и ключей
+идемпотентности, отладочный прогон outbox.
 
 Аутентификация — статический `X-Internal-Token` (constant-time, api-contract.md §11.1):
-CronJob остаётся однострочным curl, Keycloak не нужен. Оба эндпоинта идемпотентны
-и безопасны к параллельному запуску (SKIP LOCKED + dedup_key).
+CronJob остаётся однострочным curl, Keycloak не нужен. Эндпоинты идемпотентны
+и безопасны к параллельному запуску (SKIP LOCKED + dedup_key; очистка ключей —
+DELETE пачками по `expires_at`).
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
+from app.core.idempotency_store import purge_expired_keys
 from app.core.outbox import run_relay_once
 from app.core.security import require_internal_token
 from app.models.deal import DealComment
@@ -87,6 +90,20 @@ async def purge_deleted(
         "comments_purged": comments_result.rowcount or 0,
         "duration_ms": int((time.monotonic() - started) * 1000),
     }
+
+
+@router.post(
+    "/purge-idempotency-keys",
+    summary="Очистка просроченных ключей идемпотентности (CronJob, ежечасно)",
+)
+async def purge_idempotency_keys(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Физически удаляет ключи Idempotency-Key старше TTL (24 ч, api-contract.md §1.6):
+    сохранённые ответы содержат ПДн-шифртекст — дольше срока не храним."""
+    started = time.monotonic()
+    purged = await purge_expired_keys(session)
+    return {"purged": purged, "duration_ms": int((time.monotonic() - started) * 1000)}
 
 
 @router.post("/outbox-relay", summary="Принудительный прогон outbox-доставки (отладка)")

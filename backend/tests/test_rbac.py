@@ -1,10 +1,13 @@
-"""RBAC: матрица permissions, проверки ролей, внутренний токен, audience."""
+"""RBAC: наборы прав системных ролей, разбор токена, внутренний токен, audience.
+
+Каталог прав и модель доступа (свои роли, B2B/B2C) — tests/test_access_core.py,
+матрица «эндпоинт × роль» — tests/test_access_matrix.py.
+"""
 
 from __future__ import annotations
 
 from app.core.security import (
     KNOWN_ROLES,
-    check_roles,
     parse_token_payload,
     validate_audience,
     verify_internal_token,
@@ -50,9 +53,11 @@ class TestPermissionsMatrix:
         assert "students:reveal" not in ROLE_PERMISSIONS["observer"]
 
     def test_hierarchy_is_monotonic(self) -> None:
-        # admin ⊇ head_kam ⊇ kam: у старшей роли не может быть меньше прав
-        assert set(ROLE_PERMISSIONS["kam"]) <= set(ROLE_PERMISSIONS["head_kam"])
+        # admin ⊇ head_kam ⊇ kam: у старшей роли не может быть меньше прав; исключение —
+        # признак «ведёт портфель как КАМ» (requests:kam): его нет у head_kam и admin
+        assert set(ROLE_PERMISSIONS["kam"]) - {"requests:kam"} <= set(ROLE_PERMISSIONS["head_kam"])
         assert set(ROLE_PERMISSIONS["head_kam"]) <= set(ROLE_PERMISSIONS["admin"])
+        assert "requests:kam" not in ROLE_PERMISSIONS["admin"]
 
     def test_workflow_approve_is_admin_only(self) -> None:
         for role in ("head_kam", "kam", "observer"):
@@ -68,12 +73,7 @@ class TestPermissionsMatrix:
         assert permissions_for_roles(["svc_notification", "unknown"]) == []
 
 
-class TestRoleChecks:
-    def test_check_roles_intersection(self) -> None:
-        assert check_roles(["kam"], ("admin", "head_kam", "kam"))
-        assert not check_roles(["observer"], ("admin", "head_kam", "kam"))
-        assert not check_roles([], ("admin",))
-
+class TestTokenRoles:
     def test_parse_token_filters_unknown_realm_roles(self) -> None:
         claims = parse_token_payload(
             {

@@ -15,8 +15,18 @@ jobs:
         include:
           - { name: backend, dir: backend, sync: --extra dev }
           - { name: notification, dir: services/notification, sync: --group dev }
+          - { name: llm-gateway, dir: services/llm-gateway, sync: --group dev }
           - { name: lms-stub, dir: services/lms-stub, sync: --extra dev }
           - { name: cms-stub, dir: services/cms-stub, sync: --extra dev }
+    # интеграционные тесты backend (tests/db) идут на настоящем PostgreSQL: схема из миграций
+    services:
+      postgres:
+        image: ${{ matrix.name == 'backend' && 'postgres:16-alpine' || '' }}   # пусто — сервис не стартует
+        env: { POSTGRES_USER: crm, POSTGRES_PASSWORD: crm, POSTGRES_DB: crm_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U crm" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ALMA_DB_TESTS: ${{ matrix.name == 'backend' && 'required' || '' }}
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -49,6 +59,12 @@ jobs:
         run: npm ci
       - name: Проверка типов
         run: npx tsc --noEmit
+      - name: Правила хуков React (ESLint, новые предупреждения запрещены)
+        run: npm run lint
+      - name: Юнит-тесты (node:test)
+        run: npm run test:unit
+      - name: Справка (снимки, якоря, маршруты, формулировки)
+        run: npm run docs:help
       - name: Сборка
         run: npm run build
 
@@ -68,6 +84,7 @@ jobs:
           done
       - name: Рендер и проверка всех оверлеев
         run: |
+          set -o pipefail   # иначе ошибка kustomize проходит как «0 ресурсов, exit 0»
           for overlay in deploy/k8s/overlays/*/; do
             echo "== $overlay =="
             kubectl kustomize "$overlay" | kubeconform -strict -ignore-missing-schemas -summary
@@ -83,6 +100,7 @@ jobs:
           - { name: backend, context: backend }
           - { name: frontend, context: frontend }
           - { name: notification, context: services/notification }
+          - { name: llm-gateway, context: services/llm-gateway }
           - { name: lms-stub, context: services/lms-stub }
           - { name: cms-stub, context: services/cms-stub }
     steps:

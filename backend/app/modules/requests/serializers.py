@@ -1,14 +1,14 @@
 """Сериализация заявок в формат API (api-contract.md §4.2–4.4).
 
 Мост терминологии: deal → Request, stage → status, stage_entered_at → status_updated_at.
-ПДн клиента-физлица (B2C) для роли observer маскируются (§4.2); данные шифруются
-на уровне хранения (EncryptedStr), здесь — только представление.
+ПДн клиента-физлица (B2C) без права `clients:pii` (наблюдатель) маскируются (§4.2);
+данные шифруются на уровне хранения (EncryptedStr), здесь — только представление.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -38,16 +38,20 @@ def stuck_info(deal: Deal, stage: WorkflowStage, workflow: Workflow) -> tuple[bo
     """(is_stuck, stuck_days) по каскаду порога stage → workflow (Р-5).
 
     Закрытые заявки и терминальные этапы не «зависают» — SLA-таймер не считается.
+    «Зависла» — строго по точному времени: `now − stage_entered_at > N суток`, как фильтр
+    доски `?stuck=true`, отчёты, «Просрочки» и бот (14,5 суток при норме 14 — зависла);
+    `stuck_days` — целые сутки, только для показа.
     """
     if deal.status != "open" or stage.is_terminal:
         return False, 0
-    days = max((_now() - deal.stage_entered_at).days, 0)
+    elapsed = _now() - deal.stage_entered_at
+    days = max(elapsed.days, 0)
     threshold = (
         stage.stuck_threshold_days
         if stage.stuck_threshold_days is not None
         else workflow.stuck_threshold_days
     )
-    return days > threshold, days
+    return elapsed > timedelta(days=threshold), days
 
 
 def client_kind_of(counterparty: Counterparty | None) -> str | None:
@@ -103,7 +107,7 @@ async def serialize_deal(
     counterparty = (
         await session.get(Counterparty, deal.counterparty_id) if deal.counterparty_id else None
     )
-    is_observer = "observer" in (viewer.roles or [])
+    mask_pii = not viewer.access.has("clients:pii")
     is_stuck, stuck_days = stuck_info(deal, stage, workflow)
     out = RequestOut(
         id=deal.id,
@@ -114,7 +118,7 @@ async def serialize_deal(
         client_kind=client_kind_of(counterparty),
         counterparty_id=deal.counterparty_id,
         interaction_type_id=deal.interaction_type_id,
-        client=serialize_client(counterparty, is_observer),
+        client=serialize_client(counterparty, mask_pii),
         contract_id=deal.contract_id,
         product_id=deal.product_id,
         program_id=deal.program_id,
@@ -212,9 +216,7 @@ def serialize_history_row(
         "is_return": row.is_return,
         "reason": row.reason,
         "comment": row.comment,
-        "actor": (
-            {"id": str(actor.id), "full_name": actor.full_name} if actor else None
-        ),
+        "actor": ({"id": str(actor.id), "full_name": actor.full_name} if actor else None),
         "created_at": row.created_at.isoformat(),
     }
 
@@ -237,8 +239,6 @@ def serialize_audit_history_item(
         "reason": None,
         "comment": None,
         "changes": {"before": row.before, "after": row.after},
-        "actor": (
-            {"id": str(actor.id), "full_name": actor.full_name} if actor else None
-        ),
+        "actor": ({"id": str(actor.id), "full_name": actor.full_name} if actor else None),
         "created_at": row.created_at.isoformat(),
     }

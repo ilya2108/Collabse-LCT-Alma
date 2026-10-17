@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { useOnboarding } from '@/features/onboarding';
 import {
   getNotificationSettings,
@@ -144,12 +145,11 @@ function SwitchRow({
 }
 
 export function NotificationSettingsScreen(): ReactNode {
-  const { user, hasRole } = useAuth();
+  const { user, hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { completeChecklistItem } = useOnboarding();
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [maxAddress, setMaxAddress] = useState<string | null>(null);
-  const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
 
   const settingsQuery = useQuery({
     queryKey: ['notification-settings'],
@@ -221,8 +221,12 @@ export function NotificationSettingsScreen(): ReactNode {
   });
 
   // --- Пороги и эскалация (admin: GET/PUT /admin/settings §10.3) --------------
-  const isAdmin = hasRole('admin');
-  const isManager = hasRole('admin', 'head_kam');
+  // эскалация — системная настройка; пороги «зависания» живут на этапах процесса
+  // (конструктор), глобальный порог из /admin/settings на расчёт не влияет: у процесса
+  // порог задан всегда. Правила для руководителей — notification_rules:read
+  const isAdmin = hasPermission('admin:settings');
+  const isManager = hasPermission('notification_rules:read');
+  const canOpenWorkflow = hasPermission('workflow:read');
   const adminSettingsQuery = useQuery({
     queryKey: ['admin-settings'],
     queryFn: ({ signal }) => getAdminSettings(signal),
@@ -233,11 +237,11 @@ export function NotificationSettingsScreen(): ReactNode {
     meta: { silent: true },
     onSuccess: (saved) => {
       queryClient.setQueryData(['admin-settings'], saved);
-      toastSuccess('Пороги сохранены');
+      toastSuccess('Настройка эскалации сохранена');
       completeChecklistItem('thresholds');
     },
     onError: (error) => {
-      toastError(error, { title: 'Не удалось сохранить пороги' });
+      toastError(error, { title: 'Не удалось сохранить настройку эскалации' });
       void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
     },
   });
@@ -524,14 +528,20 @@ export function NotificationSettingsScreen(): ReactNode {
   );
 
   const adminSettings = adminSettingsQuery.data;
-  const commitThreshold = (): void => {
-    if (!adminSettings || thresholdDraft === null) return;
-    const value = Number.parseInt(thresholdDraft, 10);
-    setThresholdDraft(null);
-    if (!Number.isFinite(value) || value < 1 || value > 60) return;
-    if (value === adminSettings.stuck_threshold_days) return;
-    adminSaveMutation.mutate({ ...adminSettings, stuck_threshold_days: value });
-  };
+  const workflowLink = canOpenWorkflow ? (
+    <Link to="/workflow" className="text-primary hover:underline">
+      конструкторе процессов
+    </Link>
+  ) : (
+    'конструкторе процессов'
+  );
+  // вместо поля глобального порога — честная подсказка, где порог меняется на самом деле
+  const thresholdsNote = (
+    <p className="text-sm text-muted-foreground">
+      Пороги «зависания» задаются на этапах в {workflowLink}: у каждого этапа своя норма в
+      днях без смены этапа, пустое поле — наследуется от процесса (14 дней).
+    </p>
+  );
 
   const thresholdSection = isManager ? (
     <section
@@ -546,33 +556,13 @@ export function NotificationSettingsScreen(): ReactNode {
         ) : adminSettingsQuery.isError ? (
           <ErrorState
             error={adminSettingsQuery.error}
-            title="Не удалось загрузить пороги"
+            title="Не удалось загрузить настройки эскалации"
             onRetry={() => void adminSettingsQuery.refetch()}
             compact
           />
         ) : adminSettings ? (
           <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <Label htmlFor="stuck-days">Заявка считается зависшей после</Label>
-              <Input
-                id="stuck-days"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={60}
-                className="w-20 tabular"
-                value={thresholdDraft ?? String(adminSettings.stuck_threshold_days)}
-                onChange={(e) => setThresholdDraft(e.target.value)}
-                onBlur={commitThreshold}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitThreshold();
-                }}
-              />
-              <span>дней без смены этапа</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Порог можно переопределить на конкретном этапе в конструкторе workflow.
-            </p>
+            {thresholdsNote}
             <SwitchRow
               id="escalate"
               checked={adminSettings.stuck_escalate_to_manager}
@@ -587,12 +577,15 @@ export function NotificationSettingsScreen(): ReactNode {
           </div>
         ) : null
       ) : (
-        <p className="text-sm text-muted-foreground">
-          Пороги настраивает администратор. По умолчанию — 14 дней без смены этапа
-          (каскад: правило → этап → процесс → общая настройка).
-        </p>
+        <div className="space-y-2">
+          {thresholdsNote}
+          <p className="text-sm text-muted-foreground">
+            Эскалацию руководителю включает администратор.
+          </p>
+        </div>
       )}
-      <EscalationDiagram days={isAdmin ? (adminSettings?.stuck_threshold_days ?? null) : null} />
+      {/* порог у каждого этапа свой — на схеме «N», а не одно число */}
+      <EscalationDiagram days={null} />
       <Collapsible>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" size="sm" className="text-muted-foreground">
@@ -603,8 +596,8 @@ export function NotificationSettingsScreen(): ReactNode {
           <p className="px-3 pt-2 text-xs text-muted-foreground">
             Проверку зависших заявок запускает планировщик Kubernetes CronJob каждый час
             (POST /internal/jobs/check-stuck-requests). Порог считается каскадом:
-            правило → этап → процесс → общая настройка. Дубли уведомлений подавляются
-            ключом дедупликации в outbox-таблице.
+            правило уведомлений → этап → процесс (у процесса порог задан всегда, 14 дней).
+            Дубли уведомлений подавляются ключом дедупликации в outbox-таблице.
           </p>
         </CollapsibleContent>
       </Collapsible>

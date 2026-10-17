@@ -51,13 +51,19 @@ const CommandInput = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Input>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
 >(({ className, ...props }, ref) => (
-  <div className="flex h-9 items-center gap-2 border-b px-3" cmdk-input-wrapper="">
+  // Фокус показывает вся строка поиска (подчёркивание цветом акцента), а не само поле:
+  // глобальное кольцо :focus-visible (globals.css) с offset вылезало за строку высотой 36 px
+  // и обрезалось краем попапа.
+  <div
+    className="flex h-9 items-center gap-2 border-b px-3 transition-colors focus-within:border-primary"
+    cmdk-input-wrapper=""
+  >
     <Search className="size-4 shrink-0 opacity-50" aria-hidden="true" />
     <CommandPrimitive.Input
       ref={ref}
       data-slot="command-input"
       className={cn(
-        'flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+        'flex h-full w-full bg-transparent text-sm outline-hidden placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
       {...props}

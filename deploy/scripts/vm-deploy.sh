@@ -28,7 +28,7 @@ NS=crm
 KCTL="k3s kubectl"                            # kubectl на VPS
 
 # имя_образа:контекст_сборки
-IMAGES="backend:backend frontend:frontend notification:services/notification lms-stub:services/lms-stub cms-stub:services/cms-stub"
+IMAGES="backend:backend frontend:frontend notification:services/notification llm-gateway:services/llm-gateway lms-stub:services/lms-stub cms-stub:services/cms-stub"
 
 smoke() {
     echo "== smoke: публичные URL =="
@@ -95,6 +95,12 @@ ssh "$VM_HOST" "if [ -f /root/alma-secrets/telegram.env ]; then \
     fi; \
   done; \
 else echo 'telegram token: NOT FOUND — бот будет в stub-режиме'; fi"
+# Ключ GigaChat — так же только на VPS (/root/alma-secrets/gigachat.env с GIGACHAT_*):
+# llm-secret.sh переносит его в секрет оверлея, значения не печатает. Нет файла —
+# llm-gateway отвечает 503 llm_not_configured, CRM строит сводки по правилам.
+ssh "$VM_HOST" "cd '$VM_DIR' && if [ -f /root/alma-secrets/gigachat.env ]; then \
+  sh deploy/scripts/llm-secret.sh /root/alma-secrets/gigachat.env deploy/k8s/overlays/vm; \
+else echo 'gigachat key: NOT FOUND — сводки ИИ только по правилам'; fi"
 
 echo "== 5/7 cert-manager + ClusterIssuer =="
 ssh "$VM_HOST" "set -e
@@ -121,6 +127,7 @@ ssh "$VM_HOST" "set -e
     $KCTL -n $NS wait --for=condition=complete job/minio-init --timeout=180s
     $KCTL -n $NS wait --for=condition=available deploy/keycloak --timeout=600s
     $KCTL -n $NS wait --for=condition=available deploy/backend --timeout=300s
+    $KCTL -n $NS wait --for=condition=available deploy/llm-gateway --timeout=180s
     $KCTL -n $NS wait --for=condition=complete job/seed-demo --timeout=300s
     echo '-- ожидание выпуска LE-сертификатов (http01)'
     $KCTL -n $NS wait --for=condition=Ready certificate --all --timeout=600s

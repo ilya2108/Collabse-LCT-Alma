@@ -28,7 +28,7 @@ from app.core.errors import conflict, not_found, validation_error
 from app.core.events import EVENT_STUDENT_TALENT_POOL_ADDED
 from app.core.outbox import emit_event_notifications
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_permission
 from app.models.crm import Program, University
 from app.models.service import FileObject
 from app.models.talent import (
@@ -57,8 +57,8 @@ from app.modules.talent_pool.schemas import (
 
 router = APIRouter(tags=["talent-pool"])
 
-_READ = Depends(get_current_user)
-_WRITE_ROLES = ("admin", "head_kam", "kam")
+_STUDENTS_READ = Depends(require_permission("students:read"))
+_ACTIVITIES_READ = Depends(require_permission("activities:read"))
 
 _STUDENT_SORT = {
     "display_name": Student.display_name,
@@ -81,7 +81,7 @@ async def _load_student(session: AsyncSession, student_id: uuid.UUID) -> Student
 # --------------------------------------------------------------------------------------
 
 
-@router.get("/students", summary="Студенты (ПДн маскированы)", dependencies=[_READ])
+@router.get("/students", summary="Студенты (ПДн маскированы)", dependencies=[_STUDENTS_READ])
 async def list_students(
     session: Annotated[AsyncSession, Depends(get_session)],
     params: Annotated[ListParams, Depends(list_params)],
@@ -132,17 +132,14 @@ async def list_students(
             )
             .exists()
         )
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _STUDENT_SORT, default="display_name")
     students = (
         (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     )
     counts = await talent.files_count_map(session, [s.id for s in students])
-    items = [
-        talent.serialize_student(s, files_count=counts.get(s.id, 0)) for s in students
-    ]
+    items = [talent.serialize_student(s, files_count=counts.get(s.id, 0)) for s in students]
+    await talent.attach_ref_names(session, items, list(students))
     return list_envelope(items, total, params)
 
 
@@ -150,14 +147,12 @@ async def list_students(
 async def create_student(
     body: StudentCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("students:write"))],
     request: Request,
 ) -> dict[str, Any]:
     existing = await talent.find_student_by_email(session, body.email)
     if existing is not None:
-        raise conflict(
-            f"Студент с таким email уже существует: {existing.display_name}"
-        )
+        raise conflict(f"Студент с таким email уже существует: {existing.display_name}")
     student = Student(
         phone=body.phone,
         university_id=body.university_id,
@@ -194,11 +189,11 @@ async def create_student(
     return talent.serialize_student(student)
 
 
-@router.get("/students/{student_id}", summary="Карточка студента", dependencies=[_READ])
+@router.get("/students/{student_id}", summary="Карточка студента", dependencies=[_STUDENTS_READ])
 async def get_student(
     student_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(get_current_user)],
+    user: Annotated[AppUser, Depends(require_permission("students:read"))],
 ) -> dict[str, Any]:
     student = await _load_student(session, student_id)
     counts = await talent.files_count_map(session, [student.id])
@@ -218,11 +213,9 @@ async def get_student(
     out["program"] = await _ref(Program, student.program_id)
     out["federal_project"] = await _ref(FederalProject, student.federal_project_id)
 
-    is_observer_only = "observer" in (user.roles or []) and not (
-        set(_WRITE_ROLES) & set(user.roles or [])
-    )
     files: list[dict[str, Any]] = []
-    if not is_observer_only:  # файлы студентов observer'у недоступны (§8.3)
+    # файлы студентов — только с правом students:files (наблюдателю недоступны, §8.3)
+    if user.access.has("students:files"):
         rows = (
             (
                 await session.execute(
@@ -294,7 +287,7 @@ async def _users_map(
 async def reveal_student(
     student_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("students:reveal"))],
     request: Request,
 ) -> StudentRevealOut:
     student = await _load_student(session, student_id)
@@ -321,7 +314,7 @@ async def update_student(
     student_id: uuid.UUID,
     body: StudentUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("students:write"))],
 ) -> dict[str, Any]:
     student = await _load_student(session, student_id)
     check_version(student, body.version)
@@ -352,7 +345,7 @@ async def update_student(
 async def delete_student(
     student_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("students:delete"))],
     request: Request,
 ) -> dict[str, bool]:
     student = await _load_student(session, student_id)
@@ -391,7 +384,7 @@ async def change_student_status(
     student_id: uuid.UUID,
     body: StudentStatusBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("students:write"))],
 ) -> dict[str, Any]:
     student = await _load_student(session, student_id)
     check_version(student, body.version)
@@ -428,7 +421,7 @@ async def change_student_status(
 
 
 @router.get(
-    "/students/{student_id}/history", summary="История воронки", dependencies=[_READ]
+    "/students/{student_id}/history", summary="История воронки", dependencies=[_STUDENTS_READ]
 )
 async def student_history(
     student_id: uuid.UUID,
@@ -463,7 +456,7 @@ async def upload_student_file(
     student_id: uuid.UUID,
     file: Annotated[UploadFile, File(description="До 50 МБ")],
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("students:files"))],
 ) -> FileOut:
     await _load_student(session, student_id)
     file_object = await store_upload(
@@ -481,7 +474,7 @@ async def upload_student_file(
 @router.get(
     "/students/{student_id}/files",
     summary="Файлы студента (observer — 403)",
-    dependencies=[Depends(require_roles(*_WRITE_ROLES))],
+    dependencies=[Depends(require_permission("students:files"))],
 )
 async def list_student_files(
     student_id: uuid.UUID,
@@ -509,7 +502,7 @@ async def list_student_files(
 @router.delete(
     "/students/{student_id}/files/{file_id}",
     summary="Удалить файл студента",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
+    dependencies=[Depends(require_permission("students:files_delete"))],
 )
 async def delete_student_file(
     student_id: uuid.UUID,
@@ -570,7 +563,7 @@ async def _federal_project_refs(
 
 
 @router.get(
-    "/activities", summary="Сквозное расписание активностей", dependencies=[_READ]
+    "/activities", summary="Сквозное расписание активностей", dependencies=[_ACTIVITIES_READ]
 )
 async def list_activities(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -592,17 +585,13 @@ async def list_activities(
     if is_active is not None:
         stmt = stmt.where(Activity.is_active.is_(is_active))
     if date_from or date_to:
-        slot = select(ActivitySchedule.id).where(
-            ActivitySchedule.activity_id == Activity.id
-        )
+        slot = select(ActivitySchedule.id).where(ActivitySchedule.activity_id == Activity.id)
         if date_from:
             slot = slot.where(ActivitySchedule.starts_at >= date_from)
         if date_to:
             slot = slot.where(ActivitySchedule.starts_at < date_to + timedelta(days=1))
         stmt = stmt.where(slot.exists())
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     # сквозной календарь: сортировка по ближайшему слоту (data-model.md §7.3)
     next_slot = (
         select(func.min(ActivitySchedule.starts_at))
@@ -611,16 +600,14 @@ async def list_activities(
     )
     stmt = stmt.order_by(sa.nulls_last(next_slot.asc()), Activity.name)
     activities = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset)))
-        .scalars()
-        .all()
+        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     )
     participants = await _participants_map(session, [a.id for a in activities])
     fp_refs = await _federal_project_refs(session, list(activities))
     items = [
-        _activity_out(
-            a, participants.get(a.id, 0), fp_refs.get(a.federal_project_id)
-        ).model_dump(mode="json")
+        _activity_out(a, participants.get(a.id, 0), fp_refs.get(a.federal_project_id)).model_dump(
+            mode="json"
+        )
         for a in activities
     ]
     return list_envelope(items, total, params)
@@ -634,7 +621,7 @@ async def list_activities(
 async def create_activity(
     body: ActivityCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
+    user: Annotated[AppUser, Depends(require_permission("activities:write"))],
 ) -> ActivityOut:
     activity = Activity(**body.model_dump(exclude={"schedule"}))
     for slot in body.schedule:
@@ -650,7 +637,7 @@ async def update_activity(
     activity_id: uuid.UUID,
     body: ActivityUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
+    user: Annotated[AppUser, Depends(require_permission("activities:write"))],
 ) -> ActivityOut:
     activity = (
         await session.execute(
@@ -682,7 +669,7 @@ async def update_activity(
 async def delete_activity(
     activity_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam"))],
+    user: Annotated[AppUser, Depends(require_permission("activities:write"))],
 ) -> dict[str, bool]:
     activity = await get_or_404(session, Activity, activity_id, "Активность не найдена")
     # деактивация вместо удаления: на активность ссылаются участия студентов
@@ -700,15 +687,11 @@ async def add_participants(
     activity_id: uuid.UUID,
     body: ParticipantsBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("activities:participants"))],
 ) -> dict[str, Any]:
     await get_or_404(session, Activity, activity_id, "Активность не найдена")
     found = (
-        (
-            await session.execute(
-                select(Student.id).where(Student.id.in_(body.student_ids))
-            )
-        )
+        (await session.execute(select(Student.id).where(Student.id.in_(body.student_ids))))
         .scalars()
         .all()
     )
@@ -746,7 +729,7 @@ async def remove_participant(
     activity_id: uuid.UUID,
     student_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles(*_WRITE_ROLES))],
+    user: Annotated[AppUser, Depends(require_permission("activities:participants"))],
 ) -> dict[str, bool]:
     link = await session.get(StudentActivity, (student_id, activity_id))
     if link is None:

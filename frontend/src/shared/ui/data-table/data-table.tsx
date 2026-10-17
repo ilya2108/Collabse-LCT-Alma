@@ -432,9 +432,10 @@ export function DataTable<T extends object>({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-5 shadow-card">
+    // < sm: поля карточки меньше, поиск во всю ширину, таблица прокручивается внутри (P1-5)
+    <div className="min-w-0 rounded-lg border bg-card p-4 shadow-card sm:p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <PresetsControl
             screen={screen}
             presets={presets}
@@ -444,14 +445,14 @@ export function DataTable<T extends object>({
             onApply={applyPreset}
             onClear={() => setActivePresetId(null)}
           />
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <Search
               className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden="true"
             />
             <Input
               type="search"
-              className="w-[240px] pl-8"
+              className="w-full pl-8 sm:w-[240px]"
               placeholder={searchPlaceholder}
               aria-label={searchPlaceholder}
               value={state.search}

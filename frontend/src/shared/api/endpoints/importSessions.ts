@@ -54,10 +54,7 @@ export interface ApplyImportPayload {
  * больше — `202 {"state":"applying"}` и поллинг GET раз в 2 секунды.
  */
 export function applyImportSession(id: string, payload: ApplyImportPayload): Promise<ImportSession> {
-  return api.post<ImportSession>(`/import/sessions/${id}/apply`, {
-    body: payload,
-    idempotencyKey: crypto.randomUUID(),
-  });
+  return api.post<ImportSession>(`/import/sessions/${id}/apply`, { body: payload });
 }
 
 export function deleteImportSession(id: string): Promise<void> {

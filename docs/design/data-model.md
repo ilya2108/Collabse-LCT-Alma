@@ -6,7 +6,11 @@ CRM для работы с вузами (ЛЦТ 2026). Документ — ис
 
 Связанные документы: `docs/design/OVERVIEW.md` (сводная архитектура, терминологический мост),
 `docs/design/deployment.md` (деплой), `docs/design/api-contract.md` (REST-контракты),
-`docs/design/workflow-engine.md` (движок), `PLAN.md` (решения кейсодержателя — раздел 12 ниже даёт построчную трассировку).
+`docs/design/workflow-engine.md` (движок). Требования — техническое задание кейса и решения
+кейсодержателя из протокола Q&A 16.09.2026 (в репозиторий не входит); раздел 12 ниже даёт
+построчную трассировку.
+Каталог прав и наборы системных ролей определяет код `backend/app/core/rbac_catalog.py`;
+раздел 3 описывает, как он хранится в БД.
 
 ---
 
@@ -15,9 +19,11 @@ CRM для работы с вузами (ЛЦТ 2026). Документ — ис
 1. **СУБД** — PostgreSQL 16, одна база `crm`, схема `public`. Отдельные сервисы
    (notification, lms-stub, cms-stub) собственных таблиц в этой БД не имеют: notification-service
    работает через API backend'а, заглушки держат состояние в памяти/файлах.
-2. **PK** — `uuid DEFAULT gen_random_uuid()` у всех таблиц (кроме `audit_log` — `bigint identity`,
-   монотонный append-only). UUID безопасны для внешних JSON-контрактов LMS/CMS (нет перебора id)
-   и для ключей S3.
+2. **PK** — `uuid DEFAULT gen_random_uuid()` у всех сущностей. Исключения: `audit_log` —
+   `bigint identity` (монотонный append-only); `app_permission` — код права (`'requests:write'`);
+   связки и «ключ — значение» с естественным ключом — `contract_product`, `product_direction`,
+   `student_activity`, `external_link`, `app_role_permission`, `app_setting`. UUID безопасны для внешних
+   JSON-контрактов LMS/CMS (нет перебора id) и для ключей S3.
 3. **Время** — везде `timestamptz`, хранение в UTC. Колонки `created_at timestamptz NOT NULL DEFAULT now()`
    и `updated_at timestamptz NOT NULL DEFAULT now()` (обновляется приложением через SQLAlchemy `onupdate`).
    В DDL ниже они сокращены до комментария `-- + created_at, updated_at`.
@@ -25,13 +31,16 @@ CRM для работы с вузами (ЛЦТ 2026). Документ — ис
    а расширяемые справочники (типы взаимодействия B2C) — отдельные таблицы.
 5. **Удаление** — этапы/переходы workflow удаляются **мягко** (`deleted_at`), чтобы история переходов
    оставалась ссылочно целостной. Остальное — физически с `ON DELETE RESTRICT` по умолчанию;
-   `CASCADE` только у «детей» (история, комментарии, строки импорта).
+   `CASCADE` только у «детей» (история, комментарии, строки импорта, связи «роль — право»).
 6. **Именование** — `snake_case`, единственное число. Alembic `naming_convention`:
    `pk_%(table_name)s`, `fk_%(table_name)s_%(column_0_name)s`, `uq_...`, `ck_...`, `ix_...`.
 7. **Расширения**: `CREATE EXTENSION IF NOT EXISTS pg_trgm;` (поиск по подстроке в названиях вузов).
    `gen_random_uuid()` встроен в PG 13+, pgcrypto не нужен.
-8. **ПДн никогда не хранятся в БД открыто** (раздел 7): шифрование Fernet на уровне приложения,
+8. **ПДн никогда не хранятся в БД открыто** (раздел 8): шифрование Fernet на уровне приложения,
    поиск по HMAC-хэшу, в списках — псевдонимизированный `display_name`.
+9. **Оптимистическая блокировка** — системная колонка PostgreSQL `xmin` (`VersionedMixin` в
+   `app/models/base.py`): своей колонки `version` в DDL нет, `xmin` меняется при каждом UPDATE,
+   ORM добавляет её в `WHERE`. В API она отдаётся полем `version` (409 `stale_version`).
 
 ---
 
@@ -48,6 +57,9 @@ erDiagram
     PRODUCT ||--o{ CONTRACT_PRODUCT : ""
     PRODUCT ||--o{ PROGRAM : "программы"
     UNIVERSITY ||--o{ PROGRAM : "сетевые программы"
+    IT_DIRECTION ||--o{ PROGRAM : "направление программы (N:1)"
+    PRODUCT ||--o{ PRODUCT_DIRECTION : ""
+    IT_DIRECTION ||--o{ PRODUCT_DIRECTION : "направления продукта (M:N)"
 
     UNIVERSITY {
         uuid id PK
@@ -83,8 +95,20 @@ erDiagram
         uuid id PK
         uuid product_id FK
         uuid university_id FK
+        uuid direction_id FK "ИТ-направление, nullable"
         text name
         int priority_rank "ручное ранжирование"
+    }
+    IT_DIRECTION {
+        uuid id PK
+        text code UK "без учёта регистра"
+        text name UK "без учёта регистра"
+        int sort_order
+        bool is_active "мягкое удаление"
+    }
+    PRODUCT_DIRECTION {
+        uuid product_id PK, FK
+        uuid direction_id PK, FK
     }
     CONTRACT {
         uuid id PK
@@ -100,6 +124,10 @@ erDiagram
         uuid product_id PK, FK
         uuid added_by FK
         timestamptz added_at
+        date license_signed_at "лицензия"
+        smallint license_term_years
+        date license_valid_to
+        text transfer_status "статус передачи"
     }
 ```
 
@@ -253,7 +281,7 @@ erDiagram
     }
 ```
 
-### 2.4 Сервисные сущности (пользователи, нотификации, импорт, файлы, интеграции, аудит)
+### 2.4 Сервисные сущности (пользователи, нотификации, импорт, файлы, интеграции, аудит, идемпотентность)
 
 ```mermaid
 erDiagram
@@ -262,16 +290,27 @@ erDiagram
     APP_USER ||--o{ IMPORT_SESSION : "инициатор"
     IMPORT_SESSION ||--o{ IMPORT_ROW_ERROR : ""
     IMPORT_SESSION ||--|| FILE_OBJECT : "исходный файл в MinIO"
+    DEAL_STAGE_HISTORY ||--o{ FILE_OBJECT : "файлы в статусах (0006)"
     APP_USER ||--o{ AUDIT_LOG : "actor"
+    APP_USER ||--o{ AI_SUMMARY_JOB : "requested_by; kam_id (0010)"
 
     APP_USER {
         uuid id PK
-        uuid keycloak_sub UK "зеркало Keycloak"
+        uuid keycloak_sub UK "связь с учёткой Keycloak"
         text username
-        text_array roles "зеркало realm-ролей"
+        text_array roles "коды app_role, назначаются в CRM"
         uuid manager_id FK "руководитель для эскалации"
         bigint tg_chat_id UK
         text tg_username
+    }
+    IDEMPOTENCY_KEY {
+        uuid id PK
+        text principal "sub:keycloak_sub | internal"
+        text idem_key "UK вместе с principal"
+        char request_hash "sha256 запроса"
+        text status "processing | completed"
+        bytea response_body "Fernet, сохранённый 2xx-ответ"
+        timestamptz expires_at "TTL 24 ч"
     }
     NOTIFICATION_RULE {
         uuid id PK
@@ -300,6 +339,7 @@ erDiagram
         text original_name
         text entity_type
         uuid entity_id
+        uuid stage_history_id FK "переход заявки, nullable"
         text sha256
     }
     IMPORT_SESSION {
@@ -342,22 +382,83 @@ erDiagram
         jsonb before
         jsonb after
     }
+    AI_SUMMARY_JOB {
+        uuid id PK
+        text kind "team | kam"
+        uuid kam_id FK "только kind = kam"
+        text cache_key "частичный UNIQUE среди queued/running"
+        text status "queued | running | done | failed"
+        jsonb facts "что ушло наружу: агрегаты и псевдонимы"
+        jsonb aliases "КАМ-01 -> uuid, без ФИО"
+        jsonb result "разделы с псевдонимами + checks"
+    }
+```
+
+`IDEMPOTENCY_KEY` внешних ключей не имеет: принципал — строка, а не ссылка на `app_user`
+(ключом пользуются и сервисы по `X-Internal-Token`). DDL — §9.6.
+
+### 2.5 Роли и права
+
+```mermaid
+erDiagram
+    APP_ROLE ||--o{ APP_ROLE_PERMISSION : "набор прав роли"
+    APP_PERMISSION ||--o{ APP_ROLE_PERMISSION : ""
+    APP_USER }o--o{ APP_ROLE : "roles[] = коды ролей, без FK"
+    APP_ROLE }o--o{ WORKFLOW_TRANSITION : "allowed_roles = коды ролей, без FK"
+    APP_USER ||--o{ APP_ROLE : "created_by / updated_by"
+
+    APP_PERMISSION {
+        text code PK "requests:write"
+        text group_code "requests | workflow | crm | ..."
+        text name
+        bool is_scoped "действует в процессах роли"
+        int sort_order
+    }
+    APP_ROLE {
+        uuid id PK
+        text code UK "неизменяем"
+        text name UK "без учёта регистра"
+        bool is_system "admin, head_kam, kam, observer"
+        bool is_locked "admin"
+        text_array workflow_types "подмножество b2b, b2c"
+        text record_scope "all | own"
+    }
+    APP_ROLE_PERMISSION {
+        uuid role_id PK, FK
+        text permission_code PK, FK
+    }
 ```
 
 ---
 
-## 3. Пользователи и роли (зеркало Keycloak)
+## 3. Пользователи, роли и права
 
-Источник правды по аутентификации и ролям — **Keycloak** (realm `crm`, JWT в каждом запросе).
-Таблица `app_user` — зеркало, необходимое для: FK «ответственный», адресации нотификаций
-(`tg_chat_id`), эскалации руководителю (`manager_id`), отображения ФИО в UI.
-Синхронизация — **upsert по `keycloak_sub` при каждом логине** (данные из access-токена:
-`sub`, `preferred_username`, `email`, `name`, `realm_access.roles`). Отдельный синк-джоб не нужен.
+Keycloak (realm `crm`, JWT в каждом запросе) отвечает **только за вход**. Назначения ролей,
+сами роли и их права хранятся в БД CRM и меняются в интерфейсе («Администрирование → Роли
+и права») без перевыпуска токена. Права определяет код (`backend/app/core/rbac_catalog.py`):
+право без проверки в коде ничего не значит, поэтому `app_permission` — копия каталога из кода,
+а не редактируемый справочник. Из прав в интерфейсе собираются роли.
 
-Роли realm (seed в Keycloak-JSON, зеркалируются в `roles[]`) — канонический список для всего проекта:
-`admin`, `head_kam` (руководитель КАМов), `kam`, `observer` (read-only, ПДн маскируются);
-сервисные роли confidential-клиентов (не люди): `svc_notification` (клиент `crm-notification`, Telegram-бот),
-`svc_integration` (клиент `crm-integration`, заглушки LMS/CMS при bearer-варианте webhook'ов).
+### 3.1 `app_user` — пользователи
+
+Таблица связывает учётку Keycloak с данными CRM: FK «ответственный», назначенные роли,
+адресация нотификаций (`tg_chat_id`), эскалация руководителю (`manager_id`), ФИО в UI.
+
+- **Upsert по `keycloak_sub` при каждом входе** (из access-токена: `sub`, `preferred_username`,
+  `email`, `name`). Строку, созданную сидом до первого входа, backend находит по `username`.
+  Отдельный синк-джоб не нужен; `POST /admin/users/sync` заполняет список из Keycloak Admin
+  API заранее, до первого входа пользователей.
+- **`roles` — коды ролей `app_role`**, источник истины — БД CRM. Роли токена
+  (`realm_access.roles`) читаются один раз, при создании строки: стартовое назначение берёт
+  из них только коды системных ролей (`admin`, `head_kam`, `kam`, `observer`). Потом роли из
+  токена не перезаписываются; синхронизация с Keycloak обновляет ФИО, email и активность,
+  но не роли.
+- Пользователь без ролей CRM зеркалируется (администратор видит его в списке и назначает
+  роль), но получает 403. Токен только с ролями `svc_*` строку `app_user` не создаёт.
+- Сервисные роли confidential-клиентов живут только в Keycloak и ролями CRM не являются:
+  `svc_notification` (клиент `crm-notification`, Telegram-бот) и `svc_integration` (клиент
+  `crm-integration`, заглушки LMS/CMS при bearer-варианте webhook'ов). Коды `svc_*` в
+  `app_role` запрещены CHECK-ограничением.
 
 ```sql
 CREATE TABLE app_user (
@@ -386,7 +487,163 @@ TTL 10 минут, чтение через `GETDEL` — одноразовост
 Бот через сервисный аккаунт (клиент `crm-notification`, роль `svc_notification`, client credentials) вызывает
 `POST /api/v1/internal/bot/bind {code, chat_id, tg_username}` → backend пишет `tg_chat_id`,
 `tg_username`, `tg_linked_at` в `app_user` и запись в `audit_log`. Команды бота получают данные
-строго по `roles` связанного пользователя.
+строго по правам и области связанного пользователя (3.4).
+
+### 3.2 `app_permission`, `app_role`, `app_role_permission` — роли и права (миграция 0004)
+
+```sql
+CREATE TABLE app_permission (
+    code        text PRIMARY KEY,                 -- 'requests:write'
+    group_code  text NOT NULL,                    -- 'requests' (подписи и порядок групп — в коде)
+    name        text NOT NULL,                    -- «Создание заявок и правка своих»
+    description text,
+    is_scoped   boolean NOT NULL DEFAULT false,   -- действует только в процессах роли (3.3)
+    sort_order  integer NOT NULL DEFAULT 0
+);
+
+CREATE TABLE app_role (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    code           text NOT NULL,                 -- неизменяем: хранится в app_user.roles[]
+                                                  -- и workflow_transition.allowed_roles
+    name           text NOT NULL,
+    description    text,
+    is_system      boolean NOT NULL DEFAULT false,  -- admin, head_kam, kam, observer
+    is_locked      boolean NOT NULL DEFAULT false,  -- admin: права и область не редактируются
+    workflow_types text[]  NOT NULL DEFAULT '{b2b,b2c}',  -- процессы, где действуют права с областью
+    record_scope   text    NOT NULL DEFAULT 'all',        -- all — все заявки процессов, own — свои
+    created_by     uuid REFERENCES app_user(id) ON DELETE SET NULL,
+    updated_by     uuid REFERENCES app_user(id) ON DELETE SET NULL,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_app_role_code CHECK (code ~ '^[a-z][a-z0-9_]{1,39}$' AND code !~ '^svc_'),
+    CONSTRAINT ck_app_role_workflow_types CHECK (
+        cardinality(workflow_types) >= 1 AND workflow_types <@ ARRAY['b2b','b2c']::text[]),
+    CONSTRAINT ck_app_role_record_scope CHECK (record_scope IN ('all','own'))
+);
+CREATE UNIQUE INDEX uq_app_role_code ON app_role (code);
+CREATE UNIQUE INDEX uq_app_role_name ON app_role (lower(name));
+
+CREATE TABLE app_role_permission (
+    role_id         uuid NOT NULL REFERENCES app_role(id) ON DELETE CASCADE,
+    permission_code text NOT NULL REFERENCES app_permission(code)
+                         ON UPDATE CASCADE ON DELETE CASCADE,
+    PRIMARY KEY (role_id, permission_code)
+);
+CREATE INDEX ix_app_role_permission_code ON app_role_permission (permission_code);
+-- та же миграция добавляет на deal индекс области ix_deal_pipeline_responsible (DDL — 6.1)
+```
+
+- Строки `app_permission` создаёт только миграция (и сверка с кодом, 3.6); API прав не создаёт.
+- Служебные коды Keycloak `offline_access` и `uma_authorization` как коды ролей отклоняет
+  валидация API (CHECK запрещает только `svc_*`).
+- Назначение — массив `app_user.roles`, а не таблица связей `app_user_role`: массив уже
+  читают outbox (правила `role`), отчёты по КАМам, список пользователей; GIN `ix_app_user_roles`
+  обслуживает `roles && ARRAY[…]`. Внешних ключей из массива в `app_role` нет — целостность
+  держит сервис ролей (3.5).
+- `app_role` версионируется через `xmin` (принцип 9 раздела 1): `PATCH` роли с устаревшей
+  `version` получает 409 `stale_version`.
+
+### 3.3 Каталог прав и системные роли
+
+Каталог — 62 права в 8 группах (`PERMISSION_GROUPS` в `rbac_catalog.py`; 0004 засеяла 60,
+0006 добавила `universities:assign` — назначение ответственного КАМа за вуз, 0010 —
+`reports:ai_summary` — сводки ИИ по отчёту КАМов):
+
+| Группа (`group_code`) | Подпись в интерфейсе | Прав |
+|---|---|---:|
+| `requests` | Заявки | 13 |
+| `workflow` | Конструктор процессов | 4 |
+| `crm` | Вузы, договоры, продукты, программы | 18 |
+| `talent` | Пул талантов и активности | 9 |
+| `reports` | Аналитика и экспорт | 4 |
+| `import` | Импорт | 2 |
+| `notifications` | Уведомления | 3 |
+| `admin` | Администрирование | 9 |
+
+**Права с областью** (`is_scoped`, 19): группа «Заявки», кроме `clients:pii`, весь «Конструктор
+процессов», `reports:read`, `reports:all` и `reports:ai_summary`. Они действуют только в процессах роли
+(`workflow_types`) и с её областью записей (`record_scope`). Остальные права общие
+(справочники, студенты, импорт, админка) и от процесса не зависят. У права есть зависимости
+(`requires`): роль с правом без его зависимостей не сохранится (400 `permission_dependency`),
+например правка заявок без их просмотра.
+
+Системные роли засевает миграция; у всех `workflow_types = {b2b,b2c}`, `record_scope = all`:
+
+| Код | Название | Прав по умолчанию | Особенности |
+|---|---|---:|---|
+| `admin` | Администратор | 61 | все права, кроме `requests:kam`; `is_locked` — права и область не меняются, роль не удаляется |
+| `head_kam` | Руководитель КАМов | 42 | права КАМа без `requests:kam` + чужие заявки и назначение ответственных, пакеты изменений схемы (публикует admin), правка чужих вузов и договоров, назначение ответственного КАМа за вуз (`universities:assign`), продукты и активности, отчёты по всем КАМам, сводки ИИ (`reports:ai_summary`, 0010), просмотр правил уведомлений и списка пользователей |
+| `kam` | КАМ | 28 | свой портфель: видит все заявки, правит свои; `requests:kam` — попадает в отчёты по КАМам и выбор КАМа |
+| `observer` | Наблюдатель | 14 | только чтение, отчёты по всем КАМам, журнал аудита; ПДн маскированы, раскрытия нет |
+
+Наборы по умолчанию подобраны так, что доступ четырёх ролей к каждому эндпоинту совпадает с
+матрицей, действовавшей до переноса ролей в БД (регрессия — `tests/test_access_matrix.py`).
+Администратор может изменить наборы `head_kam`, `kam`, `observer` и вернуть стандартный
+(`POST /admin/roles/{id}/reset`).
+
+**Свои роли** создаются в интерфейсе: код, название, права, процессы, область записей. Демо-сид
+добавляет «КАМ B2B» (`kam_b2b`) и «КАМ B2C» (`kam_b2c`) — права роли `kam` в одном процессе —
+и дописывает их коды в `allowed_roles` переходов своего процесса, где уже есть `kam`.
+
+### 3.4 Эффективные права и область заявок
+
+Вычисляет чистое ядро `app/core/access.py` (`compute_access`, `DealScope`):
+
+- **Объединение по процессу.** В процессе P действуют права с областью тех ролей, у которых
+  P входит в `workflow_types`; записи процесса — `all`, если хотя бы одна такая роль даёт `all`,
+  иначе `own`. Общие права — объединение всех ролей пользователя.
+- **Область заявок** (`DealScope`) — правила «процесс [+ ответственный]», в SQL —
+  `pipeline = … [AND responsible_user_id = …]` (индекс `ix_deal_pipeline_responsible`). Ею
+  фильтруются доска, реестр, поиск, экспорт, отчёты и получатели правил `role`. В отчётах
+  «все заявки процесса» — только при `reports:all`, иначе только свои.
+- **Вне области — 404.** Заявка вне области отдаётся как несуществующая: карточка, история,
+  комментарии, переходы, файлы. Коллекция с явным процессом вне области (доска, создание
+  заявки, схема процесса) — 403 с текстом «Процесс … недоступен вашей роли».
+- **Переход по ребру** требует `requests:transition` в процессе заявки (чужой заявки — ещё
+  `requests:write_any`). Непустой `allowed_roles` ребра дополнительно требует, чтобы у
+  пользователя была роль из списка, переводящая заявки в этом процессе.
+- **Кэш.** Каталог ролей кэшируется в памяти процесса: TTL 5 с (`RBAC_CATALOG_TTL_SECONDS`),
+  загрузка одним SELECT. После изменения RBAC сервис сбрасывает кэш и публикует SSE
+  `access.changed`: через pub/sub `crm:v1:events` его получает каждая реплика и сбрасывает
+  свой кэш, при недоступном KeyDB срабатывает TTL. `app_user` читается на каждом запросе,
+  поэтому новое назначение действует со следующего запроса, без перезахода. Права в KeyDB
+  не кэшируются.
+
+### 3.5 Целостность и защита от потери управления
+
+Целостность ролей держит сервис `app/modules/access/service.py`:
+
+- все мутации RBAC идут в одной транзакции под `pg_advisory_xact_lock(hashtextextended('rbac', 0))`:
+  два администратора не снимут права друг с друга одновременно;
+- код роли неизменяем, назначаются только существующие коды (400 `unknown_role`);
+- роль нельзя удалить, пока она назначена или указана в `allowed_roles` переходов
+  (409 `role_in_use`); системную роль удалить нельзя (409 `role_system`);
+- после любого изменения остаётся хотя бы один активный пользователь с `admin:roles`, и снять
+  это право с себя нельзя (409 `access_lockout`);
+- удаление роли после RBAC-лока берёт эксклюзивные advisory-локи воронок в порядке b2b → b2c,
+  поэтому применение пакета схемы не добавит удаляемый код в переходы. Ожидание дольше
+  `APPLY_LOCK_TIMEOUT_MS` (30 с) — 409 `workflow_busy` с `Retry-After`, роль не удалена;
+- каждое изменение пишется в `audit_log`: `role.created`, `role.updated`, `role.reset`,
+  `role.deleted`, `user.roles_changed`;
+- аварийный вход, если администратора не осталось: `python -m app.tools.rbac grant-admin
+  <username>` (в контуре — `kubectl exec` в под backend); аудит `user.roles_changed` с
+  `after.source = "cli"`.
+
+### 3.6 Засев и сверка с кодом
+
+- **Миграция 0004** создаёт три таблицы, индекс `ix_deal_pipeline_responsible` и засевает
+  литеральную копию каталога: 60 прав и 4 системные роли с наборами по умолчанию (61-е право,
+  `universities:assign`, добавляет миграция 0006). Копия, а
+  не импорт из кода, — как маски в 0002: миграция самодостаточна и не меняется вместе с кодом.
+  Из `app_user.roles` она убирает коды, которых нет в `app_role` (сервисные роли и прочие коды
+  Keycloak); назначения системных ролей остаются. Даунгрейд удаляет таблицы и индекс, массив
+  `roles` остаётся.
+- **`seed_rbac_catalog`** (`app/modules/access/bootstrap.py`) приводит БД к коду после
+  изменений каталога: upsert прав, удаление прав, которых в коде больше нет (каскадом из ролей),
+  создание недостающих системных ролей. У `admin` набор всегда полный; наборы других системных
+  ролей, настроенные администратором, не трогаются. Вызывают демо-сид (`app.tools.seed`) и
+  `app.tools.rbac`.
+- Расхождение БД и кода ловит `tests/db/test_rbac_db.py::test_migration_catalog_matches_code`.
 
 ---
 
@@ -478,7 +735,8 @@ CREATE INDEX ix_counterparty_display_trgm ON counterparty USING gin (display_nam
 ### 4.4 `interaction_type` — типы взаимодействия B2C (добавляемые)
 
 Решение кейсодержателя: «в B2C должна быть возможность добавлять новые варианты взаимодействия».
-Редактируемый справочник (создание — `admin`/`head_kam`), а не enum.
+Редактируемый справочник, а не enum: ведётся в «Администрирование → Справочники»
+(`interaction_types`, право `admin:dictionaries`; из системных ролей оно есть только у `admin`).
 
 ```sql
 CREATE TABLE interaction_type (
@@ -532,6 +790,7 @@ CREATE TABLE program (
     published_to_cms    boolean NOT NULL DEFAULT false,  -- флаг публикации каталога в CMS;
                                                          -- внешние id (cms_external_id, lms_course_id) — в external_link
     priority_rank       int NOT NULL DEFAULT 1000,   -- ручное ранжирование, меньше = выше
+    direction_id        uuid REFERENCES it_direction(id) ON DELETE RESTRICT,  -- ИТ-направление (0007), nullable
     priority_updated_by uuid REFERENCES app_user(id),
     priority_updated_at timestamptz,
     is_active           boolean NOT NULL DEFAULT true,
@@ -540,7 +799,44 @@ CREATE TABLE program (
 );
 CREATE INDEX ix_program_product  ON program (product_id);
 CREATE INDEX ix_program_priority ON program (priority_rank) WHERE is_active;
+CREATE INDEX ix_program_direction ON program (direction_id) WHERE direction_id IS NOT NULL;  -- 0007
 ```
+
+#### 4.5.1 `it_direction` и `product_direction` — ИТ-направления (миграция 0007)
+
+Каталог ИТ-направлений обучения (DevOps, QA, анализ данных, ML и ИИ…). У программы — одно
+направление (`program.direction_id`, необязательное), у продукта — несколько (M:N
+`product_direction`). Удаление направления — мягкое (`is_active = false`): на него ссылаются
+программы, продукты и отчёты прошлых периодов; деактивация запрещена, пока на направлении есть
+активная программа (`409`). Правит справочник право `admin:dictionaries`, читают все роли.
+
+```sql
+CREATE TABLE it_direction (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    code        text NOT NULL CHECK (btrim(code) <> ''),
+    name        text NOT NULL CHECK (btrim(name) <> ''),
+    description text,
+    sort_order  int  NOT NULL DEFAULT 100,   -- порядок в списках и фильтрах
+    is_active   boolean NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uq_it_direction_code ON it_direction (lower(code));
+CREATE UNIQUE INDEX uq_it_direction_name ON it_direction (lower(name));
+
+CREATE TABLE product_direction (
+    product_id   uuid NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    direction_id uuid NOT NULL REFERENCES it_direction(id) ON DELETE RESTRICT,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (product_id, direction_id)
+);
+CREATE INDEX ix_product_direction_direction ON product_direction (direction_id);
+```
+
+**Направление записи** — одно правило для фильтров, колонок и отчётов (`crm/directions.py`):
+направление программы записи; если его нет — направления ИТ-продукта записи (свой продукт
+заявки или студента, без него — продукт программы). Фильтр `direction_id` проверяется через
+`EXISTS`, без размножения строк (api-contract.md §3.3a).
 
 ### 4.6 `contract` и `contract_product` — «1 договор — N продуктов, продукты расширяются»
 
@@ -581,10 +877,34 @@ CREATE TABLE contract_product (
     note        text,
     added_by    uuid REFERENCES app_user(id),
     added_at    timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (contract_id, product_id)
+    -- лицензия на ИТ-продукт (миграция 0008); все поля необязательные
+    license_signed_at          date,
+    license_term_years         smallint,
+    license_valid_to           date,          -- дата окончания, включительно
+    transfer_status            text,          -- NULL — статус передачи не указан
+    transfer_status_updated_at timestamptz,
+    PRIMARY KEY (contract_id, product_id),
+    CONSTRAINT ck_contract_product_license_term
+        CHECK (license_term_years IS NULL OR license_term_years BETWEEN 1 AND 99),
+    CONSTRAINT ck_contract_product_license_dates
+        CHECK (license_valid_to IS NULL OR license_signed_at IS NULL
+               OR license_valid_to >= license_signed_at),
+    CONSTRAINT ck_contract_product_transfer_status
+        CHECK (transfer_status IS NULL
+               OR transfer_status IN ('not_started', 'in_progress', 'transferred', 'cancelled'))
 );
 CREATE INDEX ix_contract_product_product ON contract_product (product_id);
+CREATE INDEX ix_contract_product_license_valid_to ON contract_product (license_valid_to)
+    WHERE license_valid_to IS NOT NULL;
 ```
+
+Строка `contract_product` — это и **лицензия** вуза на ИТ-продукт: дата подписания, срок
+в годах, дата окончания (из срока — «1 год от 01.02.2026» → 31.01.2027 — или явно: «до 2027»,
+«31.12.2027») и статус передачи лицензии вузу (`not_started` — не передана, `in_progress` —
+в процессе, `transferred` — передана, `cancelled` — отменена); `transfer_status_updated_at`
+фиксирует последнюю смену статуса. Заполняются импортом «Таблица КАМов»
+(`import_session.entity_type='kam_catalog'`, api-contract.md §6.1), в API отдаются в
+`ContractOut.licenses` (§3.2). Договоры без лицензий остаются валидными.
 
 Скан договора — файл в MinIO: `file_object` c `entity_type='contract'`, `entity_id=contract.id`.
 
@@ -629,7 +949,7 @@ CREATE TABLE workflow_stage (
     is_initial           boolean NOT NULL DEFAULT false,
     is_terminal          boolean NOT NULL DEFAULT false,
     terminal_outcome     text CHECK (terminal_outcome IN ('won', 'lost')),
-    stuck_threshold_days int CHECK (stuck_threshold_days IS NULL OR stuck_threshold_days BETWEEN 1 AND 60),
+    stuck_threshold_days int CHECK (stuck_threshold_days IS NULL OR stuck_threshold_days BETWEEN 1 AND 365),  -- 0006: было 1–60
     triggers_lms_handover boolean NOT NULL DEFAULT false, -- вход в этап шлёт crm.request.handed_over в LMS
     color                text,                    -- hex для канбана/конструктора
     ui_position          jsonb,                   -- {"x": 120, "y": 240}
@@ -652,7 +972,8 @@ CREATE TABLE workflow_transition (
     name          text NOT NULL,                  -- метка действия: «Отправить на согласование»
     is_return     boolean NOT NULL DEFAULT false, -- возврат на предыдущий шаг (API kind='return')
     requires_comment boolean NOT NULL DEFAULT false, -- комментарий обязателен (для возвратов — всегда)
-    allowed_roles jsonb NOT NULL DEFAULT '[]',    -- [] = любая роль с доступом к заявке
+    allowed_roles jsonb NOT NULL DEFAULT '[]',    -- коды app_role (3.2); [] = любая роль с
+                                                  -- requests:transition в процессе (3.4)
     condition     jsonb,                          -- подсказка ветвления (JSON-DSL, workflow-engine.md §3.3), не форсируется
     sort_order    int NOT NULL DEFAULT 0,
     deleted_at    timestamptz,
@@ -671,19 +992,24 @@ CREATE INDEX ix_transition_from ON workflow_transition (from_stage_id) WHERE del
 - ровно один `is_initial` (дублирует partial unique) и ≥1 терминальный этап;
 - каждый неудалённый этап достижим из начального;
 - у каждого нетерминального этапа есть хотя бы один исходящий переход (тупики запрещены);
-- у терминального этапа исходящих переходов нет.
+- у терминального этапа исходящих переходов нет;
+- роли из `allowed_roles` существуют в каталоге `app_role` (V-7). Операция пакета, которая
+  добавляет роль в переход, требует ещё, чтобы у роли было `requests:transition` в процессе
+  воронки, иначе `E_UNKNOWN_ROLE`.
 
-### 5.2 `workflow_change_request` — admin-approve («защита от дурака»)
+### 5.2 `workflow_change_request` — согласование изменений схемы («защита от дурака»)
 
 Решение кейсодержателя: **переименование и удаление** статуса — только с апрувом администратора.
 Изменение схемы всегда приходит **пакетом операций** (`POST /workflows/{id}/changes`,
 api-contract.md §5.3): `add_status`, `rename_status`, `delete_status`, `add/update/delete_transition`,
-`update_status`. Классификация: пакет **только из безопасных операций** от `admin` применяется сразу
-(`status='applied'`, запись в `audit_log`); от `head_kam` — уходит на апрув; пакет с хотя бы одной
-**опасной** операцией (`rename_status`/`delete_status`) целиком уходит в `pending` даже от админа —
-двухшаговое подтверждение («защита от дурака»). Применяет — только `admin`; свой пакет админ может
-одобрить сам (approve и есть второй шаг; аудит-след остаётся). Опасные операции несут `confirm_name` —
-посимвольно введённое текущее название этапа, сверяется на бэке.
+`update_status`. Классификация — по правам автора в процессе воронки (3.3): создать пакет может
+пользователь с `workflow:change`; пакет **только из безопасных операций** от автора с
+`workflow:approve` применяется сразу (`status='applied'`, запись в `audit_log`), без этого права —
+уходит на согласование; пакет с хотя бы одной **опасной** операцией (`rename_status`/`delete_status`)
+целиком уходит в `pending` всегда — двухшаговое подтверждение («защита от дурака»). Согласует и
+применяет пользователь с `workflow:approve` в этом процессе (из системных ролей — только `admin`);
+свой пакет он может одобрить сам (approve и есть второй шаг; аудит-след остаётся). Опасные операции
+несут `confirm_name` — посимвольно введённое текущее название этапа, сверяется на бэке.
 
 ```sql
 CREATE TABLE workflow_change_request (
@@ -696,6 +1022,9 @@ CREATE TABLE workflow_change_request (
     impact           jsonb,
         -- снапшот impact-preview на момент создания:
         -- {"affected_requests_total": 12, "by_status": [{"status_id":"…","count":12,"migrate_to":{…}}]}
+        -- после применения добавляется отчёт переноса:
+        -- "migration_report": {"migrated_requests": 12, "by_status": [{"from":"…","to":"…","count":12}],
+        --   "digest_notifications": 2, "timings": {"lock_wait_ms":…, "apply_ms":…, "migrate_ms":…}}
     status           text NOT NULL DEFAULT 'pending'
                      CHECK (status IN ('pending', 'approved', 'rejected', 'applied', 'failed')),
     requested_by     uuid NOT NULL REFERENCES app_user(id),
@@ -711,20 +1040,24 @@ CREATE INDEX ix_wcr_workflow ON workflow_change_request (workflow_id, requested_
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending : head_kam/админ создал пакет с опасной операцией
-    [*] --> applied : безопасный пакет от админа (применяется сразу)
-    pending --> approved : админ одобрил
-    pending --> rejected : админ отклонил (с комментарием)
+    [*] --> pending : опасная операция или автор без права согласования
+    [*] --> applied : безопасный пакет автора с правом согласования (применяется сразу)
+    pending --> approved : одобрил пользователь с правом согласования
+    pending --> rejected : отклонил пользователь с правом согласования (с комментарием)
     approved --> applied : транзакция миграции успешна
     approved --> failed : ошибка применения (заявки не тронуты)
     applied --> [*]
     rejected --> [*]
 ```
 
+Право согласования на диаграмме — `workflow:approve` в процессе воронки.
+
 Важно: `approved` существует только внутри транзакции применения — окна «одобрено, но не
 применено» нет. `POST /workflows/changes/{id}/approve` в одной транзакции: повторная валидация →
 применение операций → миграция заявок → `applied`; ошибка → `failed`, заявки не тронуты
-(механика — `workflow-engine.md` §6.4).
+(механика — `workflow-engine.md` §6.4). Если эксклюзивный лок воронки не получен за
+`APPLY_LOCK_TIMEOUT_MS` (30 с, ждёт хвост переходов) — 409 `workflow_busy` с `Retry-After: 2`,
+пакет остаётся в `pending`.
 
 ### 5.3 Правила миграции заявок при изменении схемы
 
@@ -732,26 +1065,37 @@ stateDiagram-v2
 на новую схему, работа не встаёт» и «при удалении статуса все заявки в нём переносятся на
 соседний (лучше предыдущий) статус».
 
+«Сразу» — автор с `workflow:approve` в процессе (по умолчанию `admin`); «CR» — автор только
+с `workflow:change` (по умолчанию `head_kam`), пакет уходит на согласование.
+
 | Изменение | Апрув | Что с заявками | Аудит |
 |---|---|---|---|
-| Добавление этапа/перехода | admin — нет (сразу); head_kam — да (CR) | ничего | `audit_log` |
-| Правка перехода, `condition`, `ui_position`, порог зависания, цвет | admin — нет; head_kam — да (CR) | ничего | `audit_log` |
-| Переименование этапа | **да** (CR, `confirm_name`) | ничего; история хранит снапшоты имён на момент перехода | CR + `audit_log` |
-| Удаление перехода | admin — нет; head_kam — да (CR) | ничего; операция, оставляющая нетерминальный этап без исходящих, **отклоняется валидацией** (тупики запрещены) | `audit_log` |
-| Удаление этапа | **да** (CR, `confirm_name`) | алгоритм ниже | CR + `deal_stage_history` + `audit_log` |
+| Добавление этапа/перехода | с `workflow:approve` — сразу; иначе CR | ничего | `audit_log` |
+| Правка перехода (`allowed_roles`, `condition`), `ui_position`, порог зависания, цвет | с `workflow:approve` — сразу; иначе CR | ничего | `audit_log` |
+| Переименование этапа | **всегда CR** (`confirm_name`) | ничего; история хранит снапшоты имён на момент перехода | CR + `audit_log` |
+| Удаление перехода | с `workflow:approve` — сразу; иначе CR | ничего; операция, оставляющая нетерминальный этап без исходящих, **отклоняется валидацией** (тупики запрещены) | `audit_log` |
+| Удаление этапа | **всегда CR** (`confirm_name`) | алгоритм ниже | CR + `deal_stage_history` + `audit_log` |
 
-Алгоритм удаления этапа (одна транзакция, применяет backend при `approved`):
+Алгоритм удаления этапа (одна транзакция под эксклюзивным advisory-локом воронки, применяет
+backend при `approved`; код — `app/modules/workflow/migration.py`):
 
 ```mermaid
 flowchart TD
-    A[CR delete_status approved] --> B["SELECT ... FOR UPDATE всех open-заявок на этапе"]
-    B --> C{"migrate_to_status_id валиден?<br/>(тот же workflow, сосед по ребру, не удалён, не терминал)"}
+    A[CR delete_status approved] --> L["pg_advisory_xact_lock воронки (EXCLUSIVE):<br/>новые переходы ждут, чтение не блокируется"]
+    L --> C{"migrate_to_status_id валиден?<br/>(тот же workflow, сосед по ребру, не удалён, не терминал)"}
     C -- нет --> F[status=failed, заявки не тронуты]
-    C -- да --> D["UPDATE deal SET stage_id = migrate_to;<br/>stage_entered_at НЕ сбрасывается"]
-    D --> E["INSERT deal_stage_history<br/>kind='system_migration', reason='stage_deleted'"]
-    E --> G["UPDATE workflow_stage SET deleted_at = now();<br/>та же пометка всем его переходам"]
-    G --> H[CR status=applied, DEL кэша crm:v1:wf:*]
+    C -- да --> D["Один SQL-оператор на этап (CTE):<br/>UPDATE deal SET stage_id = migrate_to RETURNING …<br/>→ INSERT deal_stage_history kind='system_migration',<br/>reason='stage_deleted'; stage_entered_at НЕ сбрасывается"]
+    D --> G["UPDATE workflow_stage SET deleted_at = now();<br/>та же пометка всем его переходам"]
+    G --> N["Сводные уведомления request.transitioned:<br/>одно на получателя, а не на заявку"]
+    N --> H[CR status=applied, impact.migration_report, DEL кэша crm:v1:wf:*]
 ```
+
+Перенос не читает заявки в Python: `UPDATE … RETURNING` сразу кормит `INSERT` истории, наружу
+выходят агрегаты по ответственным. Выборку открытых заявок этапа обслуживает `ix_deal_board`
+(`workflow_id, stage_id WHERE status = 'open'`), строки блокирует сам `UPDATE`. Число
+перенесённых заявок обязано совпасть с числом строк истории (инвариант I-9), иначе
+транзакция откатывается. Замер на 10 000 заявок: лок воронки удерживается около 0,6 с против
+25 с у прежнего поштучного переноса в той же среде (`docs/evidence/migration-benchmark.md`).
 
 Зафиксированные детали:
 
@@ -818,7 +1162,19 @@ CREATE INDEX ix_deal_university  ON deal (university_id)  WHERE university_id  I
 CREATE INDEX ix_deal_counterparty ON deal (counterparty_id) WHERE counterparty_id IS NOT NULL;
 CREATE INDEX ix_deal_stuck       ON deal (stage_entered_at)      WHERE status = 'open';  -- CronJob зависших
 CREATE INDEX ix_deal_created     ON deal (created_at DESC);
+-- 0004: область RBAC «процесс [+ только свои]» (3.4)
+CREATE INDEX ix_deal_pipeline_responsible ON deal (pipeline, responsible_user_id)
+    WHERE status <> 'archived';
+-- 0005: отчёт «Активность КАМов» — заявки КАМов за период по всем статусам, кроме архива
+CREATE INDEX ix_deal_responsible_created  ON deal (responsible_user_id, created_at)
+    WHERE status <> 'archived';
 ```
+
+Зачем два похожих индекса: `ix_deal_responsible` частичный по `status = 'open'` и закрытые
+заявки не покрывает, а `ix_deal_pipeline_responsible` начинается с `pipeline` и не обслуживает
+`responsible_user_id IN (…)` без фильтра по процессу — отчёт по КАМам идёт по
+`ix_deal_responsible_created`. `ix_deal_board` обслуживает и массовый перенос заявок
+удаляемого этапа (5.3).
 
 Правила движка (приложение, транзакционно):
 
@@ -867,12 +1223,21 @@ CREATE INDEX ix_dsh_to_stage  ON deal_stage_history (to_stage_id, created_at);  
 CREATE INDEX ix_dsh_created   ON deal_stage_history (created_at);
 ```
 
+Этап заявки на прошлую дату восстанавливается по этой таблице: последняя строка до даты
+(LATERAL по `ix_dsh_deal`). Так отчёт «Активность КАМов» показывает этап на конец периода, а не
+сегодняшний. Взаимодействием КАМа он считает только собственные ручные переходы ответственного
+(`kind = 'manual'`); `system_migration`, `integration` и `import` меняют этап, но активностью не
+считаются. Мягко удалённый этап выводится под историческим названием с пометкой «(удалён)».
+
 ### 6.3 `deal_comment` — встроенный мессенджер (заглушка)
 
 Лента комментариев в карточке заявки (решение: «встроенный мессенджер: в идеале да, заглушки
 допустимы»). Вложения — через `file_object` (`entity_type='deal_comment'`). Realtime — SSE-канал
 `GET /api/v1/events/stream` (топик `request.comment_added`), фолбэк — поллинг раз в 15 с.
-Удаление — автор или admin, мягкое (`deleted_at`, текст в выдаче заменяется на «(удалено)»).
+Удаление — автор или право `comments:delete_any` в процессе заявки (из системных ролей — `admin`),
+мягкое (`deleted_at`, текст в выдаче заменяется на «(удалено)»). Файлы карточки заявки —
+`file_object` с `entity_type='deal'`: загрузка и удаление своих — `requests:files`, удаление чужих —
+ещё `requests:write_any` в процессе заявки.
 
 ```sql
 CREATE TABLE deal_comment (
@@ -882,7 +1247,7 @@ CREATE TABLE deal_comment (
     body           text NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT now(),
     edited_at      timestamptz,
-    deleted_at     timestamptz          -- мягкое удаление (автор/admin)
+    deleted_at     timestamptz          -- мягкое удаление (автор / comments:delete_any)
 );
 CREATE INDEX ix_deal_comment_deal ON deal_comment (deal_id, created_at);
 ```
@@ -993,6 +1358,11 @@ CREATE TABLE activity (
     updated_at          timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX ix_activity_fedproject ON activity (federal_project_id);
+-- 0005: мероприятия по парам «КАМ × вуз» в отчёте «Активность КАМов»
+CREATE INDEX ix_activity_university  ON activity (university_id)
+    WHERE university_id IS NOT NULL;
+CREATE INDEX ix_activity_responsible ON activity (responsible_user_id)
+    WHERE responsible_user_id IS NOT NULL;
 
 CREATE TABLE activity_schedule (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1035,11 +1405,12 @@ CREATE INDEX ix_student_activity_activity ON student_activity (activity_id);
 | `counterparty.email_enc` | `email_hmac` | физлицо B2C |
 | `counterparty.phone_enc` | — | физлицо B2C |
 | `import_row_error.raw_data` | — | значения ПДн-колонок **маскируются** до записи (8.5) |
+| `idempotency_key.response_body` | — | сохранённый ответ мутации целиком: он может содержать ПДн (9.6) |
 
 Не шифруем (обоснование): `app_user` — сотрудники, их учётки живут в Keycloak (собственная БД
 Keycloak в том же закрытом контуре), в CRM — рабочие контакты; `university_contact` — деловые
-контакты представителей юрлиц в рамках договорной работы. Оба случая проговариваются на защите;
-механизм расширяем — перевод любого поля на `*_enc` не меняет архитектуру.
+контакты представителей юрлиц в рамках договорной работы. Механизм расширяем — перевод любого
+поля на `*_enc` не меняет архитектуру.
 
 ### 8.2 Механизм
 
@@ -1067,7 +1438,7 @@ Keycloak в том же закрытом контуре), в CRM — рабоч�
 | Точный поиск по email (дедупликация импорта, поиск карточки) | `WHERE email_hmac = :h` — B-tree, O(log n) |
 | Точный поиск по ФИО | `WHERE full_name_hmac = :h` |
 | Поиск по подстроке имени в списках | `display_name ILIKE` / trigram-индекс — по **псевдониму**, не по ПДн |
-| Карточка студента/физлица | по умолчанию — маскированные значения (`И***в И.И.`, `i***@example.com`); раскрытие — явный `POST /students/{id}/reveal` (роли admin, head_kam, kam; запись в `audit_log`, UI прячет через 60 с); observer раскрытия не имеет |
+| Карточка студента/физлица | по умолчанию — маскированные значения (`И***в И.И.`, `i***@example.com`); раскрытие — явный `POST /students/{id}/reveal` (право `students:reveal`, по умолчанию у admin, head_kam, kam; запись в `audit_log`, UI прячет через 60 с); observer раскрытия не имеет. Контакты физлиц B2C в карточке заявки без маски — право `clients:pii` |
 | Списки, канбан, дашборды | только `display_name` — расшифровка не нужна, кэшируется безопасно |
 | Экспорт XLSX для КАМа/админа | расшифровка на лету в момент генерации файла; факт экспорта — в `audit_log` (`action='student.exported'`) |
 
@@ -1084,17 +1455,22 @@ Keycloak в том же закрытом контуре), в CRM — рабоч�
 
 - Fernet: добавить новый ключ первым в `PII_FERNET_KEYS`, перекатить Secret и pod'ы; фоновая
   команда `python -m app.tools.rekey` батчами (по 500 строк, `SELECT ... FOR UPDATE SKIP LOCKED`)
-  перечитывает и перешифровывает `*_enc`. Старый ключ удаляется из списка после полного прогона.
+  перечитывает и перешифровывает `*_enc` и `idempotency_key.response_body`. Старый ключ удаляется
+  из списка после полного прогона.
 - HMAC: ротация = пересчёт всех хэшей тем же батч-процессом (расшифровка → normalize → новый HMAC).
-  На хакатоне достаточно наличия команды; прогон демонстрируется на защите при вопросе.
 
 ### 8.5 Гигиена ПДн вне таблиц
 
-- **Логи** приложения не содержат расшифрованных значений (фильтр логгера маскирует
-  `full_name`/`email` в структурированных логах).
+- **Логи** приложения не содержат значений ПДн: их не пишет ни один вызов логгера (фильтра-маскировщика нет).
+  Журнал доступа uvicorn пишет query-строку, а точный поиск студента по email идёт в ней (`GET /students?q=`) — в контуре заказчика журнал доступа маскируют или отключают (`--no-access-log`).
 - **`audit_log.before/after`** и **`import_row_error.raw_data`**: значения полей, замапленных на
   ПДн-колонки, маскируются до записи: `i***@example.com`, `И*** И.И.`.
-- **Бэкапы БД** содержат только шифртекст — восстановление без Secret не раскрывает ПДн.
+- **Ключи идемпотентности** (9.6): ответ мутации хранится Fernet-шифртекстом, тело запроса не
+  хранится вовсе — только его SHA-256. Строки живут 24 ч, затем их удаляет CronJob
+  `idempotency-purge`. Ответ, который не расшифровывается (ключ выведен из ротации), не
+  проигрывается: повтор получает 409 `idempotency_replay_unavailable`.
+- **Дамп БД** содержит только шифртекст — восстановление без Secret не раскрывает ПДн.
+  Регулярного резервного копирования в прототипе нет (CronJob `pg_dump` — в плане развития).
 - **KeyDB** никогда не содержит расшифрованных ПДн (раздел 9): кэшируются только
   `display_name`-представления.
 - **Telegram-нотификации** по студентам содержат `display_name`, не полные ФИО/email.
@@ -1103,7 +1479,7 @@ Keycloak в том же закрытом контуре), в CRM — рабоч�
 
 ---
 
-## 9. Импорт, файлы, интеграции, нотификации, настройки, аудит
+## 9. Импорт, файлы, интеграции, нотификации, настройки, аудит, идемпотентность
 
 ### 9.1 `import_session` — диалоговый импорт с интерактивным маппингом
 
@@ -1116,7 +1492,8 @@ CREATE TABLE import_session (
     id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     entity_type       text NOT NULL CHECK (entity_type IN
                       ('students', 'universities', 'university_contacts', 'counterparties',
-                       'requests_b2b', 'requests_b2c', 'contracts', 'products', 'programs')
+                       'requests_b2b', 'requests_b2c', 'contracts', 'products', 'programs',
+                       'kam_catalog')                        -- «Таблица КАМов», миграция 0008
                       OR entity_type LIKE 'dictionary:%'),   -- справочники админки (разовая предзагрузка)
     file_id           uuid REFERENCES file_object(id),   -- исходный файл в MinIO
     original_filename text,
@@ -1203,14 +1580,28 @@ CREATE TABLE file_object (
     entity_id     uuid,
     uploaded_by   uuid REFERENCES app_user(id),
     created_at    timestamptz NOT NULL DEFAULT now(),
-    deleted_at    timestamptz            -- soft delete; объект в MinIO чистит фоновая задача
+    deleted_at    timestamptz,           -- soft delete; объект в MinIO чистит фоновая задача
+    stage_history_id uuid REFERENCES deal_stage_history(id) ON DELETE SET NULL  -- 0006: файл в статусе
 );
 CREATE UNIQUE INDEX uq_file_object_s3_key ON file_object (s3_bucket, s3_key);
 CREATE INDEX ix_file_object_entity ON file_object (entity_type, entity_id) WHERE deleted_at IS NULL;
+CREATE INDEX ix_file_object_stage_history ON file_object (stage_history_id)
+    WHERE stage_history_id IS NOT NULL;  -- 0006
 ```
 
-Доступ к файлам — только через backend: проверка роли/владения сущностью → presigned URL
-(TTL 10 минут). Прямого анонимного доступа к MinIO нет (закрытый контур).
+**Файлы в статусах (миграция 0006).** Файл заявки (`entity_type='deal'`) привязан к строке
+`deal_stage_history`: к переходу, на котором его приложили (`file_ids` перехода — в той же
+транзакции, что и переход), либо ко входу в этап, в котором его загрузили из вкладки «Файлы».
+Бэкфилл миграции привязал уже загруженные файлы к последней строке истории заявки не позже
+загрузки. Вложения заявки проходят белый список из 10 форматов (PNG, JPEG, PDF, ZIP, GZIP,
+RAR, DOC, DOCX, XLS, XLSX) со сверкой расширения и сигнатуры; тип содержимого задаёт сервер
+(api-contract.md §4.5).
+
+Доступ к файлам — только через backend (`GET /files/{id}/download`, по умолчанию proxy-поток,
+либо presigned URL с TTL 10 минут). Проверка прав: файлы договоров, студентов, заявок и
+вложения комментариев — `files:business`; исходники импорта и выгрузки (`import_session`,
+`report`) — автор или `files:others`; файл заявки или её комментария вне области роли — 404,
+как и сама заявка (3.4). Прямого анонимного доступа к MinIO нет (закрытый контур).
 
 ### 9.3 `integration_event` и `external_link` — двусторонние интеграции LMS/CMS
 
@@ -1218,6 +1609,13 @@ Outbox/inbox-паттерн: backend пишет исходящие событи�
 что и доменное изменение; фоновый воркер доставляет их в заглушки (**outbound**); заглушки
 и вебхуки пишут входящие (**inbound**), обработчик применяет их к домену. Это делает
 двусторонность **демонстрируемой**: таблица — живой журнал обмена, виден в админке.
+
+Источник истины — только эта таблица. Доставку одного события выполняет транспорт
+`IntegrationTransport` (`app/core/integration_transport.py`); единственная реализация —
+HTTP POST с HMAC-подписью `X-Webhook-Signature`. Второй очереди рядом с outbox нет: режим KeyDB
+Streams убран (KeyDB эфемерный, шина на нём теряла бы события при рестарте). Шина заказчика
+(Kafka/ESB) подключается новой реализацией транспорта; конверт, ретраи и DLQ не меняются,
+`event_id` служит ключом сообщения.
 
 ```sql
 CREATE TABLE integration_event (
@@ -1307,7 +1705,8 @@ CREATE TABLE notification_rule (
     recipient_type  text NOT NULL CHECK (recipient_type IN
                     ('responsible',             -- ответственный по заявке
                      'manager_of_responsible',  -- руководитель КАМа (app_user.manager_id)
-                     'role',                    -- все пользователи с realm-ролью
+                     'role',                    -- активные пользователи с ролью CRM (код app_role);
+                                                --   для событий заявки — только видящие её (3.4)
                      'user',                    -- конкретный app_user.id
                      'tg_username',             -- прямой @ник
                      'email')),                 -- прямой адрес
@@ -1347,6 +1746,8 @@ CREATE TABLE notification (
 CREATE UNIQUE INDEX uq_notification_dedup ON notification (dedup_key) WHERE dedup_key IS NOT NULL;
 CREATE INDEX ix_notification_pending ON notification (created_at) WHERE status = 'pending';
 CREATE INDEX ix_notification_entity  ON notification (entity_type, entity_id, created_at);
+-- 0009: начало журнала напоминаний для вкладки «Просрочки» (min(created_at) по request.stuck)
+CREATE INDEX ix_notification_stuck_created ON notification (created_at) WHERE event_type = 'request.stuck';
 
 CREATE TABLE app_setting (
     key         text PRIMARY KEY,
@@ -1373,18 +1774,26 @@ CREATE TABLE app_setting (
   → `workflow_stage.stuck_threshold_days` → `workflow.stuck_threshold_days`
   → `app_setting['stuck_threshold_days_default']`.
 
-Seed `app_setting`:
+Seed `app_setting` (`APP_SETTINGS` в `app/tools/seed.py`):
 
 ```json
 {"stuck_threshold_days_default": {"value": 14},
  "stuck_check_enabled": {"value": true},
+ "stuck_escalate_to_manager": {"value": true},
+ "feature_flags": {"auto_ranking": false, "report_pdf": true, "ai_summaries": true},
  "integration_mode": {"value": "http"},
  "file_delivery": {"value": "proxy"},
  "notification_quiet_hours": {"value": {"from": "21:00", "to": "09:00", "tz": "Europe/Moscow"}}}
 ```
 
-(`notification_quiet_hours` — зарезервированная настройка, в MVP не применяется; на вопрос жюри
-показывается как задел канала.)
+- `integration_mode` принимает только `http` (outbox PostgreSQL → HTTP + HMAC, 9.3); другое
+  значение `PUT /admin/settings` отклоняет. Миграция 0003 привела сохранённое `stream` к `http`.
+- `feature_flags.report_pdf` закрывает только общую табличную PDF-выгрузку дашборда; PDF отчёта
+  «Активность КАМов» флагом не закрыт.
+- `feature_flags.ai_summaries` — «Сводка ИИ» в отчёте «Активность КАМов» (9.7): по умолчанию в
+  коде выключен (`KNOWN_FLAGS`), демо-сид включает. Заменил пустой заблокированный флаг
+  `llm_features` (за ним не было кода); сохранённый ключ `llm_features` игнорируется.
+- `notification_quiet_hours` — зарезервированная настройка, в MVP не применяется.
 
 Seed `notification_rule` (дефолтные правила из решения кейсодержателя):
 
@@ -1422,6 +1831,126 @@ CREATE INDEX ix_audit_actor  ON audit_log (actor_user_id, created_at);
 CREATE INDEX ix_audit_action ON audit_log (action, created_at);
 ```
 
+### 9.6 `idempotency_key` — ключи идемпотентности мутаций (миграция 0003)
+
+Хранилище заголовка `Idempotency-Key` (контракт — api-contract.md §1.6): клиент повторяет
+мутацию (POST/PUT/PATCH/DELETE под `/api/v1/`) с тем же ключом и получает сохранённый ответ, а
+не второе выполнение. Без заголовка запрос обрабатывается как обычно. Хранится в
+PostgreSQL, а не в KeyDB: KeyDB эфемерный (`emptyDir`, его падение не роняет CRM), а гарантия
+«не выполнить дважды» должна переживать рестарты и быть общей для всех реплик. PG даёт для этого
+UNIQUE, `INSERT … ON CONFLICT` и `SELECT … FOR UPDATE`.
+
+```sql
+CREATE TABLE idempotency_key (
+    id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    principal             text NOT NULL,      -- 'sub:<keycloak sub>' (люди и сервисные клиенты)
+                                              -- | 'internal' (X-Internal-Token)
+    idem_key              text NOT NULL,      -- значение заголовка, 1..255 печатных ASCII
+    method                text NOT NULL,
+    path                  text NOT NULL,      -- путь + '?query'
+    request_hash          char(64) NOT NULL,  -- sha256: метод, путь, query, media-type, дайджест тела
+    status                text NOT NULL DEFAULT 'processing',
+    lock_token            uuid,               -- аренда обработки: токен владельца
+    locked_until          timestamptz,        -- продлевается каждые lease/4 с
+    response_status       smallint,
+    response_headers      jsonb,              -- [[name, value], …] без служебных заголовков
+    response_body         bytea,              -- Fernet-шифртекст: ответ может содержать ПДн
+    response_body_omitted boolean NOT NULL DEFAULT false,  -- ответ > 1 МиБ или не UTF-8
+    first_request_id      text,
+    replay_count          integer NOT NULL DEFAULT 0,
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    completed_at          timestamptz,
+    expires_at            timestamptz NOT NULL,             -- created_at + 24 ч
+    CONSTRAINT uq_idempotency_key_principal_key UNIQUE (principal, idem_key),
+    CONSTRAINT ck_idempotency_key_status CHECK (status IN ('processing', 'completed')),
+    CONSTRAINT ck_idempotency_key_completed_response
+        CHECK (status <> 'completed' OR response_status IS NOT NULL),
+    CONSTRAINT ck_idempotency_key_key_length CHECK (char_length(idem_key) BETWEEN 1 AND 255)
+);
+CREATE INDEX ix_idempotency_key_expires_at ON idempotency_key (expires_at);
+```
+
+Правила (`app/core/idempotency.py`, `app/core/idempotency_store.py`):
+
+- **Область ключа — принципал.** Ключ одного пользователя не даёт доступа к ответу другого.
+  Внешних ключей нет: принципал — строка, им бывает и сервис по `X-Internal-Token`.
+- **Три фазы, каждая — короткая транзакция на своём соединении**: заявка на ключ (`INSERT … ON
+  CONFLICT`, строка `processing` с арендой), выполнение обработчика под арендой, сохранение
+  ответа. Во время работы обработчика соединение не держится; время — `now()` на стороне БД.
+- **Решение по существующей строке**: истёк `expires_at` — строка переиспользуется; другой
+  отпечаток запроса — 422 `idempotency_key_reused`; `completed` — повтор сохранённого ответа с
+  `Idempotent-Replayed: true` (`replay_count + 1`); аренда жива — 409 `idempotency_in_progress`
+  с `Retry-After: 1`; аренда истекла — запрос выполняется заново новым владельцем.
+- **Сохраняются только 2xx.** При 4xx/5xx и исключении строка удаляется, повтор безопасен.
+  Ответ больше 1 МиБ или не в UTF-8 не сохраняется (`response_body_omitted`): повтор получает
+  409 `idempotency_replay_unavailable`.
+- **Хранилище недоступно** — fail-closed: 503 `service_unavailable` с `Retry-After: 2`.
+- **Очистка**: CronJob `idempotency-purge` ежечасно (`15 * * * *`) вызывает
+  `POST /api/v1/internal/jobs/purge-idempotency-keys`, тот удаляет строки с `expires_at < now()`
+  пачками по 5 000 по индексу `ix_idempotency_key_expires_at`.
+- Настройки: `IDEMPOTENCY_TTL_HOURS` (24, допустимо 1–168), `IDEMPOTENCY_LEASE_SECONDS` (60),
+  `IDEMPOTENCY_MAX_RESPONSE_BYTES` (1 МиБ). Вебхуки `/integrations/{lms,cms}/webhook` исключены:
+  у них своя идемпотентность по `event_id` (9.3).
+
+### 9.7 `ai_summary_job` — задачи «Сводки ИИ» (миграция 0010)
+
+Задача текстовой сводки фактов по отчёту «Активность КАМов» (api-contract.md §7.2.3): по
+команде (`kind = 'team'`) или по КАМу (`'kam'`). В таблице, а не в KeyDB: POST и опрос GET
+попадают в разные реплики и воркеры; KeyDB настроен без persistence и с вытеснением LRU, а
+обёртки кэша молча глотают сбои — статус задачи пропал бы посреди опроса. Нужны атомарная
+дедупликация задач в полёте между репликами (частичный UNIQUE + `INSERT … ON CONFLICT DO
+NOTHING`) и кэш на час, который переживает рестарты.
+
+```sql
+CREATE TABLE ai_summary_job (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind           text NOT NULL CHECK (kind IN ('team','kam')),
+    kam_id         uuid REFERENCES app_user(id) ON DELETE CASCADE,
+    scope_key      text NOT NULL,                 -- DealScope.cache_key() области сводок
+    params         jsonb NOT NULL,                -- фильтры после подстановки периода
+    mode           text NOT NULL CHECK (mode IN ('auto','rules')),
+    provider       text NOT NULL CHECK (provider IN ('gigachat','rules','stub')),
+    prompt_version text NOT NULL,
+    input_sha256   text NOT NULL,                 -- версия данных = sha256 канонических фактов
+    cache_key      text NOT NULL,                 -- sha256(kind|kam_id|scope_key|params|provider|prompt_version|input_sha256)
+    status         text NOT NULL CHECK (status IN ('queued','running','done','failed')),
+    facts          jsonb NOT NULL,                -- ровно то, что уходит/ушло наружу (без ПДн)
+    aliases        jsonb NOT NULL,                -- {"КАМ-01": "<uuid>"} — ФИО в таблице нет
+    result         jsonb,                         -- разделы С ПСЕВДОНИМАМИ + checks + model + source
+    error_code     text,
+    error_message  text,
+    model          text,
+    tokens_in      int, tokens_out int, latency_ms int,
+    attempts       int NOT NULL DEFAULT 0,
+    requested_by   uuid NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    started_at     timestamptz,
+    finished_at    timestamptz,
+    CONSTRAINT ck_ai_summary_job_kam CHECK ((kind = 'kam') = (kam_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX uq_ai_summary_job_inflight ON ai_summary_job (cache_key) WHERE status IN ('queued','running');
+CREATE INDEX ix_ai_summary_job_cache   ON ai_summary_job (cache_key, finished_at DESC) WHERE status = 'done';
+CREATE INDEX ix_ai_summary_job_queue   ON ai_summary_job (created_at) WHERE status IN ('queued','running');
+CREATE INDEX ix_ai_summary_job_created ON ai_summary_job (created_at);
+```
+
+Правила (`app/modules/ai_summary/service.py`):
+
+- **Кэш** — готовая задача (`done`, `finished_at` не старше `AI_SUMMARY_CACHE_TTL_SECONDS`,
+  1 ч) с тем же `cache_key`; `force` идёт мимо кэша. Провал не кэшируется.
+- **Дедупликация** — `INSERT … ON CONFLICT (cache_key) WHERE status IN ('queued','running') DO
+  NOTHING RETURNING id`: строка не вставилась — запрос присоединяется к задаче в полёте.
+- **Выполнение** — `UPDATE … SET status='running' WHERE status='queued'` (одна реплика берёт
+  задачу), вызов шлюза вне транзакции, запись результата и аудит `ai.summary_generated` одной
+  транзакцией.
+- **Ленивое обслуживание** при создании задачи: `queued`/`running` старше
+  `AI_SUMMARY_JOB_STALE_SECONDS` (15 мин) → `failed`, `error_code = 'interrupted'` (то же при
+  чтении); строки старше `AI_SUMMARY_RETENTION_DAYS` (7) удаляются.
+- **ПДн**: в `facts` только агрегаты, очищенные названия этапов, метки процессов и псевдонимы;
+  в `aliases` — псевдоним → id; ФИО подставляются при чтении из `app_user`. Сброс стенда
+  очищает таблицу (её нет в `RESET_KEEP_TABLES`); удаление пользователя удаляет его задачи
+  (CASCADE). Аудит ссылается на задачу по `entity_id` без FK.
+
 ---
 
 ## 10. Кэширование в KeyDB
@@ -1437,17 +1966,27 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
 | `crm:v1:dict:universities` | список вузов (id, name, region) для селектов | 10 мин | `DEL` при CRUD вуза и после импорта |
 | `crm:v1:dict:products`, `crm:v1:dict:programs`, `crm:v1:dict:interaction_types`, `crm:v1:dict:federal_projects` | справочники для селектов; программы — с `priority_rank` (порядок в выдаче) | 10 мин | `DEL` при CRUD, смене приоритета |
 | `crm:v1:deal:{id}` | карточка заявки (JSON API-ответа; клиент — `display_name`) | 5 мин | `DEL` при любой записи в заявку: переход, правка, комментарий |
-| `crm:v1:deal:list:{hash}` | страница списка/канбана (hash = sha1 канонизированных фильтров + роль-скоуп) | 60 с | по TTL (списки волатильны, точечная инвалидация не окупается) |
-| `crm:v1:dash:{scope}:{hash}` | агрегаты дашбордов ECharts (конверсия, воронка, зависшие) | 60 с | по TTL |
+| `crm:v1:deal:list:{hash}` | страница списка/канбана (hash = sha1 канонизированных фильтров + область RBAC, 3.4) | 60 с | по TTL (списки волатильны, точечная инвалидация не окупается) |
+| `crm:v1:dash:{code}:{hash}` | агрегаты отчётов (`code` — код отчёта, в т. ч. `kam-activity`, `kam-activity-summary` и `interactions`); `hash` = sha1 параметров (списки id фильтров) и области RBAC (`DealScope.cache_key()`, 3.4), у `programs-demand` и `dashboard` — ещё состояние фичефлага `auto_ranking` | 60 с | по TTL; `seed --reset` чистит `dash:*` |
 | `crm:v1:tg:link:{code}` | one-time код привязки бота → `user_id` (код — 6 цифр) | 10 мин | `GETDEL` при использовании (атомарная одноразовость) |
 | `crm:v1:rl:tg:{chat_id}` | rate-limit команд бота (`INCR` + `EXPIRE`) | 60 с | по TTL |
-| `crm:v1:idem:{key}` | Idempotency-Key мутирующих POST → hash тела + сохранённый ответ | 24 ч | по TTL |
 | `crm:v1:intg:seen:{event_id}` | быстрая дедупликация интеграционных событий (`SET NX`) | 7 сут | по TTL (истина — `uq_integration_event_event_id` в PG) |
-| `crm:v1:events` (pub/sub) | fan-out UI-событий на SSE-хабы всех реплик backend (`GET /api/v1/events/stream`) | — | — |
-| `crm:v1:jwks:crm` | JWKS realm'а Keycloak для локальной валидации JWT | 10 мин | по TTL; форс-`DEL` при 401 с неизвестным `kid` |
+| `crm:v1:events` (pub/sub) | fan-out UI-событий на SSE-хабы всех реплик backend (`GET /api/v1/events/stream`); `access.changed` заодно сбрасывает кэш каталога ролей на каждой реплике | — | — |
 | `crm:v1:stuck:guard:{deal_id}` | быстрый guard от гонки повторной эскалации между репликами | = `repeat_every_days` | по TTL (истина — `uq_notification_dedup` в PG) |
 | `crm:v1:notify` (pub/sub) | сигнал notification-service «есть pending» | — | — |
 | `crm:v1:export:{session_id}` | статус долгого экспорта отчёта для polling'а UI | 30 мин | по TTL |
+
+Не в KeyDB, осознанно:
+
+- **ключи идемпотентности** — таблица `idempotency_key` в PG (9.6): гарантия «не выполнить
+  дважды» не может жить в кэше без персистентности (прежний ключ `crm:v1:idem:{key}` убран);
+- **каталог ролей и прав** — память процесса backend, TTL 5 с, сброс по SSE `access.changed`
+  (3.4): лишний сетевой запрос на каждый HTTP-запрос не нужен;
+- **шина интеграций** — режима KeyDB Streams нет, источник истины — outbox `integration_event` (9.3);
+- **задачи и кэш «Сводки ИИ»** — таблица `ai_summary_job` (9.7): статус задачи нужен всем
+  репликам и не должен пропадать при вытеснении LRU;
+- **JWKS realm'а Keycloak** — память процесса (`JwksCache` в `app/core/security.py`), TTL 10 мин,
+  внеочередное обновление при токене с неизвестным `kid`.
 
 Правила:
 
@@ -1455,12 +1994,15 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
    иначе конкурентный читатель успеет положить в кэш старую версию.
 2. Кэш — необязательный уровень: любой `GET`-промах или недоступность KeyDB деградирует в чтение
    из PostgreSQL (обёртка с try/except и коротким connect-timeout 50 мс). Падение KeyDB не
-   роняет CRM — важный аргумент отказоустойчивости на защите.
+   роняет CRM.
 3. Горизонтальное масштабирование (план на 300+ пользователей): все реплики backend'а делят
-   один KeyDB — согласованность инвалидации автоматическая, локальных in-memory кэшей нет.
+   один KeyDB — согласованность инвалидации автоматическая. В памяти процесса живут только
+   короткоживущие каталог ролей (TTL 5 с, сброс на всех репликах по `access.changed`) и JWKS.
 4. Что кейсодержатель называл «кэширование карточек, документов, страниц»: карточки —
    `deal:{id}`, документы — presigned URL не кэшируем (короткий TTL сам по себе), страницы —
-   `deal:list:{hash}` и `dash:{hash}`.
+   `deal:list:{hash}` и `dash:{code}:{hash}`.
+5. Кэш отчётов разделён по области RBAC: в `hash` входит область зрителя, поэтому КАМ с областью
+   «только свои» и руководитель с `reports:all` не получают чужой агрегат.
 
 ---
 
@@ -1471,7 +2013,7 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
    - `b2b` «Взаимодействие с вузами»: `new` Новая → `first_contact` Первичный контакт →
      `negotiation` Переговоры → `contract_prep` Подготовка договора →
      `contract_signed` Договор подписан → `in_learning` Передано в обучение
-     (`triggers_lms_handover=true`) → `completed` Завершена (terminal, won);
+     (`triggers_lms_handover=true`, порог зависания 120 дней) → `completed` Завершена (terminal, won);
      `rejected` Отказ (terminal, lost).
      Ветвления: из `first_contact`, `negotiation`, `contract_prep` — в `rejected`
      (`requires_comment`). Возврат: `contract_prep → negotiation` (`is_return`, «Вернуть в переговоры»).
@@ -1483,15 +2025,35 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
 3. **`app_setting`** и **`notification_rule`** — из 9.4.
 4. **Пользователи** приходят из Keycloak realm-JSON (admin, head_kam, 2×kam, observer) —
    зеркалируются при первом логине; для демо-данных фикстура создаёт их же
-   в `app_user` с проставленными `manager_id` (kam → head_kam).
-5. **Демо-домен**: 5–10 вузов, 3 продукта, 6 программ (с приоритетами), 2 договора
-   (один — с 3 продуктами: демонстрация «1 договор — N продуктов»), 15–20 заявок по обеим
-   воронкам с историей переходов (включая одну «зависшую» старше порога — для демо эскалации),
-   20 студентов по всем статусам воронки, 2 федпроекта, 4 активности с расписанием.
+   в `app_user` с проставленными `manager_id` (kam → head_kam). Роли из realm становятся
+   стартовым назначением, дальше роли назначаются в CRM (3.1).
+5. **Каталог ролей и прав** — не сид, а миграции 0004 (60 прав, 4 системные роли, 3.6) и 0006
+   (`universities:assign`). Демо-сид
+   сверяет каталог с кодом (`seed_rbac_catalog`) и добавляет демо-роли «КАМ B2B» (`kam_b2b`) и
+   «КАМ B2C» (`kam_b2c`) с их кодами в `allowed_roles` переходов (3.3).
+6. **Демо-домен**: 8 базовых вузов, 3 продукта, 6 программ (с приоритетами), 2 договора
+   (один — с 3 продуктами: демонстрация «1 договор — N продуктов»), 18 заявок по обеим
+   воронкам с историей переходов (включая «зависшие» старше порога — для демо эскалации),
+   20 студентов по всем статусам воронки, 2 федпроекта, 4 активности с расписанием;
+   10 ИТ-направлений (4.5.1) с привязкой всех демо-программ (по одному направлению) и
+   продуктов (по нескольку).
+7. **История активности КАМов** (`app/tools/seed_activity.py`, вызывается из демо-сида) — данные
+   для отчёта «Активность КАМов»: 18 дополнительных КАМов (`kam03…kam20@demo`, зеркала без учётки
+   Keycloak — войти под ними нельзя), 48 закреплённых вузов (всего на стенде 56), заявки обеих
+   воронок с историей переходов (закрытия — 3–20 дней назад, зависших не больше трети
+   открытых), договоры вузов, подписавших договор по истории, комментарии, файлы, прошедшие
+   мероприятия с вузами. План детерминированный (фиксированное зерно), повторный запуск ничего
+   не дублирует.
+8. **Сброс к показу** — `python -m app.tools.seed --reset [--anchor ГГГГ-ММ-ДД]`
+   (`make demo-reset`, deployment.md §3.8): одной транзакцией очищает доменные таблицы (без
+   каскада) и пересевает их от якорной даты (`DEMO_ANCHOR_DATE`, 09:00 МСК). Сохраняются
+   `app_user` (`keycloak_sub`, привязки Telegram), каталог ролей и прав, настройки (кроме
+   ключей сида), строки `workflow` и `audit_log`; системные роли возвращаются к набору из
+   кода, демо-роли — к правам КАМа, прочие свои роли удаляются. Аудит — `stand.demo_reset`.
 
 ---
 
-## 12. Трассировка на решения кейсодержателя (PLAN.md, раздел 2–4)
+## 12. Трассировка на решения кейсодержателя (Q&A 16.09.2026) и требования ТЗ
 
 | Решение кейсодержателя | Где покрыто в модели |
 |---|---|
@@ -1499,17 +2061,17 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
 | В B2C добавляемые варианты взаимодействия | справочник `interaction_type` + `deal.interaction_type_id` (4.4) |
 | Workflow един, версионирование запрещено | нет version-колонок; одна актуальная схема; soft-delete — только целостность истории (5.1) |
 | Ветвления и возвраты | несколько `workflow_transition` из этапа; `is_return` (5.1) |
-| Изменение «на лету», заявки сопоставляются, работа не встаёт | правила миграции 5.3: одна транзакция, `FOR UPDATE`, `kind='system_migration'` |
-| Переименование/удаление статуса — только с апрувом админа | `workflow_change_request` + state-машина (5.2) |
+| Изменение «на лету», заявки сопоставляются, работа не встаёт | правила миграции 5.3: одна транзакция под эксклюзивным локом воронки, перенос одним SQL-оператором на этап, `kind='system_migration'` |
+| Переименование/удаление статуса — только с апрувом админа | `workflow_change_request` + state-машина; согласует право `workflow:approve` (5.2) |
 | При удалении статуса заявки → соседний (лучше предыдущий) | `migrate_to_status_id` в операции пакета, дефолт — предыдущий сосед по `sort_order` (5.3 п.1) |
 | Один вуз — обычно один договор, продуктов несколько, расширяются | `contract` + `contract_product` (M:N, `added_at/added_by`); число договоров не ограничено схемой (4.6) |
 | Параллельных взаимодействий ≤ 2, не переусложнять | несколько открытых `deal` на вуз, без constraint, UI-счётчик (6.1) |
-| Keycloak self-hosted, RBAC по ролям | `app_user` — зеркало (sub, roles[], upsert при логине), роли realm (3) |
-| UI строго по ролям | `roles[]` + скоупы доступа к ПДн (8.3); сама отрисовка — фронт |
+| Keycloak self-hosted, RBAC по ролям | Keycloak — вход, `app_user` — upsert по `keycloak_sub`; роли и права — в БД CRM: `app_role`, `app_permission`, `app_role_permission`, назначения `app_user.roles[]` (3) |
+| UI строго по ролям | права по процессам и область «все/свои» (3.4), скоупы доступа к ПДн (8.3); сама отрисовка — фронт |
 | Интеграции двусторонние, JSON: статус, ответственный, вуз, программа, продукт + ключи БД и S3 | `integration_event` (outbox/inbox), `external_link`, пример payload (9.3) |
 | Обогащение — разовая предзагрузка через диалог (JSON/таблицы) | `import_session.entity_type IN ('universities', 'dictionary:*')` (9.1) |
 | XLSX и XLS, битые кодировки, интерактивный маппинг | `import_session`: `file_format` c 'xls', `detected_encoding`, `column_mapping`, машина состояний (9.1) |
-| Дашборды с фильтрами и экспортом | индексы аналитики (`ix_dsh_to_stage`, `ix_deal_board`), кэш `dash:{hash}`, `file_object.entity_type='report'` |
+| Дашборды с фильтрами и экспортом | индексы аналитики (`ix_dsh_to_stage`, `ix_deal_board`; под отчёт «Активность КАМов» — `ix_deal_responsible_created`, `ix_activity_university`, `ix_activity_responsible`), кэш `dash:{code}:{hash}`, `file_object.entity_type='report'` (6.1, 7.3, 10) |
 | PostgreSQL + MinIO | вся схема; `file_object` с ключами S3 (9.2) |
 | Студенты ФИО+email, шифрование/обезличивание | `student.*_enc`, HMAC-поиск, `display_name`-псевдонимизация (7.1, 8) |
 | Безопасность библиотек, закрытый контур | `cryptography`/Fernet офлайн; ключи из k8s Secret; presigned MinIO (8.2, 8.5) |
@@ -1527,17 +2089,33 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
 | Файлы студентов (резюме, сертификаты) в MinIO | `file_object.entity_type='student'` (9.2) |
 | Уведомления по talent pool | `event_type='student.talent_pool_added'` (9.4) |
 
+Требования ТЗ, закрытые схемой в октябре 2026 (своими словами; сводное соответствие ТЗ —
+`docs/evidence/compliance.md`):
+
+| Требование ТЗ | Где покрыто в модели |
+|---|---|
+| Каталог ИТ-направлений рядом с каталогами вузов, продуктов и ответственных | `it_direction`, `program.direction_id`, `product_direction` (4.5.1, миграция 0007) |
+| Файлы в статусах заявки | `file_object.stage_history_id` → `deal_stage_history` (9.2, миграция 0006) |
+| Смена ответственных за вузы — полномочие руководителя | право `universities:assign` (3.3, миграция 0006), аудит `university.kam_changed` (9.5) |
+| Загрузка таблицы КАМов: договор, ИТ-продукт, лицензия, статус передачи | лицензия в строке `contract_product` (4.6), `import_session.entity_type='kam_catalog'` (9.1, миграция 0008) |
+| Долгие этапы базового процесса (обучение, сопровождение) не «зависают» ложно | порог этапа `workflow_stage.stuck_threshold_days` 1–365 (5.1, миграция 0006) |
+
 ---
 
 ## 13. Сводка объектов
 
-35 таблиц + 2 расширения (`pg_trgm`; `gen_random_uuid` встроен). Домены:
+38 таблиц (31 из начальной миграции + `idempotency_key` + три таблицы ролей и прав + две
+таблицы ИТ-направлений + `ai_summary_job`) и одно расширение — `pg_trgm`; `gen_random_uuid()`
+встроен в PostgreSQL 13+. Модели — `backend/app/models/` (регистрация всех 38 —
+`app/models/__init__.py`).
+Домены:
 
 | Домен | Таблицы |
 |---|---|
 | Пользователи | `app_user` |
+| Роли и права | `app_role`, `app_permission`, `app_role_permission` |
 | Организации/клиенты | `university`, `university_contact`, `counterparty`, `interaction_type` |
-| Каталог/договоры | `product`, `program`, `contract`, `contract_product` |
+| Каталог/договоры | `product`, `program`, `contract`, `contract_product` (с лицензиями), `it_direction`, `product_direction` |
 | Workflow | `workflow`, `workflow_stage`, `workflow_transition`, `workflow_change_request` |
 | Заявки | `deal`, `deal_stage_history`, `deal_comment` |
 | Talent pool | `student`, `student_status_history`, `federal_project`, `activity`, `activity_schedule`, `student_activity` |
@@ -1546,9 +2124,33 @@ CREATE INDEX ix_audit_action ON audit_log (action, created_at);
 | Интеграции | `integration_event`, `external_link` |
 | Нотификации/настройки | `notification_rule`, `notification`, `app_setting` |
 | Аудит | `audit_log` |
+| Идемпотентность API | `idempotency_key` |
+| Сводки ИИ | `ai_summary_job` |
 
-Порядок миграций Alembic (границы FK): `app_user` → справочники (`university`, `counterparty`,
+Миграции Alembic (`backend/alembic/versions/`), каждая обратима (`downgrade`):
+
+| Ревизия | Что делает |
+|---|---|
+| `0001` initial schema | 31 таблица, индексы и CHECK этого документа, `pg_trgm` |
+| `0002` | маскирует ПДн блока `lead` в уже записанных `integration_event.payload`; даунгрейд — no-op (открытые ПДн не восстанавливаются намеренно) |
+| `0003` idempotency keys | таблица `idempotency_key` (9.6); `app_setting['integration_mode']` → `http` (не откатывается: `stream` эффекта не имел) |
+| `0004` rbac roles and permissions | `app_permission`, `app_role`, `app_role_permission`, индекс `ix_deal_pipeline_responsible`; засев 60 прав и 4 системных ролей; чистка `app_user.roles` от кодов вне каталога (3.6) |
+| `0005` kam activity indexes | только индексы: `ix_deal_responsible_created`, `ix_activity_university`, `ix_activity_responsible` (6.1, 7.3) |
+| `0006` files in statuses and kam assign | `file_object.stage_history_id` + частичный индекс и бэкфилл по истории (9.2); право `universities:assign` и его выдача ролям с `crm:write_any` и `admin` (3.3); CHECK порога этапа 1–365 (5.1); даунгрейд приводит пороги больше 60 к 60 |
+| `0007` it directions | таблицы `it_direction`, `product_direction`, колонка `program.direction_id` с индексом (4.5.1); описание права `admin:dictionaries`; новых прав нет |
+| `0008` contract product license | поля лицензии в `contract_product` с CHECK и частичным индексом по дате окончания (4.6); `kam_catalog` в CHECK `import_session.entity_type` (9.1); даунгрейд удаляет сессии `kam_catalog` |
+| `0009` notification stuck index | только индекс: частичный `ix_notification_stuck_created (created_at) WHERE event_type = 'request.stuck'` — начало журнала напоминаний для вкладки «Просрочки» (api-contract.md §7.2.2) |
+| `0010` ai summary | таблица `ai_summary_job` с частичным UNIQUE задач в полёте и индексами кэша, очереди и очистки (9.7); право `reports:ai_summary` и его выдача `admin` и `head_kam` (3.3); даунгрейд удаляет право (каскад из ролей) и таблицу |
+
+Обратимость `upgrade head → downgrade base → upgrade head` проверяет `tests/db/test_db_smoke.py`;
+тесты с БД создают схему настоящими миграциями, а не `create_all`.
+
+Порядок создания таблиц в 0001 (границы FK): `app_user` → справочники (`university`, `counterparty`,
 `interaction_type`, `product`, `program`, `federal_project`) → `contract`/`contract_product` →
 workflow-блок → `deal`-блок → talent-pool-блок → сервисные (`file_object` до `import_session`;
 `import_session` до `student.import_session_id` — этот FK добавляется отдельным `ALTER` после
-создания обеих таблиц, либо `use_alter=True` в SQLAlchemy).
+создания обеих таблиц, либо `use_alter=True` в SQLAlchemy). Таблицы ролей (0004) ссылаются на
+`app_user` (`created_by`, `updated_by`), `ai_summary_job` (0010) — на `app_user` (`kam_id`,
+`requested_by`); `idempotency_key` (0003) внешних ключей не имеет;
+`it_direction` (0007) создаётся до `program.direction_id` и `product_direction`, которые на неё
+ссылаются.

@@ -95,7 +95,7 @@ export function SearchCommand(): ReactNode {
         data-tour="header-search"
         aria-label="Глобальный поиск"
         className={cn(
-          'inline-flex h-9 items-center gap-2 rounded-md border border-input bg-card px-3 text-sm text-muted-foreground',
+          'inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-input bg-card px-3 text-sm text-muted-foreground',
           'transition-[color,background-color,border-color,box-shadow] duration-150 hover:bg-accent hover:text-accent-foreground',
           'w-9 justify-center px-0 md:w-52 md:justify-start md:px-3 lg:w-64',
         )}

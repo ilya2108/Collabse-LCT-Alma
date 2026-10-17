@@ -18,7 +18,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover';
 /**
  * Контролы панели фильтров дашборда (redesign.md §6.3, §5.1):
  * — RangePicker → Popover + Calendar (react-day-picker, locale ru) с
- *   пресетами периодов «Месяц/Квартал/Год» в футере поповера;
+ *   пресетами скользящих периодов «30 дней / 3 месяца / 12 месяцев» в футере
+ *   поповера (не календарные: календарный «Месяц» — у отчёта «Активность КАМов»);
  * — мультиселекты КАМ/вуз/продукт → Popover + Command (паттерн Combobox)
  *   с чипом выбранного и счётчиком «+N» в триггере.
  */
@@ -31,10 +32,11 @@ interface DateRangeFilterProps {
   onChange: (from: string | null, to: string | null) => void;
 }
 
+// «30 дней» — по сегодня включительно, как период KPI по умолчанию (DEFAULT_KPI_DAYS)
 const RANGE_PRESETS = [
-  { label: 'Месяц', months: 1 },
-  { label: 'Квартал', months: 3 },
-  { label: 'Год', months: 12 },
+  { label: '30 дней', amount: 29, unit: 'day' },
+  { label: '3 месяца', amount: 3, unit: 'month' },
+  { label: '12 месяцев', amount: 12, unit: 'month' },
 ] as const;
 
 export function DateRangeFilter({ from, to, onChange }: DateRangeFilterProps): ReactNode {
@@ -76,7 +78,7 @@ export function DateRangeFilter({ from, to, onChange }: DateRangeFilterProps): R
             )
           }
         />
-        <div className="flex items-center gap-1.5 border-t border-border p-2">
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
           {RANGE_PRESETS.map((preset) => (
             <Button
               key={preset.label}
@@ -84,7 +86,7 @@ export function DateRangeFilter({ from, to, onChange }: DateRangeFilterProps): R
               size="sm"
               onClick={() => {
                 onChange(
-                  dayjs().subtract(preset.months, 'month').format(DATE_FMT),
+                  dayjs().subtract(preset.amount, preset.unit).format(DATE_FMT),
                   dayjs().format(DATE_FMT),
                 );
                 setOpen(false);
@@ -192,7 +194,11 @@ export function MultiFilter({
           </span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-64 p-0">
+      <PopoverContent
+        align="start"
+        collisionPadding={16}
+        className="w-88 max-w-[calc(100vw-2rem)] p-0"
+      >
         <Command shouldFilter={!onSearch}>
           <CommandInput placeholder="Найти…" onValueChange={onSearch} />
           <CommandList>
@@ -217,7 +223,9 @@ export function MultiFilter({
                     >
                       {active ? <Check className="size-3" /> : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    <span className="min-w-0 flex-1 truncate" title={option.label}>
+                      {option.label}
+                    </span>
                   </CommandItem>
                 );
               })}

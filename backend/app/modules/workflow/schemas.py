@@ -12,12 +12,31 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
+from app.core.rbac_catalog import ROLE_CODE_PATTERN
 from app.modules.workflow.conditions import validate_condition_syntax
 
-# роли, допустимые в allowed_roles ребра (V-7, E_UNKNOWN_ROLE)
-TRANSITION_ROLES = ("admin", "head_kam", "kam")
+# Роли в allowed_roles ребра — коды динамического каталога ролей (app_role). Pydantic
+# проверяет только формат кода; существование роли и право `requests:transition` в процессе
+# проверяет V-7 под эксклюзивным локом воронки (строгий — операции пакета, мягкий — живые
+# строки; graph.check_operation_roles / graph.validate_graph).
+# DEFAULT_TRANSITION_ROLES — системные роли с переходами: значение по умолчанию для чистых
+# проверок без БД (юнит-тесты).
+DEFAULT_TRANSITION_ROLES = ("admin", "head_kam", "kam")
+MAX_ALLOWED_ROLES = 20
+# порог зависания этапа, дни: долгие этапы («Обучение», «Сопровождение внедрения») живут
+# месяцами; CHECK в БД — тот же предел (миграция 0006)
+MAX_STAGE_STUCK_DAYS = 365
+
+RoleCode = Annotated[str, StringConstraints(pattern=ROLE_CODE_PATTERN)]
 
 DANGEROUS_OPS = frozenset({"rename_status", "delete_status"})
 
@@ -35,6 +54,11 @@ def _check_condition(value: dict[str, Any] | None) -> dict[str, Any] | None:
     return value
 
 
+def _dedupe_roles(value: list[str] | None) -> list[str] | None:
+    """Повтор кода роли в allowed_roles ничего не значит — оставляем первое вхождение."""
+    return None if value is None else list(dict.fromkeys(value))
+
+
 # --- операции над этапами ---------------------------------------------------------------
 
 
@@ -48,7 +72,7 @@ class StatusSpec(_Model):
     position: int = Field(default=0, ge=0)
     is_terminal: bool = False
     terminal_outcome: Literal["won", "lost"] | None = None
-    stuck_threshold_days: int | None = Field(default=None, ge=1, le=60)
+    stuck_threshold_days: int | None = Field(default=None, ge=1, le=MAX_STAGE_STUCK_DAYS)
     triggers_lms_handover: bool = False
     ui_position: dict[str, Any] | None = None
 
@@ -67,7 +91,7 @@ class StatusPatch(_Model):
     color: str | None = Field(default=None, max_length=20)
     description: str | None = None
     position: int | None = Field(default=None, ge=0)
-    stuck_threshold_days: int | None = Field(default=None, ge=1, le=60)
+    stuck_threshold_days: int | None = Field(default=None, ge=1, le=MAX_STAGE_STUCK_DAYS)
     reset_stuck_threshold: bool = False  # явный сброс порога в NULL (наследовать workflow)
     triggers_lms_handover: bool | None = None
     ui_position: dict[str, Any] | None = None
@@ -111,11 +135,12 @@ class TransitionSpec(_Model):
     name: str = Field(min_length=1, max_length=200)
     kind: Literal["forward", "return"] = "forward"
     requires_comment: bool = False
-    allowed_roles: list[Literal["admin", "head_kam", "kam"]] = Field(default_factory=list)
+    allowed_roles: list[RoleCode] = Field(default_factory=list, max_length=MAX_ALLOWED_ROLES)
     condition: dict[str, Any] | None = None
     position: int = Field(default=0, ge=0)
 
     _validate_condition = field_validator("condition")(_check_condition)
+    _dedupe_allowed_roles = field_validator("allowed_roles")(_dedupe_roles)
 
     @model_validator(mode="after")
     def _check_endpoints(self) -> TransitionSpec:
@@ -135,12 +160,13 @@ class TransitionPatch(_Model):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     kind: Literal["forward", "return"] | None = None
     requires_comment: bool | None = None
-    allowed_roles: list[Literal["admin", "head_kam", "kam"]] | None = None
+    allowed_roles: list[RoleCode] | None = Field(default=None, max_length=MAX_ALLOWED_ROLES)
     condition: dict[str, Any] | None = None
     reset_condition: bool = False  # явный сброс condition в NULL
     position: int | None = Field(default=None, ge=0)
 
     _validate_condition = field_validator("condition")(_check_condition)
+    _dedupe_allowed_roles = field_validator("allowed_roles")(_dedupe_roles)
 
 
 class AddTransitionOp(_Model):
@@ -208,6 +234,28 @@ class ImpactOut(BaseModel):
     by_status: list[ImpactByStatus]
 
 
+class MigrationReportByStatus(BaseModel):
+    from_status: str = Field(serialization_alias="from")
+    to_status: str = Field(serialization_alias="to")
+    count: int
+
+
+class MigrationTimings(BaseModel):
+    """Замеры применения пакета (workflow-engine.md §6.8), мс."""
+
+    lock_wait_ms: int  # ожидание эксклюзивного лока воронки (хвост переходов)
+    apply_ms: int  # от захвата лока до COMMIT: схема, перенос, история, сводки, аудит
+    migrate_ms: int  # из них — пакетный перенос заявок (операторы CTE)
+    lock_held_ms: int | None = None  # лок удерживался (до конца COMMIT); только в ответе approve
+
+
+class MigrationReport(BaseModel):
+    migrated_requests: int
+    by_status: list[MigrationReportByStatus]
+    digest_notifications: int | None = None  # сводных уведомлений (одно на получателя)
+    timings: MigrationTimings | None = None
+
+
 class ChangeRequestOut(BaseModel):
     id: UUID
     workflow_id: UUID
@@ -217,21 +265,11 @@ class ChangeRequestOut(BaseModel):
     decided_by: UserRef | None = None
     decision_comment: str | None = None
     operations: list[dict[str, Any]]
-    impact: dict[str, Any] | None = None
+    impact: dict[str, Any] | None = None  # форма ImpactOut, без ключа migration_report
+    migration_report: MigrationReport | None = None  # у применённого пакета (из impact)
     created_at: datetime
     decided_at: datetime | None = None
     applied_at: datetime | None = None
-
-
-class MigrationReportByStatus(BaseModel):
-    from_status: str = Field(serialization_alias="from")
-    to_status: str = Field(serialization_alias="to")
-    count: int
-
-
-class MigrationReport(BaseModel):
-    migrated_requests: int
-    by_status: list[MigrationReportByStatus]
 
 
 class ApplyResultOut(BaseModel):

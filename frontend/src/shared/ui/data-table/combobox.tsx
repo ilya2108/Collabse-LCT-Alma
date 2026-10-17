@@ -5,6 +5,7 @@ import { searchUniversities } from '@/shared/api/endpoints/universities';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { listUsers } from '@/shared/api/endpoints/users';
 import { useAuth } from '@/shared/auth/AuthContext';
+import type { PermissionCode } from '@/shared/auth/permissions';
 import { cn } from '@/shared/lib/cn';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
 import { Button } from '@/shared/ui/button';
@@ -312,17 +313,17 @@ export function ProductCombobox({ value, onChange, placeholder = 'Продукт
 }
 
 interface UserComboboxProps extends EntityComboboxProps {
-  /** Фильтр по роли Keycloak (например, 'kam'). */
-  role?: string;
+  /** Только пользователи, у ролей которых есть право (например, 'requests:kam' — КАМы). */
+  permission?: PermissionCode;
 }
 
-/** Пользователь (КАМ/ответственный): GET /admin/users — только admin/head_kam. */
-export function UserCombobox({ role, value, onChange, placeholder = 'Пользователь', className, disabled }: UserComboboxProps): ReactNode {
-  const { hasRole } = useAuth();
-  const allowed = hasRole('admin', 'head_kam');
+/** Пользователь (КАМ/ответственный): GET /admin/users — право admin:users. */
+export function UserCombobox({ permission, value, onChange, placeholder = 'Пользователь', className, disabled }: UserComboboxProps): ReactNode {
+  const { hasPermission } = useAuth();
+  const allowed = hasPermission('admin:users');
   const query = useQuery({
-    queryKey: ['users-select', role ?? 'all'],
-    queryFn: ({ signal }) => listUsers({ role, signal }),
+    queryKey: ['users-select', permission ?? 'all'],
+    queryFn: ({ signal }) => listUsers({ permission, signal }),
     enabled: allowed,
     staleTime: 60_000,
   });

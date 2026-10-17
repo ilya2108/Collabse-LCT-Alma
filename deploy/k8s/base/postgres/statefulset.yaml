@@ -15,6 +15,9 @@ spec:
       containers:
         - name: postgres
           image: postgres:16-alpine
+          # явный предел соединений вместо умолчания 100: бюджет backend + Keycloak + Jobs
+          # с запасом на rolling update — base/config/app-configmap.yaml, load-report.md §5
+          args: ["postgres", "-c", "max_connections=150"]
           ports: [{containerPort: 5432, name: pg}]
           env:
             - name: POSTGRES_DB

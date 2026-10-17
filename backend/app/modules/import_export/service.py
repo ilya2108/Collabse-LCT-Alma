@@ -20,11 +20,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.cache import get_cache
 from app.core.config import get_settings
-from app.core.errors import conflict, not_found, unprocessable, validation_error
+from app.core.errors import conflict, forbidden, not_found, unprocessable, validation_error
 from app.core.events import EVENT_IMPORT_FINISHED
 from app.core.outbox import DirectRecipient, emit_event_notifications
 from app.core.pii import get_pii_crypto, mask_email, mask_full_name, mask_phone
+from app.core.rbac_catalog import permission_name
 from app.models.service import FileObject, ImportRowError, ImportSession
 from app.models.user import AppUser
 from app.modules.files.service import store_bytes
@@ -33,6 +35,7 @@ from app.modules.import_export.importers import (
     PreparedRow,
     RowIssue,
     get_importer,
+    mask_contacts,
     prepare_context,
 )
 from app.modules.import_export.mapping import (
@@ -54,11 +57,38 @@ SAMPLES_PER_COLUMN = 3
 # статусы, в которых сессию ещё можно менять/отменять
 _EDITABLE_STATUSES = frozenset({"created", "uploaded", "parsed", "mapping", "preview"})
 
-_MASKS = {"full_name": mask_full_name, "email": mask_email, "phone": mask_phone}
+_MASKS = {
+    "full_name": mask_full_name,
+    "email": mask_email,
+    "phone": mask_phone,
+    # «Ответственные от вуза» таблицы КАМов: несколько ФИО с телефонами и почтой
+    "contacts": mask_contacts,
+}
+
+# справочники, которые читаются из кэша KeyDB: после импорта их ключи сбрасываются
+_CACHE_KEYS_BY_ENTITY: dict[str, tuple[str, ...]] = {
+    "universities": ("dict:universities",),
+    "requests_b2b": ("dict:universities", "dict:programs"),
+    "students": ("dict:universities", "dict:programs"),
+    "kam_catalog": ("dict:universities", "dict:products"),
+    "dictionary:products": ("dict:products",),
+    "dictionary:universities_registry": ("dict:universities",),
+}
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def ensure_entity_access(spec: EntityFields, user: AppUser) -> None:
+    """Составной импорт (`kam_catalog`) пишет в несколько реестров: кроме `import:run`
+    нужны права этих реестров из каталога F2 — те же, что у карточек."""
+    missing = [code for code in spec.required_permissions if not user.access.has(code)]
+    if missing:
+        raise forbidden(
+            f"Импорт «{spec.label}» требует прав: "
+            + ", ".join(f"«{permission_name(code)}»" for code in missing)
+        )
 
 
 def _no_data_rows_warning() -> dict[str, str]:
@@ -128,6 +158,7 @@ async def create_import_session(
     user: AppUser,
 ) -> dict[str, Any]:
     spec = entity_fields(entity_type)  # 400 на неподдерживаемый тип
+    ensure_entity_access(spec, user)
     file_format = detect_format(data)
     # CPU-bound парсинг (openpyxl/xlrd) — вне event loop, как error-report/экспорт
     table = await asyncio.to_thread(parse_table, data, file_format)
@@ -183,10 +214,7 @@ async def create_import_session(
             "header_row": table.header_row,
             "columns": sample_columns,
         },
-        "target_fields": [
-            {"field": f.field, "label": f.label, "required": f.required}
-            for f in spec.fields
-        ],
+        "target_fields": _target_fields(spec),
         "suggested_mapping": suggestions,
     }
 
@@ -199,13 +227,21 @@ async def create_import_session(
 async def get_owned_session(
     session: AsyncSession, session_id: uuid.UUID, user: AppUser
 ) -> ImportSession:
-    """Сессии импорта приватны: видит автор, admin — все (§6.1)."""
+    """Сессии импорта приватны: видит автор, с правом `files:others` — все (§6.1)."""
     import_session = await session.get(ImportSession, session_id)
     if import_session is None:
         raise not_found("Сессия импорта не найдена")
-    if "admin" not in (user.roles or []) and import_session.created_by != user.id:
+    if not user.access.has("files:others") and import_session.created_by != user.id:
         raise not_found("Сессия импорта не найдена")  # не раскрываем существование
     return import_session
+
+
+def _target_fields(spec: EntityFields) -> list[dict[str, Any]]:
+    """Целевые поля для шага маппинга; `lookup` — подсказка правила поиска в справочнике."""
+    return [
+        {"field": f.field, "label": f.label, "required": f.required, "lookup": f.lookup}
+        for f in spec.fields
+    ]
 
 
 def serialize_session(import_session: ImportSession) -> dict[str, Any]:
@@ -223,17 +259,12 @@ def serialize_session(import_session: ImportSession) -> dict[str, Any]:
             "encoding": import_session.detected_encoding,
             "columns": import_session.sample_rows or [],
         },
-        "target_fields": [
-            {"field": f.field, "label": f.label, "required": f.required}
-            for f in spec.fields
-        ],
+        "target_fields": _target_fields(spec),
         "mapping": (import_session.column_mapping or {}).get("mapping"),
         "options": import_session.options or {},
         "stats": import_session.stats,
         "error_message": import_session.error_message,
-        "created_at": import_session.created_at.isoformat()
-        if import_session.created_at
-        else None,
+        "created_at": import_session.created_at.isoformat() if import_session.created_at else None,
         "finished_at": import_session.finished_at.isoformat()
         if import_session.finished_at
         else None,
@@ -263,6 +294,14 @@ async def save_mapping(
     import_session.status = "mapping"
     await session.commit()
     return serialize_session(import_session)
+
+
+def _header_row_option(options: dict[str, Any]) -> int | None:
+    """Строка заголовков из опций сессии: None — файл без заголовков (снят флажок в мастере)."""
+    if "header_row" not in options:
+        return 0
+    value = options["header_row"]
+    return None if value is None else int(value)
 
 
 def _stored_entries(import_session: ImportSession) -> list[MappingEntry]:
@@ -299,6 +338,8 @@ async def _prepare_rows(
     session: AsyncSession, import_session: ImportSession, user: AppUser
 ) -> tuple[list[PreparedRow], Any]:
     """Полный dry-run: парсинг с опциями, маппинг, построчная валидация."""
+    # права могли отозвать после создания сессии — проверяем на каждом проходе
+    ensure_entity_access(entity_fields(import_session.entity_type), user)
     entries = _stored_entries(import_session)
     options = import_session.options or {}
     data = await _load_source(session, import_session)
@@ -308,7 +349,7 @@ async def _prepare_rows(
         data,
         import_session.file_format,
         sheet=options.get("sheet", 0),
-        header_row=int(options.get("header_row", 0)),
+        header_row=_header_row_option(options),
         encoding=options.get("encoding") or None,
     )
     if options.get("encoding"):
@@ -327,7 +368,8 @@ async def _prepare_rows(
     skip_empty = ctx.options.skip_empty_rows
 
     prepared: list[PreparedRow] = []
-    header_offset = table.header_row + 2  # 1-based номер первой строки данных
+    # 1-based номер первой строки данных; без заголовков данные начинаются с первой строки
+    header_offset = 1 if table.header_row is None else table.header_row + 2
     for i, raw_row in enumerate(table.rows):
         if skip_empty and not any(v for v in raw_row):
             continue
@@ -399,9 +441,7 @@ async def _persist_row_errors(
     return flat
 
 
-def _build_error_report_xlsx(
-    rows: list[PreparedRow], pii_fields: dict[str, str]
-) -> bytes:
+def _build_error_report_xlsx(rows: list[PreparedRow], pii_fields: dict[str, str]) -> bytes:
     """XLSX-отчёт об ошибках (§6.4): строка, колонка, код, сообщение, данные (маскированы)."""
     import openpyxl
 
@@ -510,7 +550,8 @@ async def run_apply(
     mode: str,
 ) -> dict[str, Any]:
     if import_session.status == "completed":
-        # идемпотентный повтор (Idempotency-Key/ретрай UI): вернуть сохранённый результат
+        # второй эшелон идемпотентности: повтор с новым ключом или после истечения аренды —
+        # вернуть сохранённый результат (первый — IdempotencyMiddleware, api-contract.md §1.6)
         return {
             "state": "completed",
             "result": import_session.stats or {},
@@ -578,6 +619,10 @@ async def run_apply(
         direct_recipients=[DirectRecipient(user=user)],
     )
     await session.commit()
+    # инвалидация кэша справочников — строго после коммита (data-model.md §10)
+    cache_keys = _CACHE_KEYS_BY_ENTITY.get(import_session.entity_type)
+    if cache_keys:
+        await get_cache().delete(*cache_keys)
     return {
         "state": "completed",
         "result": result,
@@ -585,9 +630,7 @@ async def run_apply(
     }
 
 
-async def cancel_session(
-    session: AsyncSession, import_session: ImportSession
-) -> dict[str, Any]:
+async def cancel_session(session: AsyncSession, import_session: ImportSession) -> dict[str, Any]:
     if import_session.status not in _EDITABLE_STATUSES:
         raise conflict("Сессию в финальном состоянии отменить нельзя")
     import_session.status = "cancelled"
@@ -600,7 +643,7 @@ async def list_sessions(
     session: AsyncSession, user: AppUser, *, state: str | None
 ) -> list[dict[str, Any]]:
     stmt = select(ImportSession).order_by(ImportSession.created_at.desc()).limit(100)
-    if "admin" not in (user.roles or []):
+    if not user.access.has("files:others"):
         stmt = stmt.where(ImportSession.created_by == user.id)
     if state:
         db_status = "preview" if state == "validated" else state

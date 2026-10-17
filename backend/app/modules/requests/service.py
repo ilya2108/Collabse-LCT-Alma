@@ -1,8 +1,14 @@
-"""Доменные помощники модуля заявок: доступные переходы, контекст condition-DSL.
+"""Доменные помощники модуля заявок: доступные переходы, контекст condition-DSL,
+клиент B2C-заявки.
 
 `GET /requests/{id}/transitions` — единственный источник действий для карточки и
 канбана: RBAC-фильтр форсируется (недоступные роли не попадают в список), `condition`
 только аннотирует (`available` + причина), решение всегда за человеком (Р-4).
+
+`find_or_create_counterparty` — общий поиск/создание клиента B2C для формы создания заявки
+(`POST /requests` с `client`) и лида CMS (`cms.lead.created`): физлицо ищется по blind index
+email, юрлицо — по ИНН, без ИНН — по точному названию; ПДн физлица шифруются типом
+EncryptedStr, HMAC-колонки заполняются здесь.
 """
 
 from __future__ import annotations
@@ -12,13 +18,106 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pii import (
+    display_name_from_full_name,
+    get_pii_crypto,
+    mask_email,
+    mask_full_name,
+    mask_phone,
+)
 from app.models.crm import Counterparty, InteractionType
 from app.models.deal import Deal
 from app.models.user import AppUser
 from app.models.workflow import WorkflowStage, WorkflowTransition
 from app.modules.requests.serializers import client_kind_of
 from app.modules.workflow.conditions import evaluate_condition
-from app.modules.workflow.service import transition_role_allowed, user_can_write_deal
+from app.modules.workflow.service import transition_role_allowed
+
+
+async def find_or_create_counterparty(
+    session: AsyncSession,
+    *,
+    client_kind: str,
+    full_name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+    company_name: str | None = None,
+    inn: str | None = None,
+) -> tuple[Counterparty, bool]:
+    """Клиент B2C по данным формы или лида: (контрагент, создан ли он сейчас).
+
+    `client_kind`: `person` — физлицо (нужен full_name), иначе юрлицо (нужен company_name);
+    обязательность полей проверяет вызывающий код. Найденный клиент возвращается как есть —
+    его карточка данными запроса не переписывается. Физлицо без email искать не по чему —
+    создаётся новый контрагент. Только flush, commit — на вызывающей стороне.
+    """
+    if client_kind == "person":
+        crypto = get_pii_crypto()
+        email_hmac = crypto.email_hmac(email) if email else None
+        if email_hmac is not None:
+            existing = (
+                await session.execute(
+                    select(Counterparty).where(Counterparty.email_hmac == email_hmac)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing, False
+        if not full_name:
+            raise ValueError("ФИО физлица проверяет вызывающий код")
+        counterparty = Counterparty(
+            kind="person",
+            display_name=display_name_from_full_name(full_name),
+            full_name=full_name,
+            email=email,
+            phone=phone,
+            email_hmac=email_hmac,
+            full_name_hmac=crypto.full_name_hmac(full_name),
+        )
+        session.add(counterparty)
+        await session.flush()
+        return counterparty, True
+
+    if not company_name:
+        raise ValueError("Название юрлица проверяет вызывающий код")
+    stmt = select(Counterparty).where(Counterparty.kind == "legal_entity")
+    stmt = (
+        stmt.where(Counterparty.inn == inn)
+        if inn
+        else stmt.where(Counterparty.org_name == company_name)
+    )
+    existing = (await session.execute(stmt)).scalars().first()
+    if existing is not None:
+        return existing, False
+    counterparty = Counterparty(
+        kind="legal_entity",
+        display_name=company_name,
+        org_name=company_name,
+        inn=inn,
+        org_email=email,
+        org_phone=phone,
+    )
+    session.add(counterparty)
+    await session.flush()
+    return counterparty, True
+
+
+def counterparty_audit_after(counterparty: Counterparty, *, source: str) -> dict[str, Any]:
+    """Снимок нового клиента для audit_log: ПДн физлица — только маскированные
+    (data-model.md §8.5), реквизиты юрлица — как есть."""
+    if counterparty.kind == "person":
+        return {
+            "kind": "person",
+            "source": source,
+            "full_name": mask_full_name(counterparty.full_name or ""),
+            "email": mask_email(counterparty.email) if counterparty.email else None,
+            "phone": mask_phone(counterparty.phone) if counterparty.phone else None,
+        }
+    return {
+        "kind": "legal_entity",
+        "source": source,
+        "org_name": counterparty.org_name,
+        "inn": counterparty.inn,
+    }
 
 
 async def build_request_context(session: AsyncSession, deal: Deal) -> dict[str, Any]:
@@ -46,14 +145,23 @@ async def available_transitions(
 ) -> list[dict[str, Any]]:
     """Рёбра из текущего этапа, доступные пользователю (api-contract.md §4.1, §9 движка).
 
-    Наружу не попадают рёбра, запрещённые RBAC (роль ∉ allowed_roles или нет права
-    писать заявку); condition — аннотация, не фильтр. Закрытая заявка (терминал)
-    действий не имеет — переоткрытие отдельным admin-эндпоинтом /reopen.
+    Наружу не попадают рёбра, запрещённые правами: нет `requests:transition` в процессе
+    заявки (чужая заявка — ещё и `requests:write_any`) или ни одна из ролей пользователя,
+    способных выполнять переходы в процессе, не входит в allowed_roles; condition —
+    аннотация, не фильтр. Закрытая заявка (терминал) действий не имеет — переоткрытие
+    отдельным эндпоинтом /reopen.
     """
     if deal.status != "open":
         return []
-    if not user_can_write_deal(user.roles, user.id, deal.responsible_user_id):
+    access = user.access
+    if not access.can_act_on_deal(
+        "requests:transition",
+        pipeline=deal.pipeline,
+        responsible_user_id=deal.responsible_user_id,
+        user_id=user.id,
+    ):
         return []
+    transition_roles = tuple(access.transition_roles(deal.pipeline))
     rows = (
         await session.execute(
             select(WorkflowTransition, WorkflowStage)
@@ -72,7 +180,7 @@ async def available_transitions(
     context = await build_request_context(session, deal)
     result: list[dict[str, Any]] = []
     for transition, to_stage in rows:
-        if not transition_role_allowed(user.roles, transition.allowed_roles):
+        if not transition_role_allowed(transition_roles, transition.allowed_roles):
             continue
         condition_ok = evaluate_condition(transition.condition, context)
         result.append(

@@ -27,6 +27,8 @@ secretGenerator:
     envs: [secrets/crm-telegram.env]
   - name: crm-internal
     envs: [secrets/crm-internal.env]
+  - name: crm-llm # GIGACHAT_* — только llm-gateway; backend берёт один LLM_GATEWAY_TOKEN
+    envs: [secrets/crm-llm.env]
 generatorOptions:
   disableNameSuffixHash: true # имена секретов зашиты в envFrom подов
 patches:
@@ -47,7 +49,7 @@ patches:
   - path: patches/app-config-vm.yaml # KEYCLOAK_ISSUER → https://id.crm...nip.io
   - path: patches/frontend-env-vm.yaml # config.js: KEYCLOAK_URL → https://id.crm...nip.io
   - path: patches/backend-resources.yaml # requests под скромную VM
-  - path: patches/hpa-vm.yaml # 1 реплика backend, HPA max 2
+  - path: patches/hpa-vm.yaml # 1 реплика backend, HPA max 4
   - path: patches/postgres-resources.yaml
   - target: {group: apps, version: v1, kind: StatefulSet, name: postgres}
     path: patches/storageclass.yaml # local-path-provisioner (встроен в k3s)
@@ -63,6 +65,8 @@ images:
   - name: crm/frontend
     newTag: vm
   - name: crm/notification
+    newTag: vm
+  - name: crm/llm-gateway
     newTag: vm
   - name: crm/lms-stub
     newTag: vm

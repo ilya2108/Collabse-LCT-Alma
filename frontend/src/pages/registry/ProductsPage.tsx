@@ -1,10 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 import { z } from 'zod';
+import { listAllItDirections } from '@/shared/api/endpoints/itDirections';
 import { createProduct, listProducts, updateProduct } from '@/shared/api/endpoints/products';
 import type { Product } from '@/shared/api/types';
 import { Can } from '@/shared/auth/Can';
@@ -16,6 +17,7 @@ import { Button } from '@/shared/ui/button';
 import {
   DataTable,
   FilterSelect,
+  MultiCombobox,
   PageHeader,
   StatusBadge,
   type DataTableColumn,
@@ -46,7 +48,10 @@ import {
 import { Switch } from '@/shared/ui/switch';
 import { Textarea } from '@/shared/ui/textarea';
 
-/** Реестр продуктов (ux.md §9.3) на DataTable: активность — Switch в ячейке (§6.5). */
+/**
+ * Реестр продуктов (ux.md §9.3) на DataTable: активность — Switch в ячейке (§6.5),
+ * ИТ-направления продукта (M:N) — колонкой и фильтром.
+ */
 
 export const PRODUCT_TYPE_LABELS: Record<string, string> = {
   course: 'Курс',
@@ -68,6 +73,7 @@ const productSchema = z.object({
   code: z.string().trim().min(1, 'Укажите код продукта'),
   product_type: z.string(),
   description: z.string().optional(),
+  direction_ids: z.array(z.string()),
 });
 
 type ProductFormValues = z.infer<typeof productSchema>;
@@ -77,7 +83,19 @@ function CreateProductSheet({ open, onClose }: { open: boolean; onClose: () => v
   const form = useForm<ProductFormValues>({
     resolver: zodResolver(productSchema),
     mode: 'onTouched',
-    defaultValues: { name: '', code: '', product_type: 'course', description: '' },
+    defaultValues: {
+      name: '',
+      code: '',
+      product_type: 'course',
+      description: '',
+      direction_ids: [],
+    },
+  });
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    enabled: open,
+    staleTime: 5 * 60_000,
   });
   const mutation = useMutation({
     mutationFn: (values: ProductFormValues) =>
@@ -86,6 +104,7 @@ function CreateProductSheet({ open, onClose }: { open: boolean; onClose: () => v
         code: values.code.trim(),
         product_type: values.product_type,
         description: values.description?.trim() || null,
+        direction_ids: values.direction_ids,
       }),
     onSuccess: (product) => {
       toastSuccess(`Продукт «${product.name}» создан`);
@@ -160,6 +179,31 @@ function CreateProductSheet({ open, onClose }: { open: boolean; onClose: () => v
             />
             <FormField
               control={form.control}
+              name="direction_ids"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>ИТ-направления</FormLabel>
+                  <FormControl>
+                    <MultiCombobox
+                      className="w-full"
+                      options={(directionsQuery.data?.items ?? [])
+                        .filter((d) => d.is_active)
+                        .map((d) => ({ value: d.id, label: d.name }))}
+                      value={field.value}
+                      onChange={field.onChange}
+                      placeholder="DevOps, QA, анализ данных…"
+                      searchPlaceholder="Найти направление…"
+                      emptyText="Направления не найдены"
+                      loading={directionsQuery.isLoading}
+                      ariaLabel="ИТ-направления продукта"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
               name="description"
               render={({ field }) => (
                 <FormItem>
@@ -189,10 +233,15 @@ function CreateProductSheet({ open, onClose }: { open: boolean; onClose: () => v
 
 export function ProductsPage(): ReactNode {
   const navigate = useNavigate();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
-  const canToggle = hasRole('admin', 'head_kam');
+  const canToggle = hasPermission('products:write');
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    staleTime: 5 * 60_000,
+  });
 
   const toggleMutation = useMutation({
     mutationFn: ({ product, isActive }: { product: Product; isActive: boolean }) =>
@@ -234,6 +283,24 @@ export function ProductsPage(): ReactNode {
         value ? (PRODUCT_TYPE_LABELS[value as string] ?? (value as string)) : formatText(null),
     },
     {
+      key: 'directions',
+      title: 'ИТ-направления',
+      dataIndex: 'directions',
+      responsive: ['md'],
+      render: (_v, record) =>
+        record.directions && record.directions.length > 0 ? (
+          <span className="flex flex-wrap gap-1">
+            {record.directions.map((d) => (
+              <Badge key={d.id} variant="secondary">
+                {d.name}
+              </Badge>
+            ))}
+          </span>
+        ) : (
+          formatText(null)
+        ),
+    },
+    {
       key: 'is_active',
       title: 'Активен',
       dataIndex: 'is_active',
@@ -267,7 +334,7 @@ export function ProductsPage(): ReactNode {
       <PageHeader
         title="Продукты"
         extra={
-          <Can roles={['admin', 'head_kam']}>
+          <Can permission="products:write">
             <Button onClick={() => setCreateOpen(true)}>
               <Plus aria-hidden="true" />
               Создать продукт
@@ -283,16 +350,28 @@ export function ProductsPage(): ReactNode {
         searchPlaceholder="Название или код"
         defaultSort={{ field: 'name', order: 'asc' }}
         renderFilters={({ filters, setFilter }) => (
-          <FilterSelect
-            placeholder="Активность"
-            allLabel="Активность: все"
-            options={[
-              { value: 'true', label: 'Активные' },
-              { value: 'false', label: 'Неактивные' },
-            ]}
-            value={filters.is_active as string | undefined}
-            onChange={(value) => setFilter('is_active', value)}
-          />
+          <>
+            <FilterSelect
+              placeholder="ИТ-направление"
+              allLabel="ИТ-направление: все"
+              options={(directionsQuery.data?.items ?? []).map((d) => ({
+                value: d.id,
+                label: d.is_active ? d.name : `${d.name} (неактивно)`,
+              }))}
+              value={filters.direction_id as string | undefined}
+              onChange={(value) => setFilter('direction_id', value)}
+            />
+            <FilterSelect
+              placeholder="Активность"
+              allLabel="Активность: все"
+              options={[
+                { value: 'true', label: 'Активные' },
+                { value: 'false', label: 'Неактивные' },
+              ]}
+              value={filters.is_active as string | undefined}
+              onChange={(value) => setFilter('is_active', value)}
+            />
+          </>
         )}
         emptyIllustration="registry-empty"
         emptyTitle="Продуктов пока нет"

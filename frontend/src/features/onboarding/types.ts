@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import type { AppRole } from '@/shared/auth/roles';
+import type { AccessProfile } from '@/shared/auth/permissions';
 
 /**
  * Типы фичи онбординга (redesign.md §7). Состояние хранится per-user в
@@ -18,7 +18,12 @@ export interface OnboardingState {
   version: number;
 }
 
-/** Текущая версия онбординга; при её росте welcome показывается снова. */
+/**
+ * Текущая версия онбординга; при её росте welcome показывается снова.
+ * Сид демо-стенда пишет демо-учёткам это же состояние «пройдено, чек-лист скрыт»
+ * (backend/app/tools/seed.py, ONBOARDING_VERSION) — поднимая версию, поднимите и там,
+ * иначе на показе у admin/head/kam снова всплывёт приветствие.
+ */
 export const ONBOARDING_VERSION = 1;
 
 export const DEFAULT_ONBOARDING_STATE: OnboardingState = {
@@ -67,7 +72,8 @@ export interface WelcomeConfig {
 }
 
 export interface RoleOnboarding {
-  role: AppRole;
+  /** Профиль интерфейса (выводится из прав, F2): admin / head_kam / kam / observer. */
+  role: AccessProfile;
   welcome: WelcomeConfig;
   tours: TourConfig[];
   checklist: ChecklistItemConfig[];

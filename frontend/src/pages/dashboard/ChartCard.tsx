@@ -5,17 +5,21 @@ import { ImageDown } from 'lucide-react';
 import { Component, useCallback, useRef, type ReactNode } from 'react';
 import { ErrorBrokenIllustration, SearchEmptyIllustration } from '@/app/localIllustrations';
 import { CRM_THEME, registerCrmTheme } from '@/shared/config/echartsTheme';
+import { toastError } from '@/shared/lib/toast';
 import { Button } from '@/shared/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
+import { downloadChartPng } from './exportImage';
 
 // Тема 'crm' (redesign.md §2.6): регистрируется один раз при загрузке чанка дашборда.
 registerCrmTheme();
 
 /**
- * Карточка виджета дашборда (redesign.md §6.3): заголовок 16/24, кнопка-камера
- * `ImageDown` («Скачать PNG», getDataURL pixelRatio 2), компактные пустое и
- * ошибочное состояния с иллюстрациями (§3.5) и собственный error-boundary —
- * ошибка одного графика не роняет дашборд (ux.md §6.3).
+ * Карточка виджета дашборда (redesign.md §6.3): заголовок 16/24 и подзаголовок —
+ * что именно и за какой период показано; кнопка-камера `ImageDown` («Скачать PNG»:
+ * график с шапкой — название, подзаголовок, фильтры, дата формирования; без шапки
+ * картинку не вставить в отчёт), компактные пустое и ошибочное состояния с
+ * иллюстрациями (§3.5) и собственный error-boundary — ошибка одного графика не роняет
+ * дашборд (ux.md §6.3).
  */
 
 export interface ChartClickParams {
@@ -28,6 +32,10 @@ export interface ChartClickParams {
 
 interface ChartCardProps {
   title: string;
+  /** Что и за какой период: «Созданы за 01.09 — 30.09 · на текущем этапе». */
+  subtitle?: string;
+  /** Строки контекста для шапки PNG: процесс, фильтры. */
+  exportCaption?: string[];
   option: EChartsOption | null;
   loading?: boolean;
   height?: number;
@@ -71,6 +79,8 @@ class ChartErrorBoundary extends Component<{ children: ReactNode }, BoundaryStat
 
 export function ChartCard({
   title,
+  subtitle,
+  exportCaption,
   option,
   loading = false,
   height = 320,
@@ -91,12 +101,11 @@ export function ChartCard({
   }, []);
 
   const downloadPng = (): void => {
-    const url = exportPng();
-    if (!url) return;
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${chartId}.png`;
-    anchor.click();
+    const dataUrl = exportPng();
+    if (!dataUrl) return;
+    downloadChartPng({ title, subtitle, caption: exportCaption, dataUrl }, `${chartId}-${title}`).catch(
+      (error: unknown) => toastError(error, { title: 'Не удалось собрать PNG' }),
+    );
   };
 
   const attachRef = (node: ReactEChartsCore | null): void => {
@@ -156,13 +165,19 @@ export function ChartCard({
 
   return (
     <section className="flex h-full flex-col rounded-lg border border-border bg-card shadow-card">
-      <header className="flex items-center justify-between gap-2 px-5 pb-1 pt-4">
-        {/* title-атрибут: полное название при усечении длинного заголовка (§1.3) */}
-        <h2 className="min-w-0 truncate text-base font-semibold" title={title}>
-          {title}
-        </h2>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {extra}
+      <header className="flex flex-wrap items-start justify-between gap-2 px-5 pb-1 pt-4">
+        <div className="min-w-0 flex-1 basis-48">
+          {/* title-атрибут: полное название при усечении длинного заголовка (§1.3) */}
+          <h2 className="truncate text-base font-semibold" title={title}>
+            {title}
+          </h2>
+          {subtitle ? (
+            <p className="mt-0.5 text-pretty text-xs text-muted-foreground">{subtitle}</p>
+          ) : null}
+        </div>
+        <div className="flex min-w-0 max-w-full items-center gap-1.5">
+          {/* на узком экране переключатель режимов прокручивается, а не вылезает за карточку */}
+          {extra ? <div className="min-w-0 overflow-x-auto">{extra}</div> : null}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

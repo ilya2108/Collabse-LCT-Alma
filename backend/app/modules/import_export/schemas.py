@@ -14,9 +14,7 @@ class _ApiModel(BaseModel):
 class MappingItem(_ApiModel):
     source_column: int = Field(ge=0)
     target_field: str = Field(min_length=1)
-    transform: Literal["trim", "lowercase", "uppercase", "date_ru", "phone_normalize"] | None = (
-        None
-    )
+    transform: Literal["trim", "lowercase", "uppercase", "date_ru", "phone_normalize"] | None = None
     lookup: str | None = None
     create_missing: bool = False
     value_map: dict[str, str] = Field(default_factory=dict)
@@ -24,7 +22,8 @@ class MappingItem(_ApiModel):
 
 class MappingOptions(_ApiModel):
     sheet: int | str = 0
-    header_row: int = Field(default=0, ge=0)
+    # None — в файле нет строки заголовков: все строки — данные, колонки «Колонка N»
+    header_row: int | None = Field(default=0, ge=0)
     encoding: str | None = None
     update_strategy: Literal["create_only", "upsert", "update_only"] = "upsert"
     match_by: list[str] = Field(default_factory=list)
@@ -44,11 +43,15 @@ class ApplyBody(_ApiModel):
 class ExportOptions(_ApiModel):
     encoding: Literal["utf-8", "cp1251"] = "utf-8"
     csv_delimiter: str = Field(default=";", min_length=1, max_length=1)
+    # report:sla, PDF: false — «Сводка без имён», true — «По КАМам»; прочие выгрузки поле
+    # не читают
+    by_kam: bool = False
 
 
 class ExportJobBody(_ApiModel):
     entity_type: str = Field(min_length=1)
-    format: Literal["xlsx", "csv", "json"] = "xlsx"
+    # pdf — только для отчётов (report:<code>); report:kam-activity — PDF для заказчика
+    format: Literal["xlsx", "csv", "json", "pdf"] = "xlsx"
     filters: dict[str, Any] = Field(default_factory=dict)
     columns: list[str] | None = None
     options: ExportOptions = Field(default_factory=ExportOptions)

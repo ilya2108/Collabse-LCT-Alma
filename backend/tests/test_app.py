@@ -1,4 +1,10 @@
-"""Смоук приложения: маппинг моделей, реестр роутов, health, 401-конверт."""
+"""Смоук приложения: маппинг моделей, реестр роутов, health, 401-конверт.
+
+Реестр включает маршруты доработок: отчёт «Активность КАМов» и файлы заявки (F1), роли и
+права (F2), очистку ключей идемпотентности (F4), волну 4 — «Взаимодействия за период» и
+передачу портфеля КАМа. Перенос заявок (F3) новых маршрутов не добавляет — он идёт через
+прежние `/workflows/*/changes`.
+"""
 
 from __future__ import annotations
 
@@ -24,12 +30,29 @@ EXPECTED_ROUTES = [
     ("GET", "/api/v1/requests"),
     ("POST", "/api/v1/requests/{request_id}/transitions"),
     ("POST", "/api/v1/requests/{request_id}/reopen"),
+    # волна 4: передача портфеля КАМа (заявки и вузы)
+    ("POST", "/api/v1/requests/transfer-portfolio"),
+    # F1: файлы заявки
+    ("GET", "/api/v1/requests/{request_id}/files"),
+    ("POST", "/api/v1/requests/{request_id}/files"),
+    ("DELETE", "/api/v1/requests/{request_id}/files/{file_id}"),
     ("GET", "/api/v1/workflows"),
     ("POST", "/api/v1/workflows/{workflow_id}/changes"),
     ("POST", "/api/v1/workflows/changes/{change_id}/approve"),
     ("POST", "/api/v1/import/sessions"),
     ("POST", "/api/v1/export/jobs"),
     ("GET", "/api/v1/reports/dashboard"),
+    # F1: активность КАМов
+    ("GET", "/api/v1/reports/kam-activity"),
+    ("GET", "/api/v1/reports/kam-activity/summary"),
+    # волна 4: «Взаимодействия за период» (ТЗ ФТ4)
+    ("GET", "/api/v1/reports/interactions"),
+    # «Просрочки»
+    ("GET", "/api/v1/reports/sla"),
+    ("GET", "/api/v1/reports/sla/kams/{kam_id}"),
+    # «Сводка ИИ»
+    ("POST", "/api/v1/reports/ai-summaries"),
+    ("GET", "/api/v1/reports/ai-summaries/{job_id}"),
     ("GET", "/api/v1/students"),
     ("POST", "/api/v1/students/{student_id}/reveal"),
     ("GET", "/api/v1/activities"),
@@ -41,7 +64,19 @@ EXPECTED_ROUTES = [
     ("POST", "/api/v1/integrations/cms/webhook"),
     ("GET", "/api/v1/admin/users"),
     ("GET", "/api/v1/admin/audit-log"),
+    # F2: роли и права
+    ("GET", "/api/v1/roles"),
+    ("GET", "/api/v1/admin/permissions"),
+    ("GET", "/api/v1/admin/roles"),
+    ("POST", "/api/v1/admin/roles"),
+    ("GET", "/api/v1/admin/roles/{role_id}"),
+    ("PATCH", "/api/v1/admin/roles/{role_id}"),
+    ("DELETE", "/api/v1/admin/roles/{role_id}"),
+    ("POST", "/api/v1/admin/roles/{role_id}/reset"),
+    ("PUT", "/api/v1/admin/users/{user_id}/roles"),
     ("POST", "/api/v1/internal/jobs/check-stuck-requests"),
+    # F4: очистка просроченных ключей идемпотентности (CronJob)
+    ("POST", "/api/v1/internal/jobs/purge-idempotency-keys"),
     ("GET", "/api/v1/events/stream"),
     ("GET", "/healthz"),
     ("GET", "/readyz"),
@@ -80,28 +115,43 @@ def test_healthz_ok_without_dependencies() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_auth_me_requires_token() -> None:
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/v1/auth/me"),
+        # новые маршруты для людей тоже закрыты входом (права проверяются после него)
+        ("GET", "/api/v1/roles"),
+        ("GET", "/api/v1/admin/roles"),
+        ("GET", "/api/v1/reports/kam-activity"),
+        ("GET", "/api/v1/reports/interactions"),
+        ("GET", "/api/v1/reports/sla"),
+        ("POST", "/api/v1/reports/ai-summaries"),
+        ("POST", "/api/v1/requests/transfer-portfolio"),
+        ("GET", "/api/v1/requests/00000000-0000-0000-0000-000000000000/files"),
+    ],
+)
+def test_route_requires_token(method: str, path: str) -> None:
     with TestClient(fastapi_app) as client:
-        response = client.get("/api/v1/auth/me")
+        response = client.request(method, path)
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
 
 
-def test_internal_job_requires_internal_token() -> None:
+@pytest.mark.parametrize(
+    "job",
+    ["check-stuck-requests", "purge-idempotency-keys"],
+)
+def test_internal_job_requires_internal_token(job: str) -> None:
+    path = f"/api/v1/internal/jobs/{job}"
     # raise_server_exceptions=False: без PG вызов с верным токеном отвечает 500,
     # а не пробрасывает OSError в тест
     with TestClient(fastapi_app, raise_server_exceptions=False) as client:
-        no_token = client.post("/api/v1/internal/jobs/check-stuck-requests")
-        wrong = client.post(
-            "/api/v1/internal/jobs/check-stuck-requests",
-            headers={"X-Internal-Token": "wrong"},
-        )
-        ok = client.post(
-            "/api/v1/internal/jobs/check-stuck-requests",
-            headers={"X-Internal-Token": "test-internal-token"},
-        )
+        no_token = client.post(path)
+        wrong = client.post(path, headers={"X-Internal-Token": "wrong"})
+        ok = client.post(path, headers={"X-Internal-Token": "test-internal-token"})
     assert no_token.status_code == 401
+    assert no_token.json()["error"]["code"] == "unauthorized"
     assert wrong.status_code == 401
     # верный токен проходит аутентификацию; без PG в юнит-окружении логика отвечает 500,
-    # с поднятой БД — 200 с отчётом {checked, stuck_found, ...}
+    # с поднятой БД — 200 с отчётом ({checked, stuck_found, ...} / {purged, duration_ms})
     assert ok.status_code in (200, 500)

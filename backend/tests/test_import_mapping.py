@@ -20,9 +20,7 @@ from app.modules.import_export.mapping import (
 class TestSuggestMapping:
     def test_russian_headers(self) -> None:
         columns = ["ФИО", "Эл. почта", "ВУЗ", "Программа", "Комментарий"]
-        suggestions = {
-            s["source_column"]: s for s in suggest_mapping(columns, STUDENT_FIELDS)
-        }
+        suggestions = {s["source_column"]: s for s in suggest_mapping(columns, STUDENT_FIELDS)}
         assert suggestions[0]["target_field"] == "full_name"
         assert suggestions[1]["target_field"] == "email"
         assert suggestions[2]["target_field"] == "university"
@@ -80,9 +78,7 @@ class TestMapRow:
         )
 
     def test_transform_and_value_map(self) -> None:
-        values, errors = map_row(
-            ["Иванов Иван", "IVANOV@Example.COM", "учится"], self._entries()
-        )
+        values, errors = map_row(["Иванов Иван", "IVANOV@Example.COM", "учится"], self._entries())
         assert errors == []
         assert values["email"] == "ivanov@example.com"
         # ключи value_map сравниваются без регистра

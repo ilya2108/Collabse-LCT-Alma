@@ -1,0 +1,71 @@
+# llm-gateway — шлюз к GigaChat: второй и последний под с egress в интернет после
+# notification (NetworkPolicy 41-llm-gateway-dmz: только TCP 443/9443 вне приватных сетей).
+# Ключ GigaChat (Secret crm-llm) видит только он; backend получает из того же секрета
+# один LLM_GATEWAY_TOKEN. В целевой архитектуре переезжает в DMZ или переключается на
+# on-prem GigaChat через GIGACHAT_API_URL / GIGACHAT_AUTH_URL — без правки кода backend.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-gateway
+  labels: {app.kubernetes.io/name: llm-gateway, tier: dmz}
+spec:
+  # строго 1: бесплатный тариф GIGACHAT_API_PERS держит один поток, а семафор и дневной
+  # лимит токенов живут в памяти пода (рестарт обнуляет счётчик — см. README шлюза)
+  replicas: 1
+  strategy: {type: Recreate} # rolling update на время выкладки дал бы два пода = два потока
+  selector:
+    matchLabels: {app.kubernetes.io/name: llm-gateway}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: llm-gateway, tier: dmz}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # без init-контейнеров: шлюзу не нужны ни Keycloak, ни БД
+      containers:
+        - name: llm-gateway
+          image: crm/llm-gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8040, name: http}]
+          envFrom:
+            # GIGACHAT_CREDENTIALS/SCOPE/MODEL_*, LLM_GATEWAY_TOKEN
+            - secretRef: {name: crm-llm}
+          env:
+            - {name: APP_ENV, value: "k8s"} # fail-closed: dev-токен или GIGACHAT_VERIFY_SSL=false — падение на старте
+            - {name: LLM_PROVIDER, value: "gigachat"}
+            - {name: GIGACHAT_CA_BUNDLE, value: /etc/alma/certs/russian_trusted_bundle.pem}
+            - {name: LLM_MAX_CONCURRENCY, value: "1"}
+            - {name: LLM_QUEUE_MAX, value: "8"}
+            - {name: LLM_TIMEOUT_SECONDS, value: "120"} # p50 GigaChat-2-Pro ≈ 64 с
+            - {name: LLM_QUEUE_TIMEOUT_SECONDS, value: "180"}
+            - {name: LLM_DAILY_TOKEN_CAP, value: "200000"}
+          volumeMounts:
+            - {name: ca, mountPath: /etc/alma/certs, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30 # до 60 с на старт
+          readinessProbe:
+            # всегда 200, пока процесс жив: проблемы с интернетом не снимают под с балансировки
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 300m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: ca # Russian Trusted Root CA + Sub CA (Sub CA действует до 06.03.2027)
+          configMap: {name: llm-gateway-ca} # configMapGenerator base: смена бандла => rollout
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

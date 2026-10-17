@@ -85,3 +85,6 @@ SSE_REQUEST_COMMENT_ADDED = "request.comment_added"
 SSE_TELEGRAM_LINKED = "telegram.linked"
 SSE_FLAGS_UPDATED = "flags.updated"
 SSE_NOTIFICATION_CREATED = "notification.created"
+# изменились роли/права (F2): реплики сбрасывают кэш каталога ролей, фронты перечитывают
+# /auth/me; в data — только коды ролей и id пользователей, без состава прав
+SSE_ACCESS_CHANGED = "access.changed"

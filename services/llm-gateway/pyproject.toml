@@ -1,0 +1,36 @@
+[project]
+name = "crm-llm-gateway"
+version = "0.1.0"
+description = "«Альма» (ЛЦТ 2026) — шлюз к GigaChat: единственный держатель ключа, семафор на 1 поток, дневной лимит токенов, TLS НУЦ Минцифры"
+readme = "README.md"
+# asyncio.timeout — общий бюджет на все попытки (Python 3.11+); образ — python:3.12-slim
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "httpx>=0.27,<1",
+    "pydantic>=2.6,<3",
+    "pydantic-settings>=2.3,<3",
+    "certifi>=2024.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

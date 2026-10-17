@@ -71,9 +71,7 @@ class TestClientIp:
         request = _request({"X-Forwarded-For": "1.2.3.4, 203.0.113.7"})
         assert client_ip(request) == "203.0.113.7"
 
-    def test_trusted_proxy_without_header_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_trusted_proxy_without_header_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_settings(), "trusted_proxy", True)
         assert client_ip(_request({})) == "10.0.0.5"
 

@@ -1,8 +1,17 @@
 import type { RegistryFetchParams } from '@/components/RegistryTable/types';
+import { P } from '@/shared/auth/permissions';
 import { api } from '../client';
 import type { ListEnvelope, University, UniversityContact } from '../types';
 
 /** Реестр вузов и контактные лица (api-contract.md §3.1). */
+
+/**
+ * Право «Назначение ответственного КАМа за вуз» (`universities:assign`, ФТ11 — зона
+ * Руководителя): сервер сравнивает значение `kam_user_id`, без права — 403. Без права КАМ
+ * заводит вуз только на себя. Реэкспорт кода из каталога фронта
+ * (`shared/auth/permissions.ts`, P.UNIVERSITIES_ASSIGN): проверка идёт по `/auth/me`.
+ */
+export const UNIVERSITIES_ASSIGN = P.UNIVERSITIES_ASSIGN;
 
 export function listUniversities(params: RegistryFetchParams): Promise<ListEnvelope<University>> {
   return api.get<ListEnvelope<University>>('/universities', {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
@@ -15,12 +16,20 @@ from app.core.config import get_settings as get_app_settings
 from app.core.db import get_session
 from app.core.errors import conflict, not_found, validation_error
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_permission
 from app.models.crm import Contract, ContractProduct, Counterparty, Product, University
 from app.models.service import FileObject
 from app.models.user import AppUser
 from app.modules.crm.deps import check_version, ensure_can_write_owned, get_or_404
-from app.modules.crm.schemas import ContractCreate, ContractOut, ContractUpdate, FileOut
+from app.modules.crm.schemas import (
+    ContractCounterpartyRef,
+    ContractCreate,
+    ContractLicenseOut,
+    ContractOut,
+    ContractUniversityRef,
+    ContractUpdate,
+    FileOut,
+)
 from app.modules.files.service import soft_delete_file, store_upload
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
@@ -39,8 +48,38 @@ _SORT_FIELDS = {
 def _to_out(contract: Contract, warning: str | None = None) -> ContractOut:
     out = ContractOut.model_validate(contract)
     out.product_ids = [link.product_id for link in contract.products]
+    out.licenses = [ContractLicenseOut.model_validate(link) for link in contract.products]
     out.warning_duplicate = warning
     return out
+
+
+async def _attach_owner_refs(session: AsyncSession, outs: Sequence[ContractOut]) -> None:
+    """Подписи владельца (вуз или контрагент) — пачкой: два запроса на страницу, без N+1."""
+    university_ids = {out.university_id for out in outs if out.university_id is not None}
+    counterparty_ids = {out.counterparty_id for out in outs if out.counterparty_id is not None}
+    universities: dict[uuid.UUID, str] = {}
+    if university_ids:
+        rows = await session.execute(
+            select(University.id, University.name).where(University.id.in_(university_ids))
+        )
+        universities = dict(rows.tuples().all())
+    counterparties: dict[uuid.UUID, str] = {}
+    if counterparty_ids:
+        rows = await session.execute(
+            select(Counterparty.id, Counterparty.display_name).where(
+                Counterparty.id.in_(counterparty_ids)
+            )
+        )
+        counterparties = dict(rows.tuples().all())
+    for out in outs:
+        if out.university_id in universities:
+            out.university = ContractUniversityRef(
+                id=out.university_id, name=universities[out.university_id]
+            )
+        if out.counterparty_id in counterparties:
+            out.counterparty = ContractCounterpartyRef(
+                id=out.counterparty_id, display_name=counterparties[out.counterparty_id]
+            )
 
 
 async def _load_contract(session: AsyncSession, contract_id: uuid.UUID) -> Contract:
@@ -88,16 +127,12 @@ async def _validate_products(session: AsyncSession, product_ids: list[uuid.UUID]
         )
 
 
-def _sync_products(
-    contract: Contract, product_ids: list[uuid.UUID], actor_id: uuid.UUID
-) -> None:
+def _sync_products(contract: Contract, product_ids: list[uuid.UUID], actor_id: uuid.UUID) -> None:
     """Расширение набора = добавление строк contract_product (added_by/added_at — история)."""
     existing = {link.product_id: link for link in contract.products}
     target = set(product_ids)
     for product_id in target - set(existing):
-        contract.products.append(
-            ContractProduct(product_id=product_id, added_by=actor_id)
-        )
+        contract.products.append(ContractProduct(product_id=product_id, added_by=actor_id))
     for product_id, link in existing.items():
         if product_id not in target:
             contract.products.remove(link)
@@ -106,7 +141,7 @@ def _sync_products(
 @router.get("", summary="Реестр договоров")
 async def list_contracts(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("contracts:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     university_id: Annotated[uuid.UUID | None, Query()] = None,
     counterparty_id: Annotated[uuid.UUID | None, Query()] = None,
@@ -122,14 +157,12 @@ async def list_contracts(
         stmt = stmt.where(Contract.status == status)
     if search:
         stmt = stmt.where(Contract.number.ilike(f"%{search.strip()}%"))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="-created_at")
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
-    )
-    items = [_to_out(row).model_dump(mode="json", exclude={"files"}) for row in rows]
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
+    outs = [_to_out(row) for row in rows]
+    await _attach_owner_refs(session, outs)
+    items = [out.model_dump(mode="json", exclude={"files"}) for out in outs]
     return list_envelope(items, total, params)
 
 
@@ -137,7 +170,7 @@ async def list_contracts(
 async def create_contract(
     body: ContractCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:write"))],
     request: Request,
 ) -> ContractOut:
     await _ensure_unique_number(session, body.number)
@@ -161,7 +194,10 @@ async def create_contract(
             # решение кейсодержателя: «как правило один» — предупреждение, не запрет
             warning = "У вуза уже есть активный договор — проверьте, не дубль ли это"
 
-    contract = Contract(**body.model_dump(exclude={"product_ids"}))
+    # коллекция продуктов задаётся явно: у договора без продуктов она иначе осталась бы
+    # незагруженной, и сборка ответа (_to_out читает contract.products) падала бы на
+    # ленивой загрузке в async-сессии — POST /contracts без продуктов отвечал 500
+    contract = Contract(**body.model_dump(exclude={"product_ids"}), products=[])
     for product_id in body.product_ids:
         contract.products.append(ContractProduct(product_id=product_id, added_by=user.id))
     session.add(contract)
@@ -176,14 +212,16 @@ async def create_contract(
         ip=client_ip(request),
     )
     await session.commit()
-    return _to_out(contract, warning)
+    out = _to_out(contract, warning)
+    await _attach_owner_refs(session, [out])
+    return out
 
 
 @router.get("/{contract_id}", summary="Карточка договора со списком файлов")
 async def get_contract(
     contract_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("contracts:read"))],
 ) -> ContractOut:
     contract = await _load_contract(session, contract_id)
     files = (
@@ -203,6 +241,7 @@ async def get_contract(
     )
     out = _to_out(contract)
     out.files = [FileOut.model_validate(f) for f in files]
+    await _attach_owner_refs(session, [out])
     return out
 
 
@@ -211,7 +250,7 @@ async def update_contract(
     contract_id: uuid.UUID,
     body: ContractUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:write"))],
 ) -> ContractOut:
     contract = await _load_contract(session, contract_id)
     ensure_can_write_owned(user, contract.responsible_user_id)
@@ -225,14 +264,16 @@ async def update_contract(
         await _validate_products(session, body.product_ids)
         _sync_products(contract, body.product_ids, user.id)
     await session.commit()
-    return _to_out(contract)
+    out = _to_out(contract)
+    await _attach_owner_refs(session, [out])
+    return out
 
 
 @router.delete("/{contract_id}", summary="Расторгнуть (мягко удалить) договор")
 async def delete_contract(
     contract_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:delete"))],
     request: Request,
 ) -> dict[str, bool]:
     # DDL contract не содержит deleted_at (data-model.md §4.6 — высший приоритет),
@@ -261,7 +302,7 @@ async def delete_contract(
 async def list_contract_files(
     contract_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("contracts:read"))],
 ) -> list[FileOut]:
     await _load_contract(session, contract_id)
     files = (
@@ -291,7 +332,7 @@ async def upload_contract_file(
     contract_id: uuid.UUID,
     file: Annotated[UploadFile, File(description="Скан договора (до 50 МБ)")],
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("contracts:write"))],
     request: Request,
 ) -> FileOut:
     contract = await _load_contract(session, contract_id)
@@ -320,7 +361,7 @@ async def upload_contract_file(
 @router.delete(
     "/{contract_id}/files/{file_id}",
     summary="Удалить файл договора",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
+    dependencies=[Depends(require_permission("contracts:files_delete"))],
 )
 async def delete_contract_file(
     contract_id: uuid.UUID,

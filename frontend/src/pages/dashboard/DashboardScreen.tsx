@@ -1,21 +1,27 @@
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, Download, LoaderCircle } from 'lucide-react';
+import { ArrowRight, ChevronDown, Download, LoaderCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ErrorBrokenIllustration } from '@/app/localIllustrations';
+import { listAllItDirections } from '@/shared/api/endpoints/itDirections';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
+import { listPrograms } from '@/shared/api/endpoints/programs';
 import { runExportAndDownload } from '@/shared/api/endpoints/exportJobs';
-import { getDashboardReport, type DashboardReportParams } from '@/shared/api/endpoints/reports';
+import {
+  getDashboardReport,
+  type DashboardData,
+  type DashboardReportParams,
+} from '@/shared/api/endpoints/reports';
 import { searchUniversities } from '@/shared/api/endpoints/universities';
 import { listUsers } from '@/shared/api/endpoints/users';
 import { errorMessage, isApiError } from '@/shared/api/errors';
 import { useAuth } from '@/shared/auth/AuthContext';
+import { WORKFLOW_TYPE_LABELS } from '@/shared/auth/permissions';
 import { dayjs } from '@/shared/lib/dayjs';
 import { staggerContainer, staggerItem } from '@/shared/lib/motion';
 import { toastError, toastSuccess } from '@/shared/lib/toast';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
-import { useFlags } from '@/shared/lib/useFlags';
 import { useSseInvalidate } from '@/shared/lib/useSseInvalidate';
 import { Button } from '@/shared/ui/button';
 import {
@@ -25,16 +31,22 @@ import {
   DropdownMenuTrigger,
 } from '@/shared/ui/dropdown-menu';
 import { ChartCard } from './ChartCard';
+import { downloadDashboardPdf, downloadDashboardPng, type ChartExport } from './exportImage';
 import { DateRangeFilter, MultiFilter } from './FilterControls';
 import { ChecklistCard, useOnboarding } from '@/features/onboarding';
-import { KpiCards } from './KpiCards';
+import { KpiCards, formatKpiPeriod } from './KpiCards';
 import {
-  composeDashboardPng,
+  PROGRAM_MODES,
+  allZero,
   dynamicsOption,
-  funnelOption,
   kamWorkloadOption,
+  parseStageClickKey,
+  programMetric,
   programsOption,
-  talentFunnelOption,
+  rowsHeight,
+  stageBarsHeight,
+  stageBarsOption,
+  talentBarsOption,
   type ProgramsMode,
 } from './model';
 import { Segmented } from './Segmented';
@@ -43,7 +55,12 @@ import { Segmented } from './Segmented';
  * Дашборд (redesign.md §6.3, ux.md §6): панель фильтров одной строкой над
  * сеткой (состояние в URL — ссылку можно переслать), KPI-ряд StatCard,
  * виджеты ECharts на теме 'crm' в сетке 12 колонок со stagger-входом,
- * drill-down кликами и экспорт PNG (клиент) / XLSX-CSV (через /export/jobs).
+ * drill-down кликами и экспорт: PNG и PDF всей панели (на клиенте, по графику на
+ * страницу PDF), PNG каждого графика с шапкой, XLSX/CSV данных (через /export/jobs).
+ *
+ * Один набор фильтров на все секции: КАМы, вузы, ИТ-направления, продукты, программы —
+ * списки (backend применяет IN везде). У каждой карточки подзаголовок — что и за какой
+ * период показано (срез «сейчас» или период), чтобы цифры на экране не спорили.
  */
 
 interface DashFilters {
@@ -52,8 +69,12 @@ interface DashFilters {
   wf: 'b2b' | 'b2c' | null;
   kam: string[];
   university: string[];
+  direction: string[];
   product: string[];
+  program: string[];
 }
+
+type ListFilterKey = 'kam' | 'university' | 'direction' | 'product' | 'program';
 
 function filtersFromParams(params: URLSearchParams): DashFilters {
   const wfRaw = params.get('wf');
@@ -63,8 +84,39 @@ function filtersFromParams(params: URLSearchParams): DashFilters {
     wf: wfRaw === 'b2b' || wfRaw === 'b2c' ? wfRaw : null,
     kam: params.getAll('kam'),
     university: params.getAll('university'),
+    direction: params.getAll('direction'),
     product: params.getAll('product'),
+    program: params.getAll('program'),
   };
+}
+
+function day(iso: string): string {
+  return dayjs(iso).format('DD.MM.YYYY');
+}
+
+function periodText(f: Pick<DashFilters, 'from' | 'to'>): string | null {
+  if (!f.from && !f.to) return null;
+  return `${f.from ? day(f.from) : '…'} — ${f.to ? day(f.to) : '…'}`;
+}
+
+/**
+ * Ссылка на отчёт «Активность КАМов» с фильтрами дашборда (URL-контракт ux.md §6.4):
+ * заданный период — пресет «Произвольный», процесс, КАМы, вузы и ИТ-направления
+ * переносятся как есть.
+ */
+function kamActivityHref(f: DashFilters): string {
+  const query = new URLSearchParams();
+  if (f.from || f.to) {
+    query.set('preset', 'custom');
+    if (f.from) query.set('from', f.from);
+    if (f.to) query.set('to', f.to);
+  }
+  if (f.wf) query.set('wf', f.wf);
+  for (const id of f.kam) query.append('kam', id);
+  for (const id of f.university) query.append('university', id);
+  for (const id of f.direction) query.append('direction', id);
+  const search = query.toString();
+  return search ? `/reports/kam-activity?${search}` : '/reports/kam-activity';
 }
 
 function reportParams(f: DashFilters): DashboardReportParams {
@@ -75,6 +127,27 @@ function reportParams(f: DashFilters): DashboardReportParams {
     kam_id: f.kam.length > 0 ? f.kam : undefined,
     university_id: f.university.length > 0 ? f.university : undefined,
     product_id: f.product.length > 0 ? f.product : undefined,
+    program_id: f.program.length > 0 ? f.program : undefined,
+    direction_id: f.direction.length > 0 ? f.direction : undefined,
+  };
+}
+
+/** Подзаголовки карточек: что и за какой период (срез «сейчас» — явно). */
+function widgetSubtitles(f: DashFilters, report: DashboardData | null): Record<string, string> {
+  const period = periodText(f);
+  const dyn = report?.dynamics.period;
+  return {
+    stages: period
+      ? `Заявки, созданные за ${period}, — на каком этапе сейчас`
+      : 'Все заявки — на каком этапе сейчас',
+    dynamics: dyn
+      ? `По неделям (МСК), ${day(dyn.from)} — ${day(dyn.to)}${period ? '' : ' (период не выбран: 12 недель)'}`
+      : 'По неделям (МСК)',
+    workload: 'Открытые заявки на текущую дату; период не применяется',
+    programs: period
+      ? `Заявки — созданные за ${period}; обучающиеся и потоки — в этом периоде`
+      : 'Заявки — за всё время; обучающиеся и потоки — на текущую дату',
+    talent: 'Студенты на текущую дату; КАМ — студенты вузов, закреплённых за КАМом',
   };
 }
 
@@ -102,10 +175,17 @@ function ReportErrorState({
 
 export function DashboardScreen(): ReactNode {
   const navigate = useNavigate();
-  const { user, hasRole } = useAuth();
-  const { flags } = useFlags();
+  const { user, hasPermission, workflowTypesWith } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const filters = useMemo(() => filtersFromParams(searchParams), [searchParams]);
+  // Процессы отчётов — только доступные ролям (F2): один процесс — он и выбран,
+  // чужой wf в ссылке игнорируется.
+  const reportTypes = useMemo(() => workflowTypesWith('reports:read'), [workflowTypesWith]);
+  const rawFilters = useMemo(() => filtersFromParams(searchParams), [searchParams]);
+  const filters = useMemo<DashFilters>(() => {
+    const allowed = rawFilters.wf && reportTypes.includes(rawFilters.wf) ? rawFilters.wf : null;
+    const wf = allowed ?? (reportTypes.length === 1 ? (reportTypes[0] ?? null) : null);
+    return wf === rawFilters.wf ? rawFilters : { ...rawFilters, wf };
+  }, [rawFilters, reportTypes]);
   const [programsMode, setProgramsMode] = useState<ProgramsMode>('requests');
   const [exporting, setExporting] = useState(false);
   // Чек-лист онбординга §7.5: no-op без провайдера.
@@ -115,17 +195,14 @@ export function DashboardScreen(): ReactNode {
     if (kamFiltered) completeChecklistItem('dashboard-filter');
   }, [kamFiltered, completeChecklistItem]);
 
-  // PNG-геттеры графиков для композитного экспорта «весь дашборд»
-  const chartPngGetters = useRef(new Map<string, { title: string; getPng: () => string | null }>());
-  const registerChart = useCallback(
-    (title: string) => (id: string, getPng: () => string | null) => {
-      chartPngGetters.current.set(id, { title, getPng });
-    },
-    [],
-  );
+  // PNG-геттеры графиков для экспорта «вся панель» (PNG и PDF); порядок — порядок сетки
+  const chartPngGetters = useRef(new Map<string, () => string | null>());
+  const registerChart = useCallback((id: string, getPng: () => string | null) => {
+    chartPngGetters.current.set(id, getPng);
+  }, []);
 
   const patchParams = useCallback(
-    (patch: Partial<Record<'from' | 'to' | 'wf', string | null> & Record<'kam' | 'university' | 'product', string[]>>) => {
+    (patch: Partial<Record<'from' | 'to' | 'wf', string | null> & Record<ListFilterKey, string[]>>) => {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -158,7 +235,8 @@ export function DashboardScreen(): ReactNode {
   const loading = reportQuery.isLoading;
 
   // Справочники фильтров (§6.3): вузы — серверный поиск, остальные целиком.
-  const canFilterByKam = hasRole('admin', 'head_kam');
+  // фильтр по КАМам — отчёты по всем КАМам и доступ к списку пользователей
+  const canFilterByKam = hasPermission('admin:users') && hasPermission('reports:all');
   const [universitySearch, setUniversitySearch] = useState('');
   const debouncedUniversity = useDebouncedValue(universitySearch, 300);
   const universitiesQuery = useQuery({
@@ -172,52 +250,131 @@ export function DashboardScreen(): ReactNode {
     staleTime: 60_000,
   });
   const kamsQuery = useQuery({
-    queryKey: ['users-select', 'kam'],
-    queryFn: ({ signal }) => listUsers({ role: 'kam', signal }),
+    queryKey: ['users-select', 'requests:kam'],
+    queryFn: ({ signal }) => listUsers({ permission: 'requests:kam', signal }),
     enabled: canFilterByKam,
     staleTime: 60_000,
   });
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    staleTime: 5 * 60_000,
+  });
+  const programsQuery = useQuery({
+    queryKey: ['programs-select'],
+    queryFn: ({ signal }) =>
+      listPrograms({ limit: 200, offset: 0, sort: 'name', filters: {}, signal }),
+    staleTime: 60_000,
+  });
 
-  const boardQuery = (extra: Record<string, string>): string => {
+  // Подписи выбранных значений для шапки PNG/PDF; вузы — серверный поиск, поэтому
+  // имена копятся по мере загрузки результатов
+  const labelCache = useRef(new Map<string, string>());
+  for (const u of universitiesQuery.data?.items ?? []) labelCache.current.set(u.id, u.name);
+  for (const p of productsQuery.data?.items ?? []) labelCache.current.set(p.id, p.name);
+  for (const p of programsQuery.data?.items ?? []) labelCache.current.set(p.id, p.name);
+  for (const d of directionsQuery.data?.items ?? []) labelCache.current.set(d.id, d.name);
+  for (const k of kamsQuery.data?.items ?? []) labelCache.current.set(k.id, k.full_name);
+  if (user) labelCache.current.set(user.id, user.full_name ?? user.username ?? 'я');
+
+  const filterLines = useMemo(() => {
+    const names = (ids: string[]): string => {
+      const known = ids.map((id) => labelCache.current.get(id)).filter((v): v is string => Boolean(v));
+      const unknown = ids.length - known.length;
+      return [...known, ...(unknown > 0 ? [`ещё ${unknown}`] : [])].join(', ');
+    };
+    const lines = [
+      `Период панели: ${periodText(filters) ?? 'не выбран'}`,
+      `Процесс: ${filters.wf ? WORKFLOW_TYPE_LABELS[filters.wf] : 'все процессы роли'}`,
+    ];
+    const lists: [string, string[]][] = [
+      ['КАМ', filters.kam],
+      ['Вуз', filters.university],
+      ['ИТ-направление', filters.direction],
+      ['Продукт', filters.product],
+      ['Программа', filters.program],
+    ];
+    for (const [label, ids] of lists) if (ids.length > 0) lines.push(`${label}: ${names(ids)}`);
+    return lines;
+  }, [
+    filters,
+    universitiesQuery.data,
+    productsQuery.data,
+    programsQuery.data,
+    kamsQuery.data,
+    directionsQuery.data,
+  ]);
+
+  const boardQuery = (extra: Record<string, string>, wf?: string): string => {
     const query = new URLSearchParams();
-    query.set('wf', filters.wf === 'b2c' ? 'b2c' : 'b2b');
-    if (filters.kam[0]) query.set('kam', filters.kam[0]);
-    if (filters.university[0]) query.set('university', filters.university[0]);
-    if (filters.product[0]) query.set('product', filters.product[0]);
+    query.set('wf', wf ?? filters.wf ?? reportTypes[0] ?? 'b2b');
+    // мультифильтр переносится целиком: доска читает все значения (getAll, IN на сервере)
+    for (const id of filters.kam) query.append('kam', id);
+    for (const id of filters.university) query.append('university', id);
+    for (const id of filters.product) query.append('product', id);
     for (const [key, value] of Object.entries(extra)) query.set(key, value);
     return `/board?${query.toString()}`;
   };
 
-  const captionText = useMemo(() => {
-    const parts: string[] = [];
-    parts.push(
-      filters.from || filters.to
-        ? `Период: ${filters.from ?? '…'} — ${filters.to ?? '…'}`
-        : 'Период: всё время',
-    );
-    parts.push(`Тип: ${filters.wf === 'b2b' ? 'B2B' : filters.wf === 'b2c' ? 'B2C' : 'все'}`);
-    parts.push(dayjs().format('D MMM YYYY, HH:mm'));
-    return parts.join(' · ');
-  }, [filters]);
+  const subtitles = useMemo(() => widgetSubtitles(filters, report), [filters, report]);
 
-  const exportWholePng = async (): Promise<void> => {
-    const charts = [...chartPngGetters.current.values()]
-      .map(({ title, getPng }) => ({ title, dataUrl: getPng() }))
-      .filter((c): c is { title: string; dataUrl: string } => Boolean(c.dataUrl));
+  /** Графики панели в порядке сетки — только отрисованные (пустые пропускаются). */
+  const collectCharts = (): ChartExport[] =>
+    widgets
+      .map((widget): ChartExport | null => {
+        const getPng = chartPngGetters.current.get(widget.key);
+        const dataUrl = widget.hasData && getPng ? getPng() : null;
+        return dataUrl
+          ? { title: widget.title, subtitle: widget.subtitle, caption: filterLines, dataUrl }
+          : null;
+      })
+      .filter((chart): chart is ChartExport => chart !== null);
+
+  const exportWhole = async (format: 'png' | 'pdf'): Promise<void> => {
+    const charts = collectCharts();
     if (charts.length === 0) {
-      toastError(new Error('Графики ещё не загружены'), { title: 'Экспорт PNG недоступен' });
+      toastError(new Error('Графики ещё не загружены или пусты'), {
+        title: `Экспорт ${format.toUpperCase()} недоступен`,
+      });
       return;
     }
     try {
-      await composeDashboardPng(charts, captionText);
-      toastSuccess('PNG аналитической панели сохранён');
+      if (format === 'png') {
+        await downloadDashboardPng(charts, filterLines, 'alma-analitika');
+        toastSuccess('PNG аналитической панели сохранён');
+      } else {
+        const kpi = report?.kpi;
+        await downloadDashboardPdf(
+          {
+            title: 'Панель аналитики',
+            lines: [
+              ...filterLines,
+              kpi ? `KPI «Завершено», «Отказ», конверсия — за ${formatKpiPeriod(kpi.period)}` : '',
+              'Активные и зависшие — на текущую дату',
+            ].filter(Boolean),
+            facts: kpi
+              ? [
+                  { label: 'Заявок активных (сейчас)', value: String(kpi.active.value) },
+                  { label: 'Завершено за период', value: String(kpi.completed.value) },
+                  { label: 'Отказ за период', value: String(kpi.lost?.value ?? 0) },
+                  { label: 'Конверсия', value: `${kpi.conversion.value}%` },
+                  { label: 'Зависших (сейчас)', value: String(kpi.stuck.value) },
+                  { label: 'Графиков в отчёте', value: String(charts.length) },
+                ]
+              : [],
+          },
+          charts,
+          'alma-analitika',
+        );
+        toastSuccess('PDF аналитической панели сохранён', `${charts.length + 1} стр.`);
+      }
       completeChecklistItem('export-widget');
     } catch (error) {
-      toastError(error, { title: 'Не удалось собрать PNG' });
+      toastError(error, { title: `Не удалось собрать ${format.toUpperCase()}` });
     }
   };
 
-  const exportData = async (format: 'xlsx' | 'csv' | 'pdf'): Promise<void> => {
+  const exportData = async (format: 'xlsx' | 'csv'): Promise<void> => {
     setExporting(true);
     try {
       const name = await runExportAndDownload(
@@ -243,57 +400,100 @@ export function DashboardScreen(): ReactNode {
     </Button>
   );
 
-  const funnelSeries = report?.funnel.series ?? [];
+  const stageSeries = report?.funnel.series ?? [];
   const dynamicsSeries = report?.dynamics.series ?? [];
   const kamRows = report?.kam_workload.rows ?? [];
   const programRows = report?.programs_demand.rows ?? [];
+  const autoRanking = report?.programs_demand.auto_ranking ?? false;
   const talentSeries = report?.talent_pool_funnel.series ?? [];
+  // «Индекс» — только при включённом авторанжировании; иначе режим откатывается к заявкам
+  const programModes = PROGRAM_MODES.filter((mode) => mode.value !== 'demand' || autoRanking);
+  const activeProgramsMode: ProgramsMode =
+    programsMode === 'demand' && !autoRanking ? 'requests' : programsMode;
 
-  const widgets: Array<{ key: string; className: string; card: ReactNode }> = [
+  const hasStages = !allZero(stageSeries.map((item) => item.value));
+  const hasDynamics = !allZero(dynamicsSeries.flatMap((s) => s.points.map((p) => p.value)));
+  const hasWorkload = kamRows.length > 0;
+  const hasPrograms =
+    programRows.length > 0 &&
+    (activeProgramsMode === 'priority' ||
+      !allZero(programRows.map((row) => programMetric(row, activeProgramsMode))));
+  const hasTalent = !allZero(talentSeries.map((item) => item.value));
+  const emptyPeriod = filters.from || filters.to ? 'Нет данных за выбранный период' : 'Нет данных';
+
+  const widgets: Array<{
+    key: string;
+    title: string;
+    subtitle: string;
+    hasData: boolean;
+    className: string;
+    card: ReactNode;
+  }> = [
     {
-      key: 'funnel',
+      key: 'stages',
+      title: 'Заявки по текущему этапу',
+      subtitle: subtitles.stages ?? '',
+      hasData: hasStages,
       className: 'col-span-12 lg:col-span-5',
       card: (
         <ChartCard
-          chartId="funnel"
-          title="Воронка по этапам"
+          chartId="stages"
+          title="Заявки по текущему этапу"
+          subtitle={subtitles.stages}
+          exportCaption={filterLines}
           loading={loading}
-          empty={funnelSeries.length === 0}
+          height={stageBarsHeight(stageSeries)}
+          empty={!hasStages}
+          emptyText={emptyPeriod}
           emptyAction={resetPeriodButton}
-          option={funnelSeries.length > 0 ? funnelOption(funnelSeries) : null}
-          onChartReady={registerChart('Воронка по этапам')}
+          option={hasStages ? stageBarsOption(stageSeries) : null}
+          onChartReady={registerChart}
           onSegmentClick={({ dataKey }) => {
-            if (dataKey) navigate(boardQuery({ status: dataKey }));
+            const target = dataKey ? parseStageClickKey(dataKey) : null;
+            if (target) navigate(boardQuery({ status: target.status }, target.wf));
           }}
         />
       ),
     },
     {
       key: 'dynamics',
+      title: 'Динамика заявок',
+      subtitle: subtitles.dynamics ?? '',
+      hasData: hasDynamics,
       className: 'col-span-12 lg:col-span-7',
       card: (
         <ChartCard
           chartId="dynamics"
           title="Динамика заявок"
+          subtitle={subtitles.dynamics}
+          exportCaption={filterLines}
           loading={loading}
-          empty={dynamicsSeries.every((s) => s.points.length === 0)}
+          empty={!hasDynamics}
+          emptyText={emptyPeriod}
           emptyAction={resetPeriodButton}
-          option={dynamicsSeries.length > 0 ? dynamicsOption(dynamicsSeries) : null}
-          onChartReady={registerChart('Динамика заявок')}
+          option={hasDynamics ? dynamicsOption(dynamicsSeries) : null}
+          onChartReady={registerChart}
         />
       ),
     },
     {
       key: 'kam-workload',
+      title: 'Нагрузка по КАМам',
+      subtitle: subtitles.workload ?? '',
+      hasData: hasWorkload,
       className: 'col-span-12 lg:col-span-6',
       card: (
         <ChartCard
           chartId="kam-workload"
           title="Нагрузка по КАМам"
+          subtitle={subtitles.workload}
+          exportCaption={filterLines}
           loading={loading}
-          empty={kamRows.length === 0}
-          option={kamRows.length > 0 ? kamWorkloadOption(kamRows) : null}
-          onChartReady={registerChart('Нагрузка по КАМам')}
+          height={rowsHeight(kamRows.length, 320)}
+          empty={!hasWorkload}
+          emptyText="Нет КАМов с заявками под выбранные фильтры"
+          option={hasWorkload ? kamWorkloadOption(kamRows) : null}
+          onChartReady={registerChart}
           onSegmentClick={({ dataKey }) => {
             if (dataKey) patchParams({ kam: [dataKey] });
           }}
@@ -302,42 +502,56 @@ export function DashboardScreen(): ReactNode {
     },
     {
       key: 'programs',
+      title: 'Востребованность программ',
+      subtitle: subtitles.programs ?? '',
+      hasData: hasPrograms,
       className: 'col-span-12 lg:col-span-6',
       card: (
         <ChartCard
           chartId="programs"
-          title="Топ программ"
+          title="Востребованность программ"
+          subtitle={subtitles.programs}
+          exportCaption={[
+            ...filterLines,
+            `Сортировка: ${PROGRAM_MODES.find((m) => m.value === activeProgramsMode)?.label ?? ''}`,
+          ]}
           loading={loading}
-          empty={programRows.length === 0}
-          option={programRows.length > 0 ? programsOption(programRows, programsMode) : null}
-          onChartReady={registerChart('Топ программ')}
-          onSegmentClick={() => navigate('/registry/programs')}
+          height={340}
+          empty={!hasPrograms}
+          emptyText={emptyPeriod}
+          option={hasPrograms ? programsOption(programRows, activeProgramsMode) : null}
+          onChartReady={registerChart}
+          onSegmentClick={() => navigate('/registry/programs?mode=demand')}
           extra={
             <Segmented
               size="sm"
-              aria-label="Режим сортировки программ"
-              value={programsMode}
+              aria-label="Показатель востребованности программ"
+              value={activeProgramsMode}
               onChange={(value) => setProgramsMode(value as ProgramsMode)}
-              options={[
-                { label: 'По заявкам', value: 'requests' },
-                { label: 'По приоритету', value: 'priority' },
-              ]}
+              options={programModes.map((mode) => ({ label: mode.label, value: mode.value }))}
             />
           }
         />
       ),
     },
     {
-      key: 'talent-funnel',
+      key: 'talent',
+      title: 'Пул талантов: студенты по статусам',
+      subtitle: subtitles.talent ?? '',
+      hasData: hasTalent,
       className: 'col-span-12',
       card: (
         <ChartCard
-          chartId="talent-funnel"
-          title="Пул талантов: воронка студентов"
+          chartId="talent"
+          title="Пул талантов: студенты по статусам"
+          subtitle={subtitles.talent}
+          exportCaption={filterLines}
           loading={loading}
-          empty={talentSeries.length === 0}
-          option={talentSeries.length > 0 ? talentFunnelOption(talentSeries) : null}
-          onChartReady={registerChart('Воронка студентов')}
+          height={260}
+          empty={!hasTalent}
+          emptyText="Нет студентов под выбранные фильтры"
+          option={hasTalent ? talentBarsOption(talentSeries) : null}
+          onChartReady={registerChart}
           onSegmentClick={({ dataKey }) => {
             navigate(dataKey ? `/talent-pool?status=${dataKey}` : '/talent-pool');
           }}
@@ -362,9 +576,8 @@ export function DashboardScreen(): ReactNode {
           value={filters.wf ?? 'all'}
           onChange={(value) => patchParams({ wf: value === 'all' ? null : value })}
           options={[
-            { label: 'B2B', value: 'b2b' },
-            { label: 'B2C', value: 'b2c' },
-            { label: 'Все', value: 'all' },
+            ...reportTypes.map((wf) => ({ label: WORKFLOW_TYPE_LABELS[wf], value: wf })),
+            ...(reportTypes.length > 1 ? [{ label: 'Все', value: 'all' }] : []),
           ]}
         />
         {canFilterByKam ? (
@@ -379,7 +592,7 @@ export function DashboardScreen(): ReactNode {
             loading={kamsQuery.isLoading}
             emptyText="КАМы не найдены"
           />
-        ) : hasRole('kam') ? (
+        ) : hasPermission('requests:kam') ? (
           <Segmented
             aria-label="Мои или все заявки"
             value={filters.kam.length > 0 ? 'mine' : 'all'}
@@ -403,6 +616,17 @@ export function DashboardScreen(): ReactNode {
           emptyText="Вузы не найдены"
         />
         <MultiFilter
+          placeholder="ИТ-направление"
+          options={(directionsQuery.data?.items ?? []).map((d) => ({
+            value: d.id,
+            label: d.is_active ? d.name : `${d.name} (неактивно)`,
+          }))}
+          value={filters.direction}
+          onChange={(value) => patchParams({ direction: value })}
+          loading={directionsQuery.isLoading}
+          emptyText="Направления не найдены"
+        />
+        <MultiFilter
           placeholder="Продукт"
           options={(productsQuery.data?.items ?? []).map((p) => ({
             value: p.id,
@@ -413,11 +637,38 @@ export function DashboardScreen(): ReactNode {
           loading={productsQuery.isLoading}
           emptyText="Продукты не найдены"
         />
-        <div className="ml-auto flex items-center gap-2">
+        <MultiFilter
+          placeholder="Программа"
+          options={(programsQuery.data?.items ?? []).map((p) => ({
+            value: p.id,
+            label: p.name,
+          }))}
+          value={filters.program}
+          onChange={(value) => patchParams({ program: value })}
+          loading={programsQuery.isLoading}
+          emptyText="Программы не найдены"
+        />
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* отчёт по КАМам — с теми же фильтрами (период, процесс, КАМы, вузы, направления) */}
+          <Button variant="outline" asChild>
+            <Link to={kamActivityHref(filters)}>
+              Отчёт по КАМам
+              <ArrowRight aria-hidden="true" />
+            </Link>
+          </Button>
           <Button
             variant="ghost"
             onClick={() =>
-              patchParams({ from: null, to: null, wf: null, kam: [], university: [], product: [] })
+              patchParams({
+                from: null,
+                to: null,
+                wf: null,
+                kam: [],
+                university: [],
+                direction: [],
+                product: [],
+                program: [],
+              })
             }
           >
             Сбросить
@@ -435,7 +686,11 @@ export function DashboardScreen(): ReactNode {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => void exportWholePng()}>
+              {/* графики — на клиенте: PDF по графику на страницу, PNG одной лентой */}
+              <DropdownMenuItem onSelect={() => void exportWhole('pdf')}>
+                PDF всей панели
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void exportWhole('png')}>
                 PNG всей панели
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void exportData('xlsx')}>
@@ -444,11 +699,6 @@ export function DashboardScreen(): ReactNode {
               <DropdownMenuItem onSelect={() => void exportData('csv')}>
                 CSV данные
               </DropdownMenuItem>
-              {flags.report_pdf ? (
-                <DropdownMenuItem onSelect={() => void exportData('pdf')}>
-                  PDF отчёт
-                </DropdownMenuItem>
-              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

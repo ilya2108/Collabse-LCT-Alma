@@ -21,7 +21,7 @@ spec:
     - to: # маппинг keycloak_sub при сиде
         - podSelector: {matchLabels: {app.kubernetes.io/name: keycloak}}
       ports: [{port: 8080}]
-    - to: # CronJob-триггеры: stuck-check, purge-deleted
+    - to: # CronJob-триггеры: stuck-check, purge-deleted, idempotency-purge
         - podSelector: {matchLabels: {app.kubernetes.io/name: backend}}
       ports: [{port: 8000}]
 ---

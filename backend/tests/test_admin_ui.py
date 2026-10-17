@@ -19,11 +19,16 @@ from app.modules.ui.presets import (
 
 
 class TestFeatureFlags:
-    def test_defaults_all_off(self) -> None:
+    def test_defaults(self) -> None:
         flags = merge_flags(None)
         assert flags == {name: spec["default"] for name, spec in KNOWN_FLAGS.items()}
-        assert flags["report_pdf"] is False  # Р-13: PDF вне MVP
-        assert flags["llm_features"] is False  # N6: LLM в закрытом контуре выключен
+        # PDF-выгрузка дашборда включена по умолчанию (отчёт КАМов флагом не закрыт)
+        assert flags["report_pdf"] is True
+        assert KNOWN_FLAGS["report_pdf"]["label"] == "PDF-выгрузка дашборда (общая таблица)"
+        assert flags["auto_ranking"] is False
+        # N6: сводки ИИ — опция за флагом, по умолчанию выключены (пустой llm_features убран)
+        assert flags["ai_summaries"] is False
+        assert "llm_features" not in flags
 
     def test_stored_override_and_unknown_dropped(self) -> None:
         flags = merge_flags({"auto_ranking": True, "time_travel": True})
@@ -37,7 +42,7 @@ class TestSystemSettingsValidation:
             {
                 "stuck_threshold_days": 21,
                 "stuck_escalate_to_manager": False,
-                "integration_mode": "stream",
+                "integration_mode": "http",
                 "file_delivery": "presigned",
                 "version": 3,
             }
@@ -45,7 +50,7 @@ class TestSystemSettingsValidation:
         assert result == {
             "stuck_threshold_days": 21,
             "stuck_escalate_to_manager": False,
-            "integration_mode": "stream",
+            "integration_mode": "http",
             "file_delivery": "presigned",
         }
 
@@ -60,6 +65,15 @@ class TestSystemSettingsValidation:
             validate_system_settings({"integration_mode": "grpc"})
         with pytest.raises(ApiError):
             validate_system_settings({"file_delivery": "ftp"})
+
+    @pytest.mark.parametrize("mode", ["stream", "HTTP", None])
+    def test_integration_mode_http_only(self, mode: object) -> None:
+        """KeyDB Streams убран (api-contract.md §13.7): только outbox PostgreSQL → HTTP."""
+        with pytest.raises(ApiError) as exc_info:
+            validate_system_settings({"integration_mode": mode})
+        assert exc_info.value.code == "validation_error"
+        assert exc_info.value.status_code == 400
+        assert "только «http»" in exc_info.value.message
 
 
 class TestPresets:
@@ -83,9 +97,7 @@ class TestPresets:
 
     def test_patch_and_filter(self) -> None:
         items: list[dict] = []
-        preset = add_preset(
-            items, {"screen": "registry.universities", "name": "Мои вузы"}
-        )
+        preset = add_preset(items, {"screen": "registry.universities", "name": "Мои вузы"})
         patched = patch_preset(
             items, preset["id"], {"name": "Вузы ЦФО", "state": {"page_size": 50}}
         )

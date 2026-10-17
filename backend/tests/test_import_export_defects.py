@@ -201,9 +201,7 @@ class TestFormulaInjection:
     ]
 
     def test_csv_escapes_formula_prefixes(self) -> None:
-        text = render_export(
-            self.COLUMNS, self.ROWS, export_format="csv"
-        ).decode("utf-8-sig")
+        text = render_export(self.COLUMNS, self.ROWS, export_format="csv").decode("utf-8-sig")
         lines = text.splitlines()
         assert lines[1].startswith("'=cmd")
         assert "'@SUM(1,2)" in lines[1]
@@ -234,9 +232,7 @@ class TestApplyStudentsChunkedLookup:
         stats = await _apply_students(_ctx(session), rows)
         assert stats.created == 5
         # 5 уникальных hmac при чанке 2 → ровно 3 SELECT-а (ceil(5/2))
-        select_count = sum(
-            1 for stmt in session.executed if "email_hmac IN" in str(stmt)
-        )
+        select_count = sum(1 for stmt in session.executed if "email_hmac IN" in str(stmt))
         assert select_count == 3
 
     async def test_duplicate_hmacs_not_reselected(self, monkeypatch) -> None:  # noqa: ANN001
@@ -279,9 +275,7 @@ class TestMarkSessionFailed:
     async def test_marks_failed_in_fresh_session(self, monkeypatch) -> None:  # noqa: ANN001
         import app.core.db as db
 
-        import_session = ImportSession(
-            id=uuid.uuid4(), entity_type="students", status="applying"
-        )
+        import_session = ImportSession(id=uuid.uuid4(), entity_type="students", status="applying")
         recovery = self._Recovery(import_session)
         monkeypatch.setattr(db, "get_session_factory", lambda: lambda: recovery)
         await service._mark_session_failed(import_session.id)
@@ -293,9 +287,7 @@ class TestMarkSessionFailed:
     async def test_completed_session_not_overwritten(self, monkeypatch) -> None:  # noqa: ANN001
         import app.core.db as db
 
-        import_session = ImportSession(
-            id=uuid.uuid4(), entity_type="students", status="completed"
-        )
+        import_session = ImportSession(id=uuid.uuid4(), entity_type="students", status="completed")
         recovery = self._Recovery(import_session)
         monkeypatch.setattr(db, "get_session_factory", lambda: lambda: recovery)
         await service._mark_session_failed(import_session.id)

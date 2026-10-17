@@ -33,6 +33,11 @@ class FileObject(CreatedAtMixin, Base):
     entity_type: Mapped[str | None] = mapped_column(sa.Text)
     entity_id: Mapped[uuid.UUID | None] = mapped_column(sa.dialects.postgresql.UUID(as_uuid=True))
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(sa.ForeignKey("app_user.id"))
+    # файл заявки «в статусе» (ТЗ, ФТ3): строка истории — переход, на котором файл приложили,
+    # или вход в этап, где его загрузили из вкладки «Файлы» (миграция 0006)
+    stage_history_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.ForeignKey("deal_stage_history.id", ondelete="SET NULL")
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(sa.TIMESTAMP(timezone=True))
 
 
@@ -200,9 +205,7 @@ class AuditLog(Base):
 
     __tablename__ = "audit_log"
 
-    id: Mapped[int] = mapped_column(
-        sa.BigInteger, sa.Identity(always=True), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(sa.BigInteger, sa.Identity(always=True), primary_key=True)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.ForeignKey("app_user.id")
     )  # NULL = система

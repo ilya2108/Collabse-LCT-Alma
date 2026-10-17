@@ -16,7 +16,7 @@ import {
 } from '@/shared/api/endpoints/contracts';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { listRequests } from '@/shared/api/endpoints/requests';
-import type { Contract } from '@/shared/api/types';
+import type { Contract, ContractLicense, LicenseTransferStatus } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { formatDate, formatMoney, formatText } from '@/shared/lib/format';
 import { toastError, toastSuccess } from '@/shared/lib/toast';
@@ -64,8 +64,9 @@ import {
 import { Textarea } from '@/shared/ui/textarea';
 
 /**
- * Карточка договора (ux.md §9.2, redesign.md §6.5): DL-реквизиты, файлы
- * версий из MinIO, мини-карточки связанных заявок.
+ * Карточка договора (ux.md §9.2, redesign.md §6.5): DL-реквизиты, лицензии по
+ * продуктам (импорт «Таблица КАМов»), файлы версий из MinIO, мини-карточки
+ * связанных заявок.
  */
 
 const CONTRACT_STATUS_OPTIONS = [
@@ -75,6 +76,78 @@ const CONTRACT_STATUS_OPTIONS = [
   { value: 'completed', label: 'Завершён' },
   { value: 'terminated', label: 'Расторгнут' },
 ];
+
+const TRANSFER_STATUS_LABELS: Record<LicenseTransferStatus, string> = {
+  not_started: 'Не передана',
+  in_progress: 'В процессе передачи',
+  transferred: 'Передана',
+  cancelled: 'Отменена',
+};
+
+const TRANSFER_STATUS_VARIANTS: Record<LicenseTransferStatus, 'default' | 'secondary' | 'outline' | 'destructive'> = {
+  not_started: 'outline',
+  in_progress: 'secondary',
+  transferred: 'default',
+  cancelled: 'destructive',
+};
+
+/** Срок лицензии: «1 год», «3 года», «5 лет». */
+function formatTermYears(years: number): string {
+  const mod10 = years % 10;
+  const mod100 = years % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${years} год`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${years} года`;
+  return `${years} лет`;
+}
+
+/** Строка договора несёт лицензию, если заполнено хоть одно лицензионное поле. */
+function hasLicenseData(license: ContractLicense): boolean {
+  return (
+    license.license_signed_at != null ||
+    license.license_term_years != null ||
+    license.license_valid_to != null ||
+    license.transfer_status != null
+  );
+}
+
+function LicensesList({
+  licenses,
+  productNames,
+}: {
+  licenses: ContractLicense[];
+  productNames: Map<string, string>;
+}): ReactNode {
+  return (
+    <ul className="flex flex-col divide-y divide-border">
+      {licenses.map((license) => (
+        <li
+          key={license.product_id}
+          className="flex flex-col gap-1.5 py-2.5 first:pt-0 last:pb-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+        >
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="font-medium break-words">{productNames.get(license.product_id) ?? '…'}</span>
+            <span className="text-sm text-muted-foreground tabular">
+              {license.license_signed_at || license.license_valid_to
+                ? `${formatDate(license.license_signed_at)} — ${formatDate(license.license_valid_to)}`
+                : 'Даты не указаны'}
+              {license.license_term_years != null ? ` · ${formatTermYears(license.license_term_years)}` : ''}
+            </span>
+            {license.note ? (
+              <span className="text-sm text-muted-foreground break-words">{license.note}</span>
+            ) : null}
+          </div>
+          {license.transfer_status ? (
+            <Badge variant={TRANSFER_STATUS_VARIANTS[license.transfer_status]} className="shrink-0">
+              {TRANSFER_STATUS_LABELS[license.transfer_status]}
+            </Badge>
+          ) : (
+            <span className="shrink-0 text-sm text-muted-foreground">Статус передачи не указан</span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 const editSchema = z.object({
   number: z.string().trim().min(1, 'Укажите номер'),
@@ -321,6 +394,7 @@ export function ContractDetailPage(): ReactNode {
   const relatedRequests = (requestsQuery.data?.items ?? []).filter(
     (request) => request.contract_id === contract.id,
   );
+  const licenses = (contract.licenses ?? []).filter(hasLicenseData);
 
   return (
     <>
@@ -380,6 +454,13 @@ export function ContractDetailPage(): ReactNode {
               </DL>
             </SectionCard>
           </StaggerItem>
+          {licenses.length > 0 ? (
+            <StaggerItem>
+              <SectionCard title="Лицензии">
+                <LicensesList licenses={licenses} productNames={productNames} />
+              </SectionCard>
+            </StaggerItem>
+          ) : null}
           <StaggerItem>
             <SectionCard title="Файлы договора">
               <FileListPanel
@@ -394,7 +475,8 @@ export function ContractDetailPage(): ReactNode {
                     : null
                 }
                 onDelete={
-                  hasPermission('contracts:write')
+                  // удаление файлов договора — отдельное право (admin, head_kam), как на сервере
+                  hasPermission('contracts:files_delete')
                     ? async (fileId) => {
                         await deleteContractFile(contract.id, fileId);
                         await queryClient.invalidateQueries({ queryKey: ['contract-files', id] });

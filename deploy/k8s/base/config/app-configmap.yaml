@@ -22,7 +22,18 @@ data:
   LMS_BASE_URL: "http://lms-stub:8020"
   CMS_BASE_URL: "http://cms-stub:8030"
   NOTIFICATION_BASE_URL: "http://notification:8010"
+  # сводки ИИ: gigachat — через шлюз llm-gateway (ключ видит только он); rules — без ИИ.
+  # Токен шлюза — НЕ здесь: secretKeyRef crm-llm/LLM_GATEWAY_TOKEN только в контейнере backend
+  # (init, seed-demo и demo-reset перекрывают провайдер на rules — токен им не нужен)
+  AI_SUMMARY_PROVIDER: "gigachat"
+  LLM_GATEWAY_URL: "http://llm-gateway:8040"
   BACKEND_BASE_URL: "http://backend:8000"
-  # сидирует app_setting['stuck_threshold_days_default']; фактические пороги
-  # per-workflow/per-этап живут в БД и настраиваются в админке/конструкторе
+  # расчётом не читается (app_setting['stuck_threshold_days_default'] сидирует seed.py,
+  # а у процесса порог задан всегда); фактические пороги per-workflow/per-этап живут в БД
+  # и меняются на этапах в конструкторе процессов
   STUCK_DEFAULT_DAYS: "14"
+  # бюджет соединений PostgreSQL (max_connections=150, postgres/statefulset.yaml):
+  # пул на процесс uvicorn → (maxReplicas 6 + surge 2) × 2 воркера × (4 + 2) = 96,
+  # + Keycloak ≤ 10 + Jobs ≤ 9 → 115 < 150. Проверка — backend/tests/test_connection_budget.py
+  DB_POOL_SIZE: "4"
+  DB_MAX_OVERFLOW: "2"

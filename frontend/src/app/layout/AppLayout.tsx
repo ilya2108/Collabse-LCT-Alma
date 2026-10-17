@@ -13,6 +13,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/shared/ui/sheet';
+import { AccessChangeListener } from './AccessChangeListener';
 import { HeaderBar } from './HeaderBar';
 import { SiderLogo } from './SiderLogo';
 
@@ -21,6 +22,7 @@ import { SiderLogo } from './SiderLogo';
  * (свёрнутый 64px — иконки с тултипами), хедер 56px, контент max-width 1440
  * с PageTransition вокруг <Outlet/>. Адаптив §8.1: lg–xl — сайдбар в иконки,
  * < lg — сайдбар в Sheet по бургеру. Маршруты и guard'ы не меняются.
+ * Печать (справка → «Печать / PDF»): сайдбар и шапка скрыты, остаётся контент.
  */
 export function AppLayout(): ReactNode {
   const { lg, xl } = useBreakpoint();
@@ -33,10 +35,12 @@ export function AppLayout(): ReactNode {
 
   return (
     <div className="flex min-h-screen bg-background">
+      {/* SSE access.changed → перечитать /auth/me без перезахода (F2) */}
+      <AccessChangeListener />
       {sheetMode ? null : (
         <aside
           className={cn(
-            'sticky top-0 flex h-screen shrink-0 flex-col bg-sidebar',
+            'sticky top-0 flex h-screen shrink-0 flex-col bg-sidebar print:hidden',
             effectiveCollapsed ? 'w-16' : 'w-[248px]',
           )}
         >

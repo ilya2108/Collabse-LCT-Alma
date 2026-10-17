@@ -16,7 +16,7 @@ import {
   type NodeChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Info, Network, Plus, Send, TriangleAlert, X } from 'lucide-react';
+import { Info, KeyRound, Network, Plus, Send, TriangleAlert, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { listRequests } from '@/shared/api/endpoints/requests';
@@ -33,9 +33,17 @@ import type {
   WorkflowType,
 } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
+import {
+  WORKFLOW_LEVEL_HINTS,
+  WORKFLOW_LEVEL_LABELS,
+  WORKFLOW_TYPE_TITLES,
+  workflowLevelOf,
+  type WorkflowLevel,
+} from '@/shared/auth/permissions';
 import { STATUS_TRIPLES, SURFACE } from '@/shared/config/tokens';
 import { cn } from '@/shared/lib/cn';
 import { toastError, toastSuccess } from '@/shared/lib/toast';
+import { useRoleCatalog } from '@/shared/lib/useRoleCatalog';
 import { useSseInvalidate } from '@/shared/lib/useSseInvalidate';
 import {
   LocalErrorState,
@@ -60,7 +68,7 @@ import {
   validateDraft,
   type DraftStage,
 } from './model';
-import { PropertiesPanel, type CanvasSelection } from './PropertiesPanel';
+import { PropertiesPanel, ViewOnlyHint, type CanvasSelection } from './PropertiesPanel';
 import { StageNode, type StageFlowNode } from './StageNode';
 import { DeleteStageModal, RenameStageModal } from './StageModals';
 import { SubmitChangesModal } from './SubmitChangesModal';
@@ -126,17 +134,63 @@ function SchemaStatusBadge({
   );
 }
 
+/** Роли перехода по умолчанию, пока каталог ролей не загружен (системные роли с переходами). */
+const FALLBACK_TRANSITION_ROLES = ['kam', 'head_kam', 'admin'];
+
+/**
+ * Плашка «Ваш уровень доступа» (Р-F2-7): уровень конструктора в выбранном процессе
+ * из прав workflow:* ролей пользователя; подсказка объясняет, что он даёт.
+ */
+function AccessLevelBadge({ level, workflowTitle }: { level: WorkflowLevel; workflowTitle: string }): ReactNode {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          data-tour="wf-access-level"
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            level === 'approve' && 'bg-status-success-tint text-status-success-deep',
+            level === 'change' && 'bg-status-progress-tint text-status-progress-deep',
+            (level === 'read' || level === 'none') && 'bg-status-draft-tint text-status-draft-deep',
+          )}
+        >
+          <KeyRound className="size-3" aria-hidden="true" />
+          Ваш уровень: {WORKFLOW_LEVEL_LABELS[level]}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        {workflowTitle}: {WORKFLOW_LEVEL_HINTS[level].toLowerCase()}. Уровень задают права ролей
+        в разделе «Роли и права».
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ConstructorInner(): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { hasPermission, workflowTypesWith } = useAuth();
+  const { transitionCapable } = useRoleCatalog();
   // Чек-лист онбординга §7.5: no-op без провайдера.
   const { completeChecklistItem } = useOnboarding();
   const reactFlow = useReactFlow();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const wfType: WorkflowType = searchParams.get('wf') === 'b2c' ? 'b2c' : 'b2b';
-  const canEdit = hasRole('admin', 'head_kam');
-  const isAdmin = hasRole('admin');
+  // Процессы — только с правом просмотра схемы (F2); чужой wf в ссылке → первый доступный.
+  const readableTypes = workflowTypesWith('workflow:read');
+  const wfParam = searchParams.get('wf') as WorkflowType | null;
+  const wfType: WorkflowType =
+    wfParam && readableTypes.includes(wfParam) ? wfParam : (readableTypes[0] ?? 'b2b');
+  // Уровни конструктора — права с областью по процессу (Р-F2-7)
+  const canEdit = hasPermission('workflow:change', wfType);
+  const canPublish = hasPermission('workflow:approve', wfType);
+  const canHistory = hasPermission('workflow:history', wfType);
+  const accessLevel = workflowLevelOf((code) => hasPermission(code, wfType));
+  // новый переход по умолчанию доступен всем ролям, способным переводить заявки в процессе
+  const defaultTransitionRoles = useMemo(() => {
+    const capable = transitionCapable(wfType).map((role) => role.code);
+    return capable.length > 0 ? capable : FALLBACK_TRANSITION_ROLES;
+  }, [transitionCapable, wfType]);
 
   // --- Данные ---------------------------------------------------------------
   const workflowsQuery = useQuery({
@@ -173,7 +227,7 @@ function ConstructorInner(): ReactNode {
   const pendingQuery = useQuery({
     queryKey: ['workflow-changes', workflowId, 'pending'],
     queryFn: ({ signal }) => listWorkflowChanges(workflowId, 'pending', signal),
-    enabled: Boolean(workflowId) && canEdit,
+    enabled: Boolean(workflowId) && canHistory,
     staleTime: 30_000,
     retry: 0,
   });
@@ -320,7 +374,7 @@ function ConstructorInner(): ReactNode {
         });
         return;
       }
-      const id = store.addTransition(workflowId, source, target);
+      const id = store.addTransition(workflowId, source, target, defaultTransitionRoles);
       if (id) {
         setSelection({ kind: 'transition', id });
         // ребро появится в edges после перестройки — подсветим следующим кадром
@@ -329,7 +383,7 @@ function ConstructorInner(): ReactNode {
         );
       }
     },
-    [editing, workflowId, draft, store],
+    [editing, workflowId, draft, store, defaultTransitionRoles],
   );
 
   const handleAddStage = useCallback(() => {
@@ -400,7 +454,7 @@ function ConstructorInner(): ReactNode {
       } else {
         toastSuccess(
           'Пакет отправлен на согласование',
-          'Администратор увидит изменения в разделе «Согласования»',
+          'Согласующий увидит изменения в разделе «Согласования»',
         );
       }
       void queryClient.invalidateQueries({ queryKey: ['workflow-schema'] });
@@ -423,7 +477,7 @@ function ConstructorInner(): ReactNode {
       : issues.length > 0
         ? 'Исправьте ошибки схемы (список — на панели справа)'
         : pendingChange
-          ? 'Уже есть пакет на согласовании — дождитесь решения администратора'
+          ? 'Уже есть пакет на согласовании — дождитесь решения согласующего'
           : null;
 
   // --- Рендер --------------------------------------------------------------------
@@ -462,7 +516,7 @@ function ConstructorInner(): ReactNode {
       onClick={() => previewMutation.mutate(operations)}
     >
       <Send aria-hidden="true" />
-      {isAdmin && !dangerous ? 'Опубликовать изменения' : 'Отправить на согласование'}
+      {canPublish && !dangerous ? 'Опубликовать изменения' : 'Отправить на согласование'}
     </Button>
   );
 
@@ -471,7 +525,7 @@ function ConstructorInner(): ReactNode {
       <style>{EDGE_ANIMATION_CSS}</style>
       <LocalPageHeader
         title="Конструктор процессов"
-        subtitle="Одна живая схема на процесс, без версий: изменения применяются сразу для всех (опасные — после согласования администратора)"
+        subtitle="Одна живая схема на процесс, без версий: изменения применяются сразу для всех (опасные — после согласования)"
         extra={
           canEdit ? (
             editing ? (
@@ -549,7 +603,7 @@ function ConstructorInner(): ReactNode {
             Пакет изменений {pendingChange.author ? `от ${pendingChange.author.full_name} ` : ''}
             ждёт согласования — отправка нового заблокирована до решения
           </AlertTitle>
-          {isAdmin ? (
+          {canPublish ? (
             <AlertDescription>
               <Button asChild size="sm" className="mt-2">
                 <Link to="/admin/approvals">К согласованию</Link>
@@ -560,27 +614,27 @@ function ConstructorInner(): ReactNode {
       ) : null}
 
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3 shadow-card">
-        <LocalSegmented<WorkflowType>
-          aria-label="Процесс"
-          value={wfType}
-          onChange={(value) =>
-            setSearchParams((prev) => {
-              const next = new URLSearchParams(prev);
-              next.set('wf', value);
-              return next;
-            })
-          }
-          options={[
-            { value: 'b2b', label: 'B2B (вузы)' },
-            { value: 'b2c', label: 'B2C (физлица и юрлица)' },
-          ]}
-        />
-        {statusBadge}
-        {!canEdit ? (
-          <span className="text-sm text-muted-foreground">
-            Режим просмотра: редактирование доступно ролям admin и head_kam
+        {readableTypes.length > 1 ? (
+          <LocalSegmented<WorkflowType>
+            aria-label="Процесс"
+            value={wfType}
+            onChange={(value) =>
+              setSearchParams((prev) => {
+                const next = new URLSearchParams(prev);
+                next.set('wf', value);
+                return next;
+              })
+            }
+            options={readableTypes.map((wf) => ({ value: wf, label: WORKFLOW_TYPE_TITLES[wf] }))}
+          />
+        ) : (
+          <span className="inline-flex h-8 items-center rounded-md bg-muted px-3 text-sm font-medium">
+            {WORKFLOW_TYPE_TITLES[wfType]}
           </span>
-        ) : null}
+        )}
+        {statusBadge}
+        <AccessLevelBadge level={accessLevel} workflowTitle={WORKFLOW_TYPE_TITLES[wfType]} />
+        {!canEdit ? <ViewOnlyHint /> : null}
       </div>
 
       <div className="flex items-stretch gap-3">
@@ -663,6 +717,7 @@ function ConstructorInner(): ReactNode {
         </div>
 
         <PropertiesPanel
+          workflowType={wfType}
           editing={editing}
           schema={schema}
           draft={draft ?? null}
@@ -765,7 +820,7 @@ function ConstructorInner(): ReactNode {
           impact={submitState.impact}
           impactUnavailable={submitState.impactUnavailable}
           dangerous={hasDangerousOps(submitState.operations)}
-          isAdmin={isAdmin}
+          canPublish={canPublish}
           submitting={submitMutation.isPending}
           onSubmit={(comment) =>
             submitMutation.mutate({ comment, ops: submitState.operations })

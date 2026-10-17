@@ -5,6 +5,7 @@ import {
   createDraftFromSchema,
   newLocalId,
   slugifyStageName,
+  STAGE_COLOR_PRESETS,
   type DraftStage,
   type DraftTransition,
   type StageDeleteMeta,
@@ -33,10 +34,12 @@ interface WorkflowDraftStore {
   restoreStage: (workflowId: string, stageId: string) => void;
   /** Переименование существующего этапа с посимвольным подтверждением. */
   renameStage: (workflowId: string, stageId: string, newName: string, confirmName: string) => void;
+  /** Новый переход; `defaultRoles` — роли, способные выполнять переходы в процессе (F2). */
   addTransition: (
     workflowId: string,
     fromStatusId: string,
     toStatusId: string,
+    defaultRoles: readonly string[],
   ) => string | null;
   patchTransition: (
     workflowId: string,
@@ -93,7 +96,7 @@ export const useWorkflowDraftStore = create<WorkflowDraftStore>()(
               id,
               code: slugifyStageName(name, draft.stages.map((s) => s.code)),
               name,
-              color: '#1677ff',
+              color: STAGE_COLOR_PRESETS[0] ?? '#1F69FF',
               is_initial: false,
               is_terminal: false,
               terminal_outcome: null,
@@ -146,7 +149,7 @@ export const useWorkflowDraftStore = create<WorkflowDraftStore>()(
           })),
         })),
 
-      addTransition: (workflowId, fromStatusId, toStatusId) => {
+      addTransition: (workflowId, fromStatusId, toStatusId, defaultRoles) => {
         const draft = get().drafts[workflowId];
         if (!draft || fromStatusId === toStatusId) return null;
         const duplicate = draft.transitions.some(
@@ -166,7 +169,7 @@ export const useWorkflowDraftStore = create<WorkflowDraftStore>()(
           kind: isReturn ? 'return' : 'forward',
           name: isReturn ? `Вернуть на «${to.name}»` : `В «${to.name}»`,
           requires_comment: isReturn,
-          allowed_roles: ['kam', 'head_kam', 'admin'],
+          allowed_roles: [...defaultRoles],
         };
         set((state) => ({
           drafts: withDraft(state.drafts, workflowId, (d) => ({

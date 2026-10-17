@@ -1,4 +1,4 @@
-"""Экспорт данных и отчётов: XLSX / CSV / JSON (api-contract.md §7.1).
+"""Экспорт данных и отчётов: XLSX / CSV / JSON / PDF (api-contract.md §7.1).
 
 Устойчивость к кодировкам при выгрузке (решение кейсодержателя): CSV — `utf-8`
 с BOM (Excel не ломает кириллицу) либо `cp1251`, разделитель по умолчанию `;`.
@@ -13,16 +13,33 @@
   с аудитом; упоминание «расшифровки на лету» в data-model §8.3 признано
   противоречащим контракту и критериям приёмки — маски по умолчанию);
 - значения-«формулы» (=, +, -, @) экранируются в CSV и пишутся строками в XLSX
-  (CWE-1236: инъекционные значения попадают в БД легитимно через импорт).
+  (CWE-1236: инъекционные значения попадают в БД легитимно через импорт);
+- права (F2): выгрузка сущности требует права её чтения (`<сущность>:read`, отчёты —
+  `reports:read`), заявки — в области роли (процессы B2B/B2C, «только свои»);
+  чужие выгрузки видны только с правом `files:others`;
+- PDF — только для отчётов: `report:kam-activity` — PDF для заказчика (флагом не закрыт),
+  общая табличная PDF-выгрузка `report:<code>` дашборда — за фичефлагом `report_pdf`;
+  реестрам PDF не нужен (422). `report:kam-activity` в XLSX — многолистовая книга
+  «Сводка / КАМы / Вузы / Заявки / Динамика», в CSV/JSON — лист «Заявки»
+  (`app.modules.reporting.kam_activity_export`; та же область видимости, что у API);
+  `report:interactions` — «Взаимодействия за период» по выбранным колонкам (ТЗ ФТ4)
+  в XLSX/PDF/CSV/JSON (`app.modules.reporting.interactions_export`), PDF флагом не закрыт;
+  `report:sla` — «Просрочки» (`app.modules.reporting.sla_export`): XLSX из 8 листов, PDF
+  «Сроки этапов: просрочки» без имён или по КАМам (`options.by_kam`), CSV/JSON —
+  просроченные заявки; PDF флагом не закрыт;
+- фильтры тела (`filters`): id — строкой или списком, список применяется целиком (`IN`),
+  а не «первый элемент»; некорректное значение (не UUID, не дата) — 422 с полями,
+  а не 500.
 """
 
 from __future__ import annotations
 
 import asyncio
 import csv
+import dataclasses
 import io
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import orjson
@@ -32,27 +49,55 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.cache import get_cache
 from app.core.config import get_settings
-from app.core.errors import not_found, unprocessable, validation_error
+from app.core.errors import ApiError, forbidden, not_found, unprocessable, validation_error
 from app.core.pii import mask_email, mask_full_name, mask_phone
+from app.core.rbac_catalog import permission_name
 from app.models.crm import Contract, Counterparty, Product, Program, University
 from app.models.deal import Deal
 from app.models.service import FileObject
 from app.models.talent import FederalProject, Student
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
+from app.modules.crm.directions import direction_match, direction_names
 from app.modules.files.service import store_bytes
 from app.modules.reporting.service import REPORT_CODES, ReportParams, build_report
 
 EXPORT_STATUS_TTL_SECONDS = 30 * 60
 MAX_EXPORT_ROWS = 50_000
+_MSK = timezone(timedelta(hours=3), "MSK")  # подписи PDF — московское время (как отчёты)
 
-EXPORT_FORMATS = ("xlsx", "csv", "json")
+EXPORT_FORMATS = ("xlsx", "csv", "json", "pdf")
 EXPORT_ENTITY_TYPES = ("requests", "universities", "contracts", "programs", "students")
+KAM_ACTIVITY_ENTITY_TYPE = "report:kam-activity"
+INTERACTIONS_ENTITY_TYPE = "report:interactions"
+SLA_ENTITY_TYPE = "report:sla"
+
+# право чтения выгружаемой сущности; отчёты `report:<code>` — reports:read
+_ENTITY_READ_PERMISSIONS = {
+    "requests": "requests:read",
+    "universities": "universities:read",
+    "contracts": "contracts:read",
+    "programs": "programs:read",
+    "students": "students:read",
+}
 
 _CONTENT_TYPES = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "csv": "text/csv",
     "json": "application/json",
+    "pdf": "application/pdf",
+}
+
+# заголовки табличного PDF `report:<code>` (подписи — как в виджетах дашборда)
+_REPORT_TITLES = {
+    "funnel": "Воронка по этапам",
+    "kam-workload": "Нагрузка по КАМам",
+    "stuck": "Зависшие заявки",
+    "universities-coverage": "Вузы по регионам",
+    "programs-demand": "Топ программ",
+    "talent-pool-funnel": "Пул талантов: воронка студентов",
+    "dynamics": "Динамика заявок",
+    "dashboard": "Аналитика: ключевые показатели",
 }
 
 
@@ -69,6 +114,83 @@ def _fmt(value: Any) -> Any:
 
 
 # --------------------------------------------------------------------------------------
+# Фильтры тела выгрузки: строка или список, некорректное значение — 422 (не 500)
+# --------------------------------------------------------------------------------------
+
+
+def invalid_filters(details: list[dict[str, Any]] | None) -> ApiError:
+    """Значение в `filters` тела выгрузки не разобрано: 422 со списком полей.
+
+    Тело — валидный JSON, но фильтр не применить (не UUID, не дата, лишние значения);
+    раньше такой фильтр ронял выгрузку с 500 (`uuid.UUID(str(["…"]))`).
+    """
+    return ApiError(422, "unprocessable", "Некорректные фильтры выгрузки", details or None)
+
+
+def _filter_problem(field: str, code: str, message: str) -> dict[str, str]:
+    return {"field": f"filters.{field}", "code": code, "message": message}
+
+
+def filter_uuids(filters: dict[str, Any], *keys: str) -> tuple[uuid.UUID, ...]:
+    """Значения фильтра (строка, UUID или список) по первому заданному ключу из `keys`.
+
+    Все значения списка применяются (`IN`), а не первое: файл совпадает с экраном.
+    """
+    for key in keys:
+        raw = filters.get(key)
+        if raw is None or raw == "" or raw == []:
+            continue
+        items = raw if isinstance(raw, list | tuple) else [raw]
+        result: list[uuid.UUID] = []
+        problems: list[dict[str, Any]] = []
+        for item in items:
+            if item is None or item == "":
+                continue
+            if isinstance(item, uuid.UUID):
+                result.append(item)
+                continue
+            try:
+                result.append(uuid.UUID(str(item)))
+            except ValueError:
+                problems.append(
+                    _filter_problem(key, "invalid_uuid", f"«{item}» — не идентификатор (UUID)")
+                )
+        if problems:
+            raise invalid_filters(problems)
+        return tuple(dict.fromkeys(result))
+    return ()
+
+
+def filter_date(filters: dict[str, Any], key: str) -> date | None:
+    raw = filters.get(key)
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw))
+    except ValueError:
+        raise invalid_filters(
+            [_filter_problem(key, "invalid_date", f"«{raw}» — не дата в формате ГГГГ-ММ-ДД")]
+        ) from None
+
+
+def filter_strings(filters: dict[str, Any], key: str) -> tuple[str, ...]:
+    raw = filters.get(key)
+    if raw is None or raw == "" or raw == []:
+        return ()
+    items = raw if isinstance(raw, list | tuple) else [raw]
+    return tuple(str(item) for item in items if item not in (None, ""))
+
+
+def _as_unprocessable(exc: ApiError) -> ApiError:
+    """400 validation_error разбора фильтров отчёта → 422 выгрузки (поля сохраняются)."""
+    if exc.status_code == 400 and exc.code == "validation_error":
+        return invalid_filters(exc.details)
+    return exc
+
+
+# --------------------------------------------------------------------------------------
 # Датасеты реестров: (колонки, строки)
 # --------------------------------------------------------------------------------------
 
@@ -79,7 +201,17 @@ async def _dataset_requests(
     session: AsyncSession, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
     stmt = (
-        select(Deal, WorkflowStage, Workflow, AppUser, University, Counterparty, Product, Program)
+        select(
+            Deal,
+            WorkflowStage,
+            Workflow,
+            AppUser,
+            University,
+            Counterparty,
+            Product,
+            Program,
+            direction_names(Deal.program_id, Deal.product_id).label("it_direction"),
+        )
         .join(WorkflowStage, WorkflowStage.id == Deal.stage_id)
         .join(Workflow, Workflow.id == Deal.workflow_id)
         .join(AppUser, AppUser.id == Deal.responsible_user_id)
@@ -91,25 +223,37 @@ async def _dataset_requests(
         .order_by(Deal.created_at.desc())
         .limit(MAX_EXPORT_ROWS)
     )
-    if filters.get("workflow_type"):
-        stmt = stmt.where(Workflow.code == filters["workflow_type"])
-    status_ids = filters.get("status_id") or []
-    if isinstance(status_ids, str):
-        status_ids = [status_ids]
+    stmt = viewer.access.deal_scope("requests:read", viewer.id).apply(stmt)
+    workflow_types = filter_strings(filters, "workflow_type")
+    if workflow_types:
+        stmt = stmt.where(Workflow.code.in_(workflow_types))
+    status_ids = filter_uuids(filters, "status_id")
     if status_ids:
-        stmt = stmt.where(Deal.stage_id.in_([uuid.UUID(str(s)) for s in status_ids]))
-    if filters.get("assignee_id"):
-        stmt = stmt.where(Deal.responsible_user_id == uuid.UUID(str(filters["assignee_id"])))
-    if filters.get("university_id"):
-        stmt = stmt.where(Deal.university_id == uuid.UUID(str(filters["university_id"])))
-    if filters.get("product_id"):
-        stmt = stmt.where(Deal.product_id == uuid.UUID(str(filters["product_id"])))
-    if filters.get("source"):
-        stmt = stmt.where(Deal.source == filters["source"])
-    if filters.get("created_from"):
-        stmt = stmt.where(Deal.created_at >= date.fromisoformat(str(filters["created_from"])))
-    if filters.get("created_to"):
-        stmt = stmt.where(Deal.created_at <= date.fromisoformat(str(filters["created_to"])))
+        stmt = stmt.where(Deal.stage_id.in_(status_ids))
+    assignee_ids = filter_uuids(filters, "assignee_id")
+    if assignee_ids:
+        stmt = stmt.where(Deal.responsible_user_id.in_(assignee_ids))
+    university_ids = filter_uuids(filters, "university_id")
+    if university_ids:
+        stmt = stmt.where(Deal.university_id.in_(university_ids))
+    product_ids = filter_uuids(filters, "product_id")
+    if product_ids:
+        stmt = stmt.where(Deal.product_id.in_(product_ids))
+    program_ids = filter_uuids(filters, "program_id")
+    if program_ids:
+        stmt = stmt.where(Deal.program_id.in_(program_ids))
+    direction_ids = filter_uuids(filters, "direction_id")
+    if direction_ids:
+        stmt = stmt.where(direction_match(Deal.program_id, Deal.product_id, direction_ids))
+    sources = filter_strings(filters, "source")
+    if sources:
+        stmt = stmt.where(Deal.source.in_(sources))
+    created_from = filter_date(filters, "created_from")
+    if created_from:
+        stmt = stmt.where(Deal.created_at >= created_from)
+    created_to = filter_date(filters, "created_to")
+    if created_to:
+        stmt = stmt.where(Deal.created_at <= created_to)
 
     columns = [
         ("id", "ID"),
@@ -122,13 +266,14 @@ async def _dataset_requests(
         ("amount", "Сумма"),
         ("currency", "Валюта"),
         ("source", "Источник"),
+        ("it_direction", "ИТ-направление"),
         ("product.name", "Продукт"),
         ("program.name", "Программа"),
         ("created_at", "Создана"),
         ("status_updated_at", "На этапе с"),
     ]
     rows = []
-    for deal, stage, workflow, assignee, university, counterparty, product, program in (
+    for deal, stage, workflow, assignee, university, counterparty, product, program, direction in (
         await session.execute(stmt)
     ).all():
         rows.append(
@@ -143,6 +288,7 @@ async def _dataset_requests(
                 "amount": format(deal.amount, "f") if deal.amount is not None else None,
                 "currency": deal.currency,
                 "source": deal.source,
+                "it_direction": direction,
                 "product.name": product.name if product else None,
                 "program.name": program.name if program else None,
                 "created_at": _fmt(deal.created_at),
@@ -155,9 +301,12 @@ async def _dataset_requests(
 async def _dataset_universities(
     session: AsyncSession, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
-    stmt = select(University, AppUser).outerjoin(
-        AppUser, AppUser.id == University.kam_user_id
-    ).order_by(University.name).limit(MAX_EXPORT_ROWS)
+    stmt = (
+        select(University, AppUser)
+        .outerjoin(AppUser, AppUser.id == University.kam_user_id)
+        .order_by(University.name)
+        .limit(MAX_EXPORT_ROWS)
+    )
     if filters.get("region"):
         stmt = stmt.where(University.region == filters["region"])
     if filters.get("is_active") is not None:
@@ -198,10 +347,12 @@ async def _dataset_contracts(
         .order_by(Contract.created_at.desc())
         .limit(MAX_EXPORT_ROWS)
     )
-    if filters.get("status"):
-        stmt = stmt.where(Contract.status == filters["status"])
-    if filters.get("university_id"):
-        stmt = stmt.where(Contract.university_id == uuid.UUID(str(filters["university_id"])))
+    statuses = filter_strings(filters, "status")
+    if statuses:
+        stmt = stmt.where(Contract.status.in_(statuses))
+    university_ids = filter_uuids(filters, "university_id")
+    if university_ids:
+        stmt = stmt.where(Contract.university_id.in_(university_ids))
     columns = [
         ("number", "Номер"),
         ("owner", "Владелец"),
@@ -215,9 +366,9 @@ async def _dataset_contracts(
     rows = [
         {
             "number": c.number,
-            "owner": university.name if university else (
-                counterparty.display_name if counterparty else None
-            ),
+            "owner": university.name
+            if university
+            else (counterparty.display_name if counterparty else None),
             "status": c.status,
             "signed_at": _fmt(c.signed_at),
             "valid_from": _fmt(c.valid_from),
@@ -234,18 +385,28 @@ async def _dataset_programs(
     session: AsyncSession, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
     stmt = (
-        select(Program, Product, University)
+        select(
+            Program,
+            Product,
+            University,
+            direction_names(Program.id, Program.product_id).label("it_direction"),
+        )
         .outerjoin(Product, Product.id == Program.product_id)
         .outerjoin(University, University.id == Program.university_id)
         .order_by(Program.priority_rank, Program.name)
         .limit(MAX_EXPORT_ROWS)
     )
-    if filters.get("product_id"):
-        stmt = stmt.where(Program.product_id == uuid.UUID(str(filters["product_id"])))
+    product_ids = filter_uuids(filters, "product_id")
+    if product_ids:
+        stmt = stmt.where(Program.product_id.in_(product_ids))
+    direction_ids = filter_uuids(filters, "direction_id")
+    if direction_ids:
+        stmt = stmt.where(direction_match(Program.id, Program.product_id, direction_ids))
     if filters.get("is_active") is not None:
         stmt = stmt.where(Program.is_active.is_(bool(filters["is_active"])))
     columns = [
         ("name", "Программа"),
+        ("it_direction", "ИТ-направление"),
         ("product.name", "Продукт"),
         ("university.name", "Вуз"),
         ("priority_rank", "Приоритет (меньше = выше)"),
@@ -256,6 +417,7 @@ async def _dataset_programs(
     rows = [
         {
             "name": p.name,
+            "it_direction": direction,
             "product.name": product.name if product else None,
             "university.name": university.name if university else None,
             "priority_rank": p.priority_rank,
@@ -263,7 +425,7 @@ async def _dataset_programs(
             "starts_on": _fmt(p.starts_on),
             "published_to_cms": "да" if p.published_to_cms else "нет",
         }
-        for p, product, university in (await session.execute(stmt)).all()
+        for p, product, university, direction in (await session.execute(stmt)).all()
     ]
     return columns, rows
 
@@ -279,14 +441,15 @@ async def _dataset_students(
         .order_by(Student.display_name)
         .limit(MAX_EXPORT_ROWS)
     )
-    if filters.get("funnel_status"):
-        stmt = stmt.where(Student.funnel_status == filters["funnel_status"])
-    if filters.get("university_id"):
-        stmt = stmt.where(Student.university_id == uuid.UUID(str(filters["university_id"])))
-    if filters.get("federal_project_id"):
-        stmt = stmt.where(
-            Student.federal_project_id == uuid.UUID(str(filters["federal_project_id"]))
-        )
+    funnel_statuses = filter_strings(filters, "funnel_status")
+    if funnel_statuses:
+        stmt = stmt.where(Student.funnel_status.in_(funnel_statuses))
+    university_ids = filter_uuids(filters, "university_id")
+    if university_ids:
+        stmt = stmt.where(Student.university_id.in_(university_ids))
+    project_ids = filter_uuids(filters, "federal_project_id")
+    if project_ids:
+        stmt = stmt.where(Student.federal_project_id.in_(project_ids))
     columns = [
         ("display_name", "Студент"),
         ("full_name", "ФИО"),
@@ -330,6 +493,73 @@ _DATASETS = {
 }
 
 
+# id-фильтры дашборда: ключ `filters` (как query `/reports/*`) → поле ReportParams
+_REPORT_ID_FILTERS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("kam_id",), "kam_id"),
+    (("product_id",), "product_id"),
+    (("university_id",), "university_id"),
+    (("program_id",), "program_id"),
+    (("federal_project", "federal_project_id"), "federal_project_id"),
+)
+
+
+def _is_multi_field(name: str) -> bool:
+    """Поле ReportParams принимает список id (единый слой фильтров) или одно значение."""
+    for item in dataclasses.fields(ReportParams):
+        if item.name == name:
+            return isinstance(item.default, tuple | list) or item.default_factory in (
+                tuple,
+                list,
+            )
+    return False
+
+
+def report_params_from_filters(filters: dict[str, Any]) -> ReportParams:
+    """`filters` выгрузки `report:<code>` → ReportParams; любое некорректное значение — 422.
+
+    Списки id применяются целиком (`IN`), «первый элемент списка» не берётся: файл
+    совпадает с экраном. Разбор — `ReportParams.from_filters` (единый слой фильтров
+    дашборда), без него — здесь же: одиночное поле со списком из нескольких значений —
+    явная 422, а не тихое сужение выборки.
+    """
+    from_filters = getattr(ReportParams, "from_filters", None)
+    try:
+        if from_filters is not None:
+            return from_filters(filters)
+        workflow_type = filters.get("workflow_type") or None
+        if workflow_type is not None and workflow_type not in ("b2b", "b2c"):
+            raise invalid_filters(
+                [_filter_problem("workflow_type", "invalid_value", "Тип процесса — b2b или b2c")]
+            )
+        values: dict[str, Any] = {}
+        for keys, name in _REPORT_ID_FILTERS:
+            ids = filter_uuids(filters, *keys)
+            if _is_multi_field(name):
+                values[name] = ids
+            elif len(ids) > 1:
+                raise invalid_filters(
+                    [
+                        _filter_problem(
+                            keys[0], "too_many_values", "Этот отчёт фильтруется по одному значению"
+                        )
+                    ]
+                )
+            else:
+                values[name] = ids[0] if ids else None
+        return ReportParams(
+            workflow_type=workflow_type,
+            date_from=filter_date(filters, "from"),
+            date_to=filter_date(filters, "to"),
+            region=filters.get("region") or None,
+            **values,
+        )
+    except ApiError as exc:
+        converted = _as_unprocessable(exc)
+        if converted is exc:
+            raise
+        raise converted from exc
+
+
 async def _dataset_report(
     session: AsyncSession, code: str, filters: dict[str, Any], viewer: AppUser
 ) -> Dataset:
@@ -346,33 +576,17 @@ async def _dataset_report(
             ],
         )
 
-    def _get_uuid(key: str) -> uuid.UUID | None:
-        raw = filters.get(key)
-        return uuid.UUID(str(raw)) if raw else None
-
-    params = ReportParams(
-        workflow_type=filters.get("workflow_type"),
-        date_from=date.fromisoformat(str(filters["from"])) if filters.get("from") else None,
-        date_to=date.fromisoformat(str(filters["to"])) if filters.get("to") else None,
-        kam_id=_get_uuid("kam_id"),
-        product_id=_get_uuid("product_id"),
-        university_id=_get_uuid("university_id"),
-        region=filters.get("region"),
-        federal_project_id=_get_uuid("federal_project"),
-    )
-    report = await build_report(session, code, viewer, params)
+    report = await build_report(session, code, viewer, report_params_from_filters(filters))
     if "series" in report:
         first = report["series"][0] if report["series"] else {}
         if "points" in first:  # dynamics: строка на дату, колонка на серию
-            columns = [("date", "Дата")] + [
-                (s["key"], s["label"]) for s in report["series"]
-            ]
+            columns = [("date", "Дата")] + [(s["key"], s["label"]) for s in report["series"]]
             by_date: dict[str, dict[str, Any]] = {}
             for series in report["series"]:
                 for point in series["points"]:
-                    by_date.setdefault(point["date"], {"date": point["date"]})[
-                        series["key"]
-                    ] = point["value"]
+                    by_date.setdefault(point["date"], {"date": point["date"]})[series["key"]] = (
+                        point["value"]
+                    )
             return columns, [by_date[key] for key in sorted(by_date)]
         columns = [("label", "Показатель"), ("value", "Значение")]
         if any("amount" in s for s in report["series"]):
@@ -393,13 +607,14 @@ async def _dataset_report(
             flat_rows.append(flat)
         return columns, flat_rows
     # dashboard: KPI-показатели одной таблицей. _kpi отдаёт метрики в форме
-    # {value, delta} (ключи active/completed/conversion/stuck) + period —
+    # {value, delta} (ключи active/completed/lost/conversion/stuck) + period —
     # разворачиваем словари в скаляры, иначе XLSX падает на dict-значении
     kpi = report.get("kpi", {})
     columns = [("metric", "Показатель"), ("value", "Значение"), ("delta", "Дельта")]
     labels = {
         "active": "Заявок активных",
         "completed": "Завершено за период",
+        "lost": "Отказ за период",
         "conversion": "Конверсия, %",
         "stuck": "Зависших",
     }
@@ -409,9 +624,7 @@ async def _dataset_report(
             continue
         value = kpi[key]
         if isinstance(value, dict):
-            rows.append(
-                {"metric": label, "value": value.get("value"), "delta": value.get("delta")}
-            )
+            rows.append({"metric": label, "value": value.get("value"), "delta": value.get("delta")})
         else:
             rows.append({"metric": label, "value": value, "delta": None})
     period = kpi.get("period")
@@ -510,12 +723,45 @@ def render_export(
     export_format: str,
     encoding: str = "utf-8",
     delimiter: str = ";",
+    title: str = "Выгрузка",
+    subtitle: str = "",
 ) -> bytes:
     if export_format == "xlsx":
         return _write_xlsx(columns, rows)
     if export_format == "csv":
         return _write_csv(columns, rows, encoding=encoding, delimiter=delimiter)
+    if export_format == "pdf":
+        # ленивый импорт: fpdf нужен только PDF (без библиотеки остальной экспорт работает)
+        from app.modules.reporting.pdf import render_table_pdf
+
+        generated = _now().astimezone(_MSK).strftime("%d.%m.%Y %H:%M МСК")
+        return render_table_pdf(
+            title,
+            columns,
+            [{key: _pdf_cell(row.get(key)) for key, _label in columns} for row in rows],
+            subtitle=subtitle,
+            generated=generated,
+        )
     return _write_json(columns, rows)
+
+
+def _pdf_cell(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.astimezone(_MSK).strftime("%d.%m.%Y %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    return value
+
+
+def _pdf_unavailable() -> ApiError:
+    """fpdf2 не установлен (образ собран без него) — понятная 422 вместо 500."""
+    return unprocessable("PDF-модуль недоступен на сервере — выгрузите XLSX")
+
+
+def _is_fpdf_missing(exc: ModuleNotFoundError) -> bool:
+    return (exc.name or "").split(".", 1)[0] == "fpdf"
 
 
 def _select_columns(
@@ -567,6 +813,60 @@ def _job_status_payload(
     }
 
 
+async def _store_export(
+    session: AsyncSession,
+    *,
+    user: AppUser,
+    entity_type: str,
+    export_format: str,
+    data: bytes,
+    rows: int,
+    file_name: str,
+) -> dict[str, Any]:
+    """Общий хвост выгрузки: файл в бакет выгрузок, аудит, commit, статус в KeyDB.
+
+    Видимость результата (автор или `files:others`) проверяют `get_export_job` и
+    `list_export_jobs` по `uploaded_by`.
+    """
+    file_object = await store_bytes(
+        session,
+        data=data,
+        original_name=file_name,
+        content_type=_CONTENT_TYPES[export_format],
+        bucket=get_settings().s3_bucket_exports,
+        entity_type="report",
+        entity_id=user.id,  # владелец выгрузки; сам файл — самостоятельная сущность
+        uploaded_by=user.id,
+    )
+    await write_audit(
+        session,
+        actor_user_id=user.id,
+        action="student.exported" if entity_type == "students" else "export.created",
+        entity_type="export",
+        entity_id=file_object.id,
+        after={"entity_type": entity_type, "format": export_format, "rows": rows},
+    )
+    await session.commit()
+
+    payload = _job_status_payload(
+        file_object, entity_type=entity_type, export_format=export_format, rows=rows
+    )
+    await get_cache().set_json(f"export:{file_object.id}", payload, EXPORT_STATUS_TTL_SECONDS)
+    return payload
+
+
+async def _report_pdf_enabled(session: AsyncSession) -> bool:
+    from app.modules.admin.service import get_flags
+
+    return bool((await get_flags(session)).get("report_pdf"))
+
+
+def _report_pdf_subtitle(filters: dict[str, Any]) -> str:
+    if not (filters.get("from") or filters.get("to")):
+        return "Период: всё время"
+    return f"Период: {filters.get('from') or '…'} — {filters.get('to') or '…'}"
+
+
 async def create_export_job(
     session: AsyncSession,
     *,
@@ -578,11 +878,106 @@ async def create_export_job(
     options: dict[str, Any],
 ) -> dict[str, Any]:
     if export_format not in EXPORT_FORMATS:
-        raise unprocessable(f"Формат «{export_format}» не поддерживается (xlsx/csv/json)")
+        raise unprocessable(f"Формат «{export_format}» не поддерживается (xlsx/csv/json/pdf)")
     encoding = (options.get("encoding") or "utf-8").lower()
     if encoding not in ("utf-8", "cp1251"):
         raise unprocessable("Кодировка CSV — только utf-8 (с BOM) или cp1251")
     delimiter = options.get("csv_delimiter") or ";"
+
+    # право чтения сущности — до развилки по типу (наследуют и отчёты `report:*`)
+    read_permission = (
+        "reports:read"
+        if entity_type.startswith("report:")
+        else _ENTITY_READ_PERMISSIONS.get(entity_type)
+    )
+    if read_permission is not None and not user.access.has(read_permission):
+        raise forbidden(f"Выгрузка недоступна: нет права «{permission_name(read_permission)}»")
+
+    if entity_type == SLA_ENTITY_TYPE:
+        # «Просрочки»: XLSX — 8 листов, PDF — сводка без имён или по КАМам (options.by_kam),
+        # CSV/JSON — просроченные заявки; область и 403 — как у API; PDF флагом не закрыт
+        from app.modules.reporting.sla_export import build_sla_file
+
+        try:
+            data, rows_count, file_name = await build_sla_file(
+                session, user=user, filters=filters, export_format=export_format, options=options
+            )
+        except ApiError as exc:
+            converted = _as_unprocessable(exc)
+            if converted is exc:
+                raise
+            raise converted from exc
+        except ModuleNotFoundError as exc:
+            if not _is_fpdf_missing(exc):
+                raise
+            raise _pdf_unavailable() from exc
+        return await _store_export(
+            session,
+            user=user,
+            entity_type=entity_type,
+            export_format=export_format,
+            data=data,
+            rows=rows_count,
+            file_name=file_name,
+        )
+
+    if entity_type in (KAM_ACTIVITY_ENTITY_TYPE, INTERACTIONS_ENTITY_TYPE):
+        # отчёты со своим рендером (PDF флагом report_pdf не закрыт); область и 403 на
+        # чужих — как у API отчёта. «Активность КАМов» — многолистовой XLSX и PDF для
+        # заказчика, выбор колонок к нему не применяется; «Взаимодействия за период» —
+        # таблица по выбранным колонкам (ТЗ ФТ4), неизвестная колонка — 400. Ошибка
+        # значения в `filters` — 422, как у остальных выгрузок.
+        from app.modules.reporting.interactions import resolve_columns
+        from app.modules.reporting.interactions_export import build_interactions_file
+        from app.modules.reporting.kam_activity_export import build_kam_activity_file
+
+        selected_columns = (
+            resolve_columns(columns) if entity_type == INTERACTIONS_ENTITY_TYPE else None
+        )
+        try:
+            if selected_columns is None:
+                data, rows_count, file_name = await build_kam_activity_file(
+                    session,
+                    user=user,
+                    filters=filters,
+                    export_format=export_format,
+                    options=options,
+                )
+            else:
+                data, rows_count, file_name = await build_interactions_file(
+                    session,
+                    user=user,
+                    filters=filters,
+                    export_format=export_format,
+                    columns=selected_columns,
+                    options=options,
+                )
+        except ApiError as exc:
+            converted = _as_unprocessable(exc)
+            if converted is exc:
+                raise
+            raise converted from exc
+        except ModuleNotFoundError as exc:
+            if not _is_fpdf_missing(exc):
+                raise
+            raise _pdf_unavailable() from exc
+        return await _store_export(
+            session,
+            user=user,
+            entity_type=entity_type,
+            export_format=export_format,
+            data=data,
+            rows=rows_count,
+            file_name=file_name,
+        )
+
+    if export_format == "pdf":
+        if not entity_type.startswith("report:"):
+            raise unprocessable("PDF доступен только для отчётов (report:<code>)")
+        if not await _report_pdf_enabled(session):
+            raise unprocessable(
+                "PDF-выгрузка дашборда выключена администратором (фичефлаг report_pdf)"
+            )
 
     if entity_type.startswith("report:"):
         dataset = await _dataset_report(session, entity_type.split(":", 1)[1], filters, user)
@@ -607,43 +1002,33 @@ async def create_export_job(
 
     all_columns, rows = dataset
     selected = _select_columns(all_columns, columns)
-    data = await asyncio.to_thread(
-        render_export,
-        selected,
-        rows,
-        export_format=export_format,
-        encoding=encoding,
-        delimiter=delimiter,
-    )
+    code = entity_type.split(":", 1)[1] if entity_type.startswith("report:") else entity_type
+    try:
+        data = await asyncio.to_thread(
+            render_export,
+            selected,
+            rows,
+            export_format=export_format,
+            encoding=encoding,
+            delimiter=delimiter,
+            title=_REPORT_TITLES.get(code, "Выгрузка"),
+            subtitle=_report_pdf_subtitle(filters) if export_format == "pdf" else "",
+        )
+    except ModuleNotFoundError as exc:
+        if not _is_fpdf_missing(exc):
+            raise
+        raise _pdf_unavailable() from exc
     stamp = _now().strftime("%Y%m%d_%H%M%S")
     file_name = f"{entity_type.replace(':', '_')}_{stamp}.{export_format}"
-    file_object = await store_bytes(
+    return await _store_export(
         session,
+        user=user,
+        entity_type=entity_type,
+        export_format=export_format,
         data=data,
-        original_name=file_name,
-        content_type=_CONTENT_TYPES[export_format],
-        bucket=get_settings().s3_bucket_exports,
-        entity_type="report",
-        entity_id=user.id,  # владелец выгрузки; сам файл — самостоятельная сущность
-        uploaded_by=user.id,
+        rows=len(rows),
+        file_name=file_name,
     )
-    await write_audit(
-        session,
-        actor_user_id=user.id,
-        action="student.exported" if entity_type == "students" else "export.created",
-        entity_type="export",
-        entity_id=file_object.id,
-        after={"entity_type": entity_type, "format": export_format, "rows": len(rows)},
-    )
-    await session.commit()
-
-    payload = _job_status_payload(
-        file_object, entity_type=entity_type, export_format=export_format, rows=len(rows)
-    )
-    await get_cache().set_json(
-        f"export:{file_object.id}", payload, EXPORT_STATUS_TTL_SECONDS
-    )
-    return payload
 
 
 async def get_export_job(
@@ -657,7 +1042,7 @@ async def get_export_job(
         or file_object.deleted_at is not None
     ):
         raise not_found("Выгрузка не найдена")
-    if "admin" not in (user.roles or []) and file_object.uploaded_by != user.id:
+    if not user.access.has("files:others") and file_object.uploaded_by != user.id:
         raise not_found("Выгрузка не найдена")
     cached = await get_cache().get_json(f"export:{job_id}")
     if cached is not None:
@@ -680,7 +1065,7 @@ async def list_export_jobs(session: AsyncSession, user: AppUser) -> list[dict[st
         .order_by(FileObject.created_at.desc())
         .limit(100)
     )
-    if "admin" not in (user.roles or []):
+    if not user.access.has("files:others"):
         stmt = stmt.where(FileObject.uploaded_by == user.id)
     rows = (await session.execute(stmt)).scalars().all()
     return [

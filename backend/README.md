@@ -1,6 +1,6 @@
-# backend — CRM «Вузы» (ЛЦТ 2026)
+# backend — «Альма», CRM взаимодействия с вузами (ЛЦТ 2026)
 
-Модульный монолит FastAPI (Python 3.10+, SQLAlchemy 2 async, Alembic, Pydantic v2).
+Модульный монолит FastAPI (Python 3.10+, образ — 3.12; SQLAlchemy 2 async, Alembic, Pydantic v2).
 Контракты — `docs/design/` (по убыванию приоритета: data-model.md → api-contract.md →
 остальные); терминологический мост: таблица `deal` ↔ API `/requests` ↔ UI «заявка»,
 `workflow_stage` ↔ `status`, `sort_order` ↔ `position`, `is_return` ↔ `kind: return`.
@@ -9,32 +9,196 @@
 
 | Модуль | Зона | Ключевые эндпоинты |
 |---|---|---|
-| `auth` | зеркало Keycloak (`app_user`), permissions по RBAC-матрице §12 | `GET /auth/me` |
-| `crm` | вузы, контакты, договоры «1 договор — N продуктов», продукты, программы + ручное ранжирование | `/universities*`, `/contracts*`, `/products*`, `/programs*` (+`/priority`, `/priorities/reorder`) |
-| `workflow` | схемы B2B/B2C, пакеты операций с апрувом (`confirm_name` для опасных), атомарная миграция заявок, проверка зависших | `/workflows*`, `/workflows/{id}/impact-preview`, `changes/approve|reject` |
-| `requests` | заявки: CRUD, канбан, переходы (граф+роли+комментарий форсируются), история, комментарии, reopen | `/requests*` |
-| `import_export` | 5-шаговый импорт (XLSX/XLS/CSV/JSON, кодировки `utf-8-sig→utf-8→cp1251→koi8-r→cp866`), экспорт, справочники админки | `/import/sessions*`, `/export/jobs*`, `/admin/dictionaries*` |
+| `auth` | зеркало Keycloak (`app_user`), профиль с ролями и эффективными правами по процессам | `GET /auth/me` |
+| `access` | каталог прав и ролей, свои роли, назначение ролей пользователям, разграничение B2B/B2C и «все / только свои» | `GET /roles`, `/admin/permissions`, `/admin/roles*`, `PUT /admin/users/{id}/roles` |
+| `crm` | вузы (смена ответственного КАМа — право `universities:assign`, аудит `university.kam_changed`), контакты, договоры «1 договор — N продуктов» с лицензиями в строках `contract_product`, продукты, программы + ручное ранжирование, справочник ИТ-направлений и правило «направление записи» (`crm/directions.py`) | `/universities*`, `/contracts*`, `/products*`, `/programs*` (+`/priority`, `/priorities/reorder`), `/it-directions*` |
+| `workflow` | схемы B2B/B2C, пакеты операций с апрувом (`confirm_name` для опасных), атомарный пакетный перенос заявок со сводными уведомлениями, advisory-локи с ограниченным ожиданием, проверка зависших | `/workflows*`, `/workflows/{id}/impact-preview`, `changes/approve\|reject` |
+| `requests` | заявки: CRUD, канбан с мультифильтрами (IN), переходы (граф + права + комментарий до 4000 символов + до 10 файлов в той же транзакции), история с файлами под своим переходом, комментарии, файлы в статусах (белый список 10 форматов с проверкой сигнатуры), reopen, передача портфеля КАМа (`dry_run`) | `/requests*`, `/requests/{id}/files*`, `/requests/transfer-portfolio` |
+| `import_export` | 5-шаговый импорт (XLSX/XLS/CSV/JSON, кодировки `utf-8-sig→utf-8→cp1251→koi8-r→cp866`, объединённые ячейки, файл без строки заголовков), составной импорт «Таблица КАМов» (`kam_catalog`), экспорт (фильтры строкой или списком, `report:kam-activity` и `report:interactions` в XLSX/PDF), справочники админки | `/import/sessions*`, `/export/jobs*`, `/admin/dictionaries*` |
 | `talent_pool` | студенты (Fernet + HMAC blind index, маскирование всегда, `/reveal` под аудит), воронка, файлы, активности | `/students*`, `/activities*` |
-| `reporting` | 8 JSON-агрегатов дашборда, кэш KeyDB 60 с, kam-скоуп | `/reports/*` |
-| `integrations` | конверт IntegrationEvent, вебхуки HMAC, DLQ + ручной retry | `/integrations/{lms,cms}/webhook`, `/admin/integration/*` |
+| `reporting` | 8 JSON-агрегатов дашборда (фильтры — списки id, `IN` во всех секциях) + отчёт «Активность КАМов» (детализация и сводка, PDF на fpdf2, многолистовой XLSX) + «Взаимодействия за период» по выбранным колонкам; кэш KeyDB 60 с, область отчётов `report_scope` | `/reports/*`, `/reports/kam-activity`, `/reports/kam-activity/summary`, `/reports/interactions` |
+| `ai_summary` | «Сводка ИИ» в отчёте «Активность КАМов»: факты из отчётов по allowlist с псевдонимами КАМов, кэш и дедупликация задач в таблице `ai_summary_job`, вызов llm-gateway (GigaChat), проверка чисел и советов в ответе, сводка по правилам без ИИ; право `reports:ai_summary`, флаг `ai_summaries`, аудит `ai.summary_*` | `POST /reports/ai-summaries`, `GET /reports/ai-summaries/{id}` |
+| `integrations` | конверт IntegrationEvent, транспорт `IntegrationTransport` (HTTP + HMAC), вебхуки HMAC, DLQ + ручной retry | `/integrations/{lms,cms}/webhook`, `/admin/integration/*` |
 | `notifications` | настройки каналов/событий, in-app лента + маркеры прочтения, тест-отправка, привязка Telegram (код 6 цифр TTL 10 мин, KeyDB GETDEL), CRUD правил `notification_rule`, данные для команд бота | `/notifications*`, `/notifications/rules*`, `/internal/bot/*` |
-| `files` | MinIO: 3 бакета, ключ `{entity_type}/{entity_id}/{file_id}/{safe_name}`, proxy/presigned | `GET /files/{id}/download` |
-| `admin` | пользователи (manager_id для эскалаций, синк из Keycloak), настройки, фичефлаги (SSE `flags.updated`), аудит | `/admin/users*`, `/admin/settings`, `/admin/feature-flags*`, `/admin/audit-log` |
+| `files` | MinIO: 3 бакета, ключ `{entity_type}/{entity_id}/{file_id}/{safe_name}`, proxy/presigned; белый список вложений заявки (`check_attachment_format`); файл заявки — только в зоне видимости заявки | `GET /files/{id}/download` |
+| `admin` | пользователи (manager_id для эскалаций, синк профилей из Keycloak — роли не трогает), настройки (`integration_mode` — только `http`), фичефлаги (SSE `flags.updated`), аудит | `/admin/users*`, `/admin/settings`, `/admin/feature-flags*`, `/admin/audit-log` |
 | `ui` | SSE realtime (fan-out KeyDB pub/sub `crm:v1:events`), пресеты таблиц, глобальный поиск, флаги | `GET /events/stream`, `/ui/presets*`, `/search`, `/flags` |
-| `internal` | CronJob-джобы под `X-Internal-Token` | `/internal/jobs/check-stuck-requests`, `purge-deleted`, `outbox-relay` |
+| `internal` | CronJob-джобы под `X-Internal-Token` | `/internal/jobs/check-stuck-requests`, `purge-deleted`, `purge-idempotency-keys`, `outbox-relay` |
 
 Сквозное в `app/core/`: конфиг из env, единый формат ошибок
-`{error:{code,message,details,trace_id}}`, JWT/JWKS + роли, PII-криптография,
-KeyDB cache-aside с деградацией в PG, три транзакционных outbox'а
-(notification / integration_event / audit_log) + фоновый relay, SSE-хаб.
+`{error:{code,message,details,trace_id}}` с закрытым каталогом кодов (`errors.py`,
+`ERROR_CODES`) и его описанием в OpenAPI (`openapi.py`: `ErrorEnvelope` у всех
+4xx/5xx, ошибка валидации — `400 validation_error`), JWT/JWKS и `require_permission`, каталог
+прав (`rbac_catalog`) и модель доступа (`access`: права по процессам, `DealScope`),
+PII-криптография, KeyDB cache-aside с деградацией в PG, middleware Idempotency-Key с
+хранилищем в PG, три транзакционных outbox'а (notification / integration_event /
+audit_log) + фоновый relay и сменный транспорт интеграций, SSE-хаб. OpenAPI — 161
+метод, у 87 мутирующих — заголовок `Idempotency-Key`.
 
-## Нотификации и Telegram-бот (стадия B4)
+## Роли и права
+
+- **Права — код.** `core/rbac_catalog.py`: 62 права в 8 группах. 19 прав — «с
+  областью»: действуют только в процессах роли (B2B, B2C) и с её областью записей
+  (`all` / `own`), остальные общие (справочники, админка). У прав есть зависимости
+  (`requires`): редактор не даст сохранить правку без просмотра.
+- **Роли — данные.** Таблицы `app_role` / `app_role_permission` (миграция 0004
+  засевает каталог из кода, 0006 добавляет `universities:assign`, 0010 —
+  `reports:ai_summary` с выдачей admin и head_kam). Системные роли:
+  admin — 61 право, заблокирована от правки; head_kam — 42; kam — 28; observer — 14.
+  Наборы подобраны так, что доступ
+  базовых ролей к каждому эндпоинту совпал с прежней матрицей —
+  регрессия `tests/test_access_matrix.py`. Свои роли — `POST /admin/roles`;
+  удалить роль, пока она назначена или указана в переходах процессов, нельзя
+  (409 `role_in_use`).
+- **Назначения — в Альме.** Источник истины — `app_user.roles`; роль из токена
+  Keycloak становится только стартовым назначением при первом входе, синхронизация
+  с Keycloak роли не трогает.
+- **Проверки.** Эндпоинты — `Depends(require_permission("<код>"))`; права
+  нескольких ролей объединяются по процессу. Запросы по заявкам проходят через
+  `DealScope.apply(stmt)`: процессы роли и «только свои».
+- **Живое применение.** Назначения читаются из БД на каждом запросе; каталог ролей
+  кэшируется в процессе на `RBAC_CATALOG_TTL_SECONDS` (5 с) и сбрасывается на всех
+  репликах по SSE `access.changed` — интерфейс перестраивается без перезахода.
+- **Аварийный вход**, если в системе не осталось администратора:
+  `python -m app.tools.rbac grant-admin <username>` (`list-admins` — кто может
+  управлять ролями); в кластере — через `kubectl -n crm exec deploy/backend -- …`.
+  Назначение пишется в аудит с `source = "cli"`.
+
+## Перенос заявок при изменении схемы
+
+- **Одна транзакция на пакет**: схема, перенос, история, сводки в outbox и аудит —
+  либо всё, либо ничего (`workflow/service.py::apply_change`).
+- **Один SQL-оператор на удаляемый этап** (`workflow/migration.py`): CTE
+  `UPDATE deal … RETURNING` сразу пишет `deal_stage_history`, наружу — только
+  агрегаты по ответственным. Число обращений к БД не зависит от числа заявок.
+- **Сводные уведомления**: каждый получатель, который раньше получил бы хотя бы одно
+  уведомление о переходе, получает ровно одно `request.transitioned` с
+  `payload.count`. Правила и личные настройки — те же; эквивалентность прежнему
+  поштучному пути — `tests/db/test_workflow_bulk_migration.py::test_digest_equivalent_to_legacy`.
+- **Локи** (`workflow/locks.py`): строка пакета `FOR UPDATE` → advisory-лок воронки
+  (переходы — shared, применение — exclusive) → строки заявок. Ожидание ограничено
+  `lock_timeout`: переход — 10 с, применение — 30 с; затем `409 workflow_busy` с
+  `Retry-After: 2`, пакет остаётся на согласовании.
+- **Замеры** (`lock_wait_ms`, `apply_ms`, `migrate_ms`, `lock_held_ms`) — в ответе
+  approve и в логе `app.workflow`; отчёт переноса хранится в
+  `workflow_change_request.impact['migration_report']`.
+- **Бенчмарк**: `python -m app.tools.bench_migration` (или `make bench-migration` из
+  корня) на одноразовой базе `*_bench` / `*_test`. 10 000 заявок — 0,59 с под локом
+  вместо 25,1 с, 50 000 — 2,9 с вместо 130 с; подробности —
+  `docs/evidence/migration-benchmark.md`.
+
+## Idempotency-Key
+
+Семантика — черновик IETF `draft-ietf-httpapi-idempotency-key-header`
+(`core/idempotency.py`, чистый ASGI-middleware; хранилище — `core/idempotency_store.py`,
+таблица `idempotency_key` из миграции 0003):
+
+- POST/PUT/PATCH/DELETE под `/api/v1/` с заголовком `Idempotency-Key`; без заголовка
+  поведение прежнее. Вебхуки LMS/CMS исключены — у них своя идемпотентность по
+  `event_id`;
+- ключ действует в области принципала: `sub` проверенного JWT или `internal`
+  (X-Internal-Token);
+- повтор с тем же отпечатком (метод, путь, query, media-type, хеш тела) в течение
+  24 ч после успеха → сохранённый ответ + `Idempotent-Replayed: true`; тот же ключ с
+  другим запросом → 422 `idempotency_key_reused`; пока первый запрос выполняется →
+  409 `idempotency_in_progress` + `Retry-After: 1`;
+- сохраняются только 2xx: при ошибке ключ освобождается, повтор безопасен. Тело
+  ответа хранится Fernet-шифртекстом, тело запроса — только хешем;
+- ошибка хранилища → fail-closed 503 `service_unavailable` + `Retry-After: 2`;
+- очистка просроченных ключей — `POST /internal/jobs/purge-idempotency-keys`
+  (CronJob `idempotency-purge` ежечасно; на compose-стенде — `make idempotency-purge`).
+
+Фронтенд выдаёт ключ каждому действию пользователя сам и повторяет запрос с тем же
+ключом при обрыве связи, 502/503/504, `idempotency_in_progress` и `workflow_busy`.
+
+## Отчёт «Активность КАМов»
+
+- `reporting/kam_activity.py` — детализация «КАМ → вузы → заявки» и сводка для
+  заказчика (KPI с дельтами к прошлому периоду той же длины, конверсия по этапам,
+  «где застревают», динамика, разрез по КАМам, студенты на программах).
+- Взаимодействие — собственное действие ответственного КАМа в периоде: ручной
+  переход, комментарий, файл заявки, мероприятие с вузом. Системные переходы
+  (перенос схемы, LMS, импорт) и действия других пользователей не считаются. Этап
+  остановки восстанавливается по `deal_stage_history` на конец периода; «дни на
+  этапе» и «зависла» — от входа в этап (строки с `kind = 'system_migration'` и без
+  смены этапа вход не сдвигают), для текущего периода — `deal.stage_entered_at`.
+- Фильтры — несколько КАМов, вузов и ИТ-направлений; у «Взаимодействий за период»
+  (`reporting/interactions.py`, `GET /reports/interactions`) ещё продукты, программы
+  и этап на конец периода. Колонки ТЗ (вуз, ИТ-направление, ИТ-продукт, статус работы
+  с вузом, ответственный) — по умолчанию, остальные — по выбору; API отдаёт до 5 000
+  строк, выгрузка — все.
+- Область — `report_scope(viewer)`: процессы ролей с `reports:read`, «все КАМы» —
+  только с `reports:all`; КАМы отчёта — роли с правом `requests:kam`.
+- Выгрузка — `POST /export/jobs {entity_type: "report:kam-activity"}`:
+  XLSX «Сводка / КАМы / Вузы / Заявки / Динамика», PDF (`reporting/pdf.py`, fpdf2,
+  шрифты DejaVu в `reporting/fonts/`), CSV/JSON — лист «Заявки»;
+  `report:interactions` с `columns` — XLSX, PDF, CSV, JSON
+  (`reporting/interactions_export.py`). PDF отчётов флагом `report_pdf` не закрыт.
+- Индексы под отчёт — миграция 0005. Демо-история ~20 КАМов —
+  `python -m app.tools.seed_activity`, основной сид вызывает её сам.
+
+## «Сводка ИИ» (`modules/ai_summary`)
+
+Не агент и не советчик: по клику — текстовая сводка фактов поверх уже посчитанных цифр
+«Сводки для заказчика» и «Просрочек» по команде (`kind: team`) или по КАМу (`kam`).
+Контракт — api-contract.md §7.2.3.
+
+- **Доступ.** Право `reports:ai_summary` (с областью; по умолчанию admin и head_kam) и
+  фичефлаг `ai_summaries` (выключен — 422); область — `scope.ai_scope`: область отчётов в
+  процессах с правом. 403/404 — от самих отчётов.
+- **Факты** (`facts.py`) — allowlist: числа отчётов, очищенные названия этапов и
+  направлений, метки B2B/B2C, даты периода, псевдонимы `КАМ-01…` (id отсортированы; больше
+  30 КАМов — суммой в `others`). Ни ФИО, ни вузов, ни клиентов B2C, ни заголовков, ни
+  комментариев, ни денег. sha256 канонических фактов — «версия данных».
+- **Задачи** (`service.py`, таблица `ai_summary_job`, миграция 0010): режим `rules` —
+  сводка сразу (200); иначе готовая с тем же ключом за час — 200 `reused`, новая —
+  `INSERT … ON CONFLICT DO NOTHING` по частичному UNIQUE задач в полёте (202 и
+  `runner.spawn`), конфликт — присоединение к задаче в полёте. Выполнение фоном в
+  процессе: `queued → running`, вызов шлюза вне транзакции, результат и аудит одной
+  транзакцией; зависшие дольше 15 мин — `failed: interrupted`, старше 7 дней — удаляются.
+- **Провайдеры** (`providers.py`, `gateway.py`): `gigachat` — `POST {LLM_GATEWAY_URL}/v1/chat`
+  с `X-Internal-Token` (ключ GigaChat видит только `services/llm-gateway`); ошибки шлюза
+  сводятся к кодам задачи `llm_busy`, `llm_timeout`, `llm_unavailable`,
+  `llm_not_configured`, `llm_budget_exceeded`; `stub` — сводка по правилам в форме ответа
+  модели, без сети (dev и тесты; при `APP_ENV=k8s` запрещён).
+- **Проверка** (`parse.py`, `verify.py`): JSON по схеме (`AiSummaryLlmOut`, плоская);
+  каждая фраза — псевдонимы только выданные, без ссылок и разметки, без советов
+  (`NO_ADVICE_RE` из `reporting/sla.py`), вопросы с «?», числа и даты — из фактов (дробные
+  с допуском 0,05 и округлением до целого). Удалён заголовок, осталось меньше двух фраз или
+  удалено больше половины — `failed: llm_bad_output`. Вторая попытка модели — только при
+  неразобранном JSON и если с начала задачи прошло меньше 200 с.
+- **Сводка по правилам** (`rules.py`) — тот же формат из тех же фактов, проходит `verify`
+  без удалений; работает офлайн.
+- **ФИО** подставляются вместо псевдонимов только при чтении (`render_job`), «Фамилия И. О.».
+- **Аудит** `ai.summary_requested` (на каждый POST, `outcome`) и `ai.summary_generated`
+  (итог, токены, `checks`) — без текста сводки, фактов и ФИО.
+- **Живой прогон** при поднятом шлюзе: `set -a; . ../deploy/compose/.env; set +a;
+  ALMA_LLM_LIVE=1 LLM_GATEWAY_URL=http://localhost:8040 ./.venv/bin/python -m pytest -q
+  tests/test_ai_summary_live.py -s` (токен шлюза — случайный из `.env`: с настоящим ключом
+  шлюз `dev-llm-token` не принимает)
+  (17.10.2026: GigaChat-2-Pro, ≈ 3–3,7 тыс. токенов на входе, 6–7 с, все числа сверены).
+
+## Демо-сид и сброс стенда
+
+- `python -m app.tools.seed` — идемпотентный сид: процессы, справочники (в том числе
+  10 ИТ-направлений), 56 вузов, заявки обеих воронок с историей, студенты, история
+  активности 20 КАМов (2 с учёткой Keycloak и 18 зеркал без входа).
+- `python -m app.tools.seed --reset [--anchor ГГГГ-ММ-ДД]` (`make demo-reset`) —
+  одной транзакцией очищает доменные таблицы и пересевает их от якорной даты
+  (`DEMO_ANCHOR_DATE`, 09:00 МСК); пользователи, каталог ролей и прав, настройки,
+  строки процессов и журнал аудита сохраняются, роли возвращаются к исходным,
+  кэши отчётов в KeyDB и файлы удалённых строк в MinIO чистятся, аудит —
+  `stand.demo_reset`.
+
+## Нотификации и Telegram-бот
 
 - Получатели вычисляются **на backend** (Р-9): активные `notification_rule`
   (recipient_type: `responsible` / `manager_of_responsible` / `role` / `user` /
   `tg_username` / `email`) + персональные настройки получателя
   (`GET/PUT /notifications/settings`): выключенное событие — строка не создаётся,
   выключенный канал — строка со статусом `skipped` (остаётся в in-app ленте).
+  Получатели правила `role` — активные пользователи с ролью, в области которых
+  заявка: процесс роли и «только свои» (`outbox.role_rule_members`).
 - Доставка: outbox `notification` в PG (в транзакции с бизнес-изменением) → relay →
   `POST http://notification:8010/api/v1/send` (`X-Internal-Token`, идемпотентность
   по `notification_id`); после отправки — SSE `notification.created` (колокольчик).
@@ -43,7 +207,7 @@ KeyDB cache-aside с деградацией в PG, три транзакцион
   роль `svc_notification`) вызывает `POST /internal/bot/bind` (GETDEL) → upsert
   `app_user.tg_chat_id` + аудит + SSE `telegram.linked`.
 - Команды бота — `/internal/bot/users/{chat_id}/*`: backend резолвит chat_id → app_user
-  и применяет RBAC этого пользователя; ПДн студентов в ответы бота не попадают.
+  и применяет права этого пользователя; ПДн студентов в ответы бота не попадают.
 - Зависшие: `POST /api/v1/internal/jobs/check-stuck-requests` (ежечасный CronJob,
   `X-Internal-Token`), каскад порога rule → stage → workflow → app_setting (дефолт 14
   дней), ступени 1× (ответственный) и 1.5× (`manager_id`; отключается настройкой
@@ -57,7 +221,7 @@ KeyDB cache-aside с деградацией в PG, три транзакцион
 | Настройки нотификаций пользователя | `notify:settings:{user_id}` |
 | Маркеры прочтения in-app ленты | `notify:read:{user_id}` |
 | Пресеты UI пользователя | `ui:presets:{user_id}` |
-| Фичефлаги (`auto_ranking`, `report_pdf`, `llm_features`) | `feature_flags` |
+| Фичефлаги (`auto_ranking`, `report_pdf` — включён по умолчанию, `ai_summaries` — выключен по умолчанию, демо-сид включает) | `feature_flags` |
 | Справочники-списки (`regions`, `tags`, …) | `dict:{name}` |
 | Версия документа `/admin/settings` | `settings_version` |
 
@@ -65,13 +229,23 @@ KeyDB cache-aside с деградацией в PG, три транзакцион
 
 ```
 app/
-  core/        # config, db, errors, security (JWT/JWKS/RBAC), pii, cache (KeyDB),
-               # outbox (+relay), sse, events (реестр событий), audit, pagination
-  models/      # все таблицы по data-model.md (optimistic locking — системная xmin)
+  core/        # config, db, errors, security (JWT/JWKS, require_permission), rbac_catalog
+               # (права), access (роли, права по процессам, DealScope), pii, cache (KeyDB),
+               # idempotency (+ idempotency_store), outbox (+relay), integration_transport,
+               # sse, events (реестр событий), audit, pagination
+  models/      # 38 таблиц по data-model.md (optimistic locking — системная xmin)
   modules/     # см. таблицу выше
-  tools/       # seed (идемпотентный демо-сид), check_migrations, rekey (ротация PII)
-alembic/       # одна начальная миграция: raw DDL из data-model.md + pg_trgm
-tests/         # unit-тесты (без PG/KeyDB/MinIO; KeyDB-деградация проверяется)
+  tools/       # seed (+ seed_activity, --reset), check_migrations, rekey (ротация PII),
+               # rbac (аварийный admin), bench_migration (замер переноса заявок)
+alembic/       # 0001 начальная схема (raw DDL из data-model.md + pg_trgm),
+               # 0002 маскирование ПДн лидов, 0003 idempotency_key,
+               # 0004 роли и права, 0005 индексы отчёта «Активность КАМов»,
+               # 0006 файлы в статусах, право universities:assign, порог этапа до 365,
+               # 0007 ИТ-направления, 0008 лицензии в contract_product и kam_catalog,
+               # 0009 индекс журнала напоминаний («Просрочки»),
+               # 0010 ai_summary_job и право reports:ai_summary
+tests/         # юнит-тесты без инфраструктуры (KeyDB-деградация проверяется)
+  db/          # интеграционные тесты на PostgreSQL: схема из миграций, фабрики данных
 ```
 
 ## Локальный запуск
@@ -104,17 +278,37 @@ OpenAPI — `http://localhost:8000/api/v1/docs`.
 | `TELEGRAM_BOT_USERNAME` | @имя бота для deep-link привязки (`https://t.me/…?start=<код>`); по умолчанию `lct_crm_bot` — единый дефолт с notification-service |
 | `KEYCLOAK_ADMIN_CLIENT_ID/SECRET` | сервис-аккаунт `view-users` для `POST /admin/users/sync` (штатная синхронизация — upsert при логине); в realm предзаведён клиент `crm-backend-admin`, секрет — `BACKEND_ADMIN_CLIENT_SECRET` (compose `.env` / Secret `crm-keycloak-clients`) |
 | `FILE_DELIVERY` | `proxy` (по умолчанию) или `presigned` |
+| `IDEMPOTENCY_ENABLED`, `IDEMPOTENCY_TTL_HOURS` (24), `IDEMPOTENCY_LEASE_SECONDS` (60) | Idempotency-Key: включение, срок хранения ответов, аренда ключа на время обработки |
+| `IDEMPOTENCY_MAX_REQUEST_BYTES`, `IDEMPOTENCY_MAX_RESPONSE_BYTES` | лимиты тела запроса (60 МБ) и сохраняемого ответа (1 МБ) |
+| `RBAC_CATALOG_TTL_SECONDS` | TTL кэша каталога ролей в процессе (5 с) |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | пул соединений на процесс uvicorn (4 + 2): 6 подов × 2 воркера × 6 = 72 при `max_connections=150` (`tests/test_connection_budget.py`) |
+| `DEMO_ANCHOR_DATE` | «сейчас» демо-данных для `seed --reset` (ГГГГ-ММ-ДД — 09:00 МСК) |
+| `AI_SUMMARY_PROVIDER` | сводки ИИ: `rules` (по умолчанию в коде; без ИИ), `gigachat` (через llm-gateway; в k8s ConfigMap), `stub` (без сети, только dev и тесты) |
+| `LLM_GATEWAY_URL`, `LLM_GATEWAY_TOKEN` | адрес llm-gateway (`http://localhost:8040`) и его `X-Internal-Token` (Secret `crm-llm`, один ключ; в k8s пустой или `dev-llm-token` при `gigachat` — падение на старте) |
+| `AI_SUMMARY_GATEWAY_TIMEOUT_SECONDS` (330), `AI_SUMMARY_CACHE_TTL_SECONDS` (3600), `AI_SUMMARY_JOB_STALE_SECONDS` (900), `AI_SUMMARY_RETENTION_DAYS` (7), `AI_SUMMARY_LLM_ATTEMPTS` (2) | ожидание шлюза (очередь 180 + бюджет 120 + запас), кэш готовой сводки, «прервано» для зависших задач, хранение задач, попыток модели (вторая — ремонт JSON) |
+| `AI_SUMMARY_USER_HOURLY_LIMIT` (10), `AI_SUMMARY_FORCE_COOLDOWN_SECONDS` (300) | новых задач GigaChat на пользователя за скользящий час (сверх — `failed: rate_limited`; 0 — без лимита), «Обновить» чаще — отдаёт свежую готовую сводку |
 
 ## Проверки
 
 ```bash
-./.venv/bin/python -m pytest -q                    # unit-тесты (243)
+./.venv/bin/python -m pytest -q                    # 2 139 тестов (1 864 юнит + 275 tests/db)
+ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без PostgreSQL — ошибка
 ./.venv/bin/python -m ruff check app tests
 ./.venv/bin/python -m app.tools.check_migrations   # exit 0 = схема на head
 ```
 
-Тесты не требуют инфраструктуры: `KEYDB_URL` в `tests/conftest.py` заведомо
+Юнит-тесты не требуют инфраструктуры: `KEYDB_URL` в `tests/conftest.py` заведомо
 недоступен — так проверяется деградация кэша в PG и ответ 503 на код привязки.
+
+`tests/db` — на PostgreSQL `localhost:5432` (`crm/crm`). Схема создаётся настоящими
+миграциями (`alembic upgrade head`), база пересоздаётся на каждый прогон, поэтому её
+имя обязано начинаться с `crm_test` или оканчиваться на `_test` (по умолчанию
+`crm_test`; своя — `ALMA_TEST_DB=crm_test_<имя>` или `ALMA_TEST_DATABASE_URL`).
+Без PostgreSQL эти тесты пропускаются, `ALMA_DB_TESTS=required` превращает пропуск в
+ошибку. Два режима изоляции: `db_session` — тест во внешней транзакции, `commit()`
+сервисов фиксирует SAVEPOINT; `db_committed_sessionmaker` — настоящие COMMIT на
+отдельных соединениях (гонки, advisory-локи), после теста таблицы очищаются, данные
+миграций восстанавливаются. Полный прогон с PostgreSQL — около 80 секунд.
 
 ## Статус стадий
 
@@ -135,6 +329,22 @@ OpenAPI — `http://localhost:8000/api/v1/docs`.
 - **B4** — модуль нотификаций целиком (настройки, лента, тест, правила, Telegram-бот,
   internal bot API), админка (пользователи + синк Keycloak, настройки, фичефлаги
   с SSE `flags.updated`, аудит с фильтром `action` — чип «Раскрытия ПДн» в UI),
-  UI-инфраструктура (пресеты, глобальный поиск, `/flags`). Реестр эндпоинтов
-  api-contract.md §15 закрыт полностью; сверх реестра — CRUD
-  `/notifications/rules` (требование стадии, путей в §15 нет).
+  UI-инфраструктура (пресеты, глобальный поиск, `/flags`), CRUD
+  `/notifications/rules`. Реестр эндпоинтов api-contract.md §15 совпадает с
+  OpenAPI приложения.
+- **B5** — роли и права в БД Альмы (каталог 60 прав, свои роли, B2B/B2C и «только
+  свои», аварийный `grant-admin`); отчёт «Активность КАМов» (детализация, сводка,
+  PDF/XLSX) и файлы заявки; пакетный перенос заявок со сводными уведомлениями,
+  ограниченным ожиданием локов и бенчмарком; сквозной Idempotency-Key в PG;
+  транспорт интеграций — сменный адаптер (`integration_mode` только `http`);
+  интеграционные тесты на настоящем PostgreSQL и в CI.
+- **B6** — отчётный контур и сущности ТЗ: фильтры аналитики списками во всех
+  секциях (выгрузка — 422 вместо 500), «Завершено» по входу в терминальный этап,
+  востребованность программ по трём показателям, «Взаимодействия за период» с
+  выбором колонок и PDF; файлы в статусах (0006); право `universities:assign` и
+  передача портфеля КАМа; справочник ИТ-направлений (0007); импорт «Таблица КАМов» с
+  лицензиями (0008); единый `ErrorEnvelope` в OpenAPI и закрытый каталог кодов
+  ошибок; бюджет соединений PostgreSQL; `seed --reset` для сброса стенда.
+- **B7** — вкладка «Просрочки» (`reporting/sla*.py`, 0009) и «Сводка ИИ» (`ai_summary`,
+  0010): сводка фактов по команде и по КАМу через llm-gateway или по правилам, проверка
+  чисел кодом, право `reports:ai_summary`, флаг `ai_summaries` вместо `llm_features`.

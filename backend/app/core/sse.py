@@ -6,7 +6,9 @@
   backend'а (каждая раздаёт своим SSE-подписчикам);
 - при недоступном KeyDB событие доставляется напрямую подписчикам текущего процесса
   (single-replica деградация, CRM продолжает работать без кэша);
-- кадр SSE: `event: <topic>\\ndata: <json>` (сериализация — orjson).
+- кадр SSE: `event: <topic>\\ndata: <json>` (сериализация — orjson);
+- локальные хуки (`register_local_hook`) вызываются на каждой реплике до раздачи кадра
+  подписчикам: так `access.changed` сбрасывает кэш каталога ролей во всех процессах.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import orjson
@@ -28,6 +31,25 @@ EVENTS_CHANNEL_SUFFIX = "events"  # полный канал: crm:v1:events
 # максимальный размер очереди одного подписчика; медленный клиент теряет старые кадры,
 # а не копит бесконечную очередь в памяти
 _SUBSCRIBER_QUEUE_SIZE = 256
+
+# хуки процесса по топику; живут на уровне модуля, а не в SseHub: хаб пересоздаётся
+# (reset_sse_hub в тестах), а модули регистрируют хуки один раз при импорте
+_LOCAL_HOOKS: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
+
+
+def register_local_hook(topic: str, fn: Callable[[dict[str, Any]], None]) -> None:
+    """Регистрирует синхронный хук топика (повторная регистрация того же fn — без дубля)."""
+    hooks = _LOCAL_HOOKS.setdefault(topic, [])
+    if fn not in hooks:
+        hooks.append(fn)
+
+
+def _run_local_hooks(topic: str, data: dict[str, Any]) -> None:
+    for fn in list(_LOCAL_HOOKS.get(topic, ())):
+        try:
+            fn(data)
+        except Exception:  # noqa: BLE001 — хук не должен ронять раздачу кадров
+            logger.exception("SSE: ошибка локального хука топика %s", topic)
 
 
 class SseHub:
@@ -52,6 +74,7 @@ class SseHub:
         return len(self._subscribers)
 
     def publish_local(self, topic: str, data: dict[str, Any]) -> None:
+        _run_local_hooks(topic, data)
         frame = {"topic": topic, "data": data}
         for queue in list(self._subscribers):
             try:

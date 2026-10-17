@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Braces, RotateCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Braces, Database, RotateCw } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useOnboarding } from '@/features/onboarding';
@@ -38,8 +38,10 @@ import type { SemanticStatus } from '@/shared/config/tokens';
 /**
  * Монитор интеграций LMS/CMS (ux.md §14.5, redesign.md §6.9): две
  * карточки-коннектора со статус-точкой (пульс у живого) и счётчиками
- * «→ N / ← M», журнал обмена на DataTable с телами JSON и повтором из DLQ.
- * Обновление журнала — поллинг 15 с (инвалидация запроса DataTable).
+ * «→ N / ← M», статичная плашка «Транспорт» (источник истины — outbox
+ * PostgreSQL, доставка HTTP + HMAC; корпоративная шина — сменный адаптер,
+ * api-contract.md §13.7), журнал обмена на DataTable с телами JSON и повтором
+ * из DLQ. Обновление журнала — поллинг 15 с (инвалидация запроса DataTable).
  */
 
 const STATUS_META: Record<string, { label: string; status: SemanticStatus }> = {
@@ -113,7 +115,7 @@ function ConnectorCard({ system, title, events }: ConnectorCardProps): ReactNode
 }
 
 export function AdminIntegrationsPage(): ReactNode {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   // Чек-лист онбординга §7.5: no-op без провайдера.
   const { completeChecklistItem } = useOnboarding();
@@ -279,7 +281,7 @@ export function AdminIntegrationsPage(): ReactNode {
             >
               <Braces aria-hidden="true" />
             </Button>
-            {hasRole('admin') && (e.status === 'dead' || e.status === 'retrying') ? (
+            {hasPermission('admin:integrations') && (e.status === 'dead' || e.status === 'retrying') ? (
               <Button
                 variant="outline"
                 size="icon"
@@ -295,7 +297,7 @@ export function AdminIntegrationsPage(): ReactNode {
         ),
       },
     ],
-    [hasRole, retryMutation],
+    [hasPermission, retryMutation],
   );
 
   const overview = overviewQuery.data?.items ?? [];
@@ -314,6 +316,15 @@ export function AdminIntegrationsPage(): ReactNode {
           <ConnectorCard system="cms" title="CMS (сайт-витрина)" events={overview} />
         </StaggerItem>
       </StaggerGrid>
+      {/* Транспорт (§13.7): статичная плашка, без состояний загрузки и ошибки. */}
+      <p className="mb-4 flex items-start gap-2 rounded-lg border bg-card p-3 text-sm text-muted-foreground">
+        <Database className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+        <span className="min-w-0">
+          Источник истины — outbox в PostgreSQL: событие фиксируется в одной транзакции с операцией
+          и доставляется асинхронно по HTTP с HMAC-подписью, ретраями и DLQ. Подключение
+          корпоративной шины меняет только адаптер транспорта.
+        </span>
+      </p>
       <DataTable<IntegrationEventRecord>
         screen="admin.integrations"
         columns={columns}

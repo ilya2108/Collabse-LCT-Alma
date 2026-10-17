@@ -48,13 +48,15 @@ async def liveness() -> dict[str, str]:
 async def readiness(response: Response) -> dict[str, Any]:
     pg_ok = await _check_postgres()
     keydb_ok = await get_cache().ping()
-    # KeyDB — необязательный уровень (cache-aside деградирует в PG), но контракт §1.7
-    # включает его в readiness: под без кэша не должен принимать полный трафик
-    ok = pg_ok and keydb_ok
-    if not ok:
+    # Готовность зависит только от PostgreSQL — источника истины. KeyDB общий для всех
+    # реплик: если бы он входил в readiness, его отказ снял бы с балансировки сразу все
+    # поды, хотя без кэша CRM работает (cache-aside читает PG, SSE раздаётся локально,
+    # статусы выгрузок читаются из PG). Поэтому без KeyDB — 200 и status «degraded»:
+    # мониторинг видит отказ кэша, пользователи — нет (api-contract.md §1.7).
+    if not pg_ok:
         response.status_code = 503
     return {
-        "status": "ok" if ok else "unavailable",
+        "status": "unavailable" if not pg_ok else ("ok" if keydb_ok else "degraded"),
         "checks": {"postgres": pg_ok, "keydb": keydb_ok},
     }
 

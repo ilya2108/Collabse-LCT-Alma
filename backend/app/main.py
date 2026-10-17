@@ -17,9 +17,14 @@ from app.core.config import get_settings
 from app.core.db import dispose_engine
 from app.core.errors import RequestIdMiddleware, register_error_handlers
 from app.core.health import router as health_router
+from app.core.idempotency import IdempotencyMiddleware, install_idempotency_openapi
+from app.core.openapi import install_openapi_postprocessing
 from app.core.outbox import outbox_relay_loop
 from app.core.sse import sse_listener_loop
+from app.modules.access.router import router as access_router
 from app.modules.admin.router import router as admin_router
+from app.modules.ai_summary import runner as ai_summary_runner
+from app.modules.ai_summary.router import router as ai_summary_router
 from app.modules.auth.router import router as auth_router
 from app.modules.crm.router import router as crm_router
 from app.modules.files.router import router as files_router
@@ -27,7 +32,9 @@ from app.modules.import_export.router import router as import_export_router
 from app.modules.integrations.router import router as integrations_router
 from app.modules.internal.router import router as internal_router
 from app.modules.notifications.router import router as notifications_router
+from app.modules.reporting.interactions_router import router as interactions_router
 from app.modules.reporting.router import router as reporting_router
+from app.modules.reporting.sla_router import router as sla_router
 from app.modules.requests.router import router as requests_router
 from app.modules.talent_pool.router import router as talent_pool_router
 from app.modules.ui.router import router as ui_router
@@ -52,13 +59,15 @@ async def lifespan(app: FastAPI):
     for task in background_tasks:
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    # незавершённые сводки ИИ: отмена и сразу failed: interrupted (не успели — stale-логика)
+    await ai_summary_runner.shutdown()
     await close_cache()
     await dispose_engine()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="CRM «Вузы» — API",
+        title="Альма — API CRM взаимодействия с вузами",
         version="1.0.0",
         description=(
             "CRM для работы с вузами (ЛЦТ 2026): workflow B2B/B2C, договоры, "
@@ -69,6 +78,11 @@ def create_app() -> FastAPI:
         openapi_url="/api/v1/openapi.json",
         redoc_url=None,
     )
+    # порядок важен: последний добавленный middleware — внешний. Idempotency-Key
+    # (api-contract.md §1.6) работает внутри RequestIdMiddleware: видит trace_id,
+    # а ApiError обработчиков приходит к нему уже JSON-ответом. Конфиг, хранилище (PG)
+    # и проверка принципала — лениво из Settings при первом запросе с ключом
+    app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(RequestIdMiddleware)
     register_error_handlers(app)
 
@@ -82,14 +96,23 @@ def create_app() -> FastAPI:
     api.include_router(workflow_router)
     api.include_router(import_export_router)
     api.include_router(reporting_router)
+    api.include_router(interactions_router)  # «Взаимодействия за период» (ТЗ ФТ4)
+    api.include_router(sla_router)  # «Просрочки» (api-contract.md §7.2.2)
+    api.include_router(ai_summary_router)  # «Сводка ИИ» (api-contract.md §7.2.3)
     api.include_router(talent_pool_router)
     api.include_router(notifications_router)
     api.include_router(files_router)
     api.include_router(integrations_router)
     api.include_router(admin_router)
+    api.include_router(access_router)
     api.include_router(internal_router)
     app.include_router(api)
 
+    # Swagger: заголовок Idempotency-Key и ответы 409/422 у каждой мутации /api/v1/
+    install_idempotency_openapi(app)
+    # Swagger: ErrorEnvelope, 400 вместо 422 FastAPI, 401/403/404/409, Out-модели —
+    # последней обёрткой, поверх описаний Idempotency-Key (core/openapi.py)
+    install_openapi_postprocessing(app)
     return app
 
 

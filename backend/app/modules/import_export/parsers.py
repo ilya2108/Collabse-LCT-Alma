@@ -3,8 +3,10 @@
 Решения кейсодержателя (Р-18): формат определяется по magic bytes, не по расширению;
 XLSX — openpyxl (read-only), XLS (BIFF) — xlrd 2.x; CSV — charset-normalizer с цепочкой
 `utf-8-sig → utf-8 → cp1251 → koi8-r → cp866` и `csv.Sniffer` для разделителя;
-JSON — массив объектов, ключи становятся «колонками». Модуль чистый (без БД) —
-юнит-тестируется на байтовых фикстурах.
+JSON — массив объектов, ключи становятся «колонками». Объединённые ячейки Excel
+(вуз на несколько строк лицензий в таблице КАМа) раскрываются: значение левой верхней
+ячейки получает весь диапазон. Модуль чистый (без БД) — юнит-тестируется на байтовых
+фикстурах.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -32,6 +35,11 @@ MAX_IMPORT_ROWS = 100_000
 MAX_IMPORT_CELLS = 2_000_000
 # суммарный распакованный размер членов zip-архива XLSX (sharedStrings-бомбы и пр.)
 MAX_XLSX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+
+# <mergeCell ref="A2:A5"/> в XML листа (префикс пространства имён допускается)
+_MERGE_CELL_RE = re.compile(rb'<(?:\w+:)?mergeCell\s+ref="([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)"')
+_MERGE_SCAN_CHUNK = 1 << 20
+_MERGE_SCAN_OVERLAP = 128
 
 _XLSX_MAGIC = b"PK\x03\x04"
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -56,9 +64,7 @@ def import_bad_format(message: str = "Файл импорта не распоз�
 
 
 def import_too_big(detail: str) -> ApiError:
-    return import_bad_format(
-        f"Файл импорта слишком велик ({detail}) — разбейте его на части"
-    )
+    return import_bad_format(f"Файл импорта слишком велик ({detail}) — разбейте его на части")
 
 
 def import_encoding_error(tried: tuple[str, ...] = ENCODING_CHAIN) -> ApiError:
@@ -87,7 +93,7 @@ class ParsedTable:
     encoding_confidence: float | None = None
     sheets: list[dict[str, Any]] = field(default_factory=list)
     active_sheet: int = 0
-    header_row: int = 0
+    header_row: int | None = 0  # None — в файле нет строки заголовков
     # ошибки уровня парсинга (например, null-элементы JSON): не отказ файла,
     # а построчные ошибки {row, code, message} — сервис кладёт их в import_row_error
     row_issues: list[dict[str, Any]] = field(default_factory=list)
@@ -123,9 +129,7 @@ def _non_ascii_score(text: str) -> float:
     Подозрительные — всё не-ASCII плюс управляющие байты (кроме \\t\\r\\n): мусор
     вроде UTF-16, прочитанного как однобайтовая кодировка, роняет оценку ниже порога.
     """
-    considered = [
-        ch for ch in text if ord(ch) > 127 or (ord(ch) < 32 and ch not in "\t\r\n")
-    ]
+    considered = [ch for ch in text if ord(ch) > 127 or (ord(ch) < 32 and ch not in "\t\r\n")]
     if not considered:
         return 1.0
     expected = sum(1 for ch in considered if ch in _EXPECTED_NON_ASCII)
@@ -239,17 +243,26 @@ def _cell_to_str(value: Any) -> str | None:
 
 
 def _normalize_grid(
-    grid: list[list[Any]], header_row: int
+    grid: list[list[Any]], header_row: int | None
 ) -> tuple[list[str], list[list[str | None]]]:
-    if header_row >= len(grid):
-        raise import_bad_format("В файле нет строки заголовков")
-    raw_header = grid[header_row]
-    columns = [
-        (_cell_to_str(cell) or f"Колонка {idx + 1}") for idx, cell in enumerate(raw_header)
-    ]
-    width = len(columns)
+    if header_row is None:
+        # файл без заголовков: все строки — данные, колонки «Колонка N» по самой широкой строке
+        if not grid:
+            raise import_bad_format("В файле нет данных")
+        width = max(len(raw) for raw in grid)
+        columns = [f"Колонка {idx + 1}" for idx in range(width)]
+        data_rows = grid
+    else:
+        if header_row >= len(grid):
+            raise import_bad_format("В файле нет строки заголовков")
+        raw_header = grid[header_row]
+        columns = [
+            (_cell_to_str(cell) or f"Колонка {idx + 1}") for idx, cell in enumerate(raw_header)
+        ]
+        width = len(columns)
+        data_rows = grid[header_row + 1 :]
     rows: list[list[str | None]] = []
-    for raw in grid[header_row + 1 :]:
+    for raw in data_rows:
         row = [_cell_to_str(cell) for cell in raw[:width]]
         row += [None] * (width - len(row))
         rows.append(row)
@@ -259,6 +272,72 @@ def _normalize_grid(
 # --------------------------------------------------------------------------------------
 # Парсеры форматов
 # --------------------------------------------------------------------------------------
+
+
+def _column_index(letters: bytes) -> int:
+    """`b"A"` → 0, `b"AB"` → 27."""
+    index = 0
+    for char in letters:
+        index = index * 26 + (char - 64)
+    return index - 1
+
+
+def _xlsx_merged_ranges(workbook: Any, worksheet: Any) -> list[tuple[int, int, int, int]]:
+    """Объединённые диапазоны листа (0-based, границы включительно).
+
+    Read-only режим openpyxl не разбирает `<mergeCells>`, поэтому XML листа читается
+    потоком из уже открытого zip и сканируется регуляркой: память — один чанк.
+    """
+    path = getattr(worksheet, "_worksheet_path", None)
+    archive = getattr(workbook, "_archive", None)
+    if not path or archive is None:
+        return []
+    found: set[tuple[int, int, int, int]] = set()
+    tail = b""
+    try:
+        with archive.open(path) as stream:
+            while chunk := stream.read(_MERGE_SCAN_CHUNK):
+                window = tail + chunk
+                for match in _MERGE_CELL_RE.finditer(window):
+                    first_col, first_row, last_col, last_row = match.groups()
+                    found.add(
+                        (
+                            int(first_row) - 1,
+                            _column_index(first_col),
+                            int(last_row) - 1,
+                            _column_index(last_col),
+                        )
+                    )
+                tail = window[-_MERGE_SCAN_OVERLAP:]
+    except (KeyError, OSError, zipfile.BadZipFile):
+        return []
+    return sorted(found)
+
+
+def _fill_merged(grid: list[list[Any]], ranges: list[tuple[int, int, int, int]]) -> None:
+    """Значение левой верхней ячейки диапазона — во все его пустые ячейки.
+
+    Диапазон обрезается по фактическим размерам листа: «объединение до XFD1048576»
+    не раздувает таблицу сверх уже проверенных лимитов строк и ячеек.
+    """
+    if not grid:
+        return
+    width = max(len(row) for row in grid)
+    for first_row, first_col, last_row, last_col in ranges:
+        if first_row >= len(grid) or first_col >= width:
+            continue
+        top_row = grid[first_row]
+        value = top_row[first_col] if first_col < len(top_row) else None
+        if value is None:
+            continue
+        for row_index in range(first_row, min(last_row, len(grid) - 1) + 1):
+            row = grid[row_index]
+            last = min(last_col, width - 1)
+            if len(row) <= last:
+                row.extend([None] * (last + 1 - len(row)))
+            for col_index in range(first_col, last + 1):
+                if row[col_index] is None:
+                    row[col_index] = value
 
 
 def _check_zip_bomb(data: bytes) -> None:
@@ -274,7 +353,7 @@ def _check_zip_bomb(data: bytes) -> None:
         )
 
 
-def _parse_xlsx(data: bytes, sheet: int | str, header_row: int) -> ParsedTable:
+def _parse_xlsx(data: bytes, sheet: int | str, header_row: int | None) -> ParsedTable:
     import openpyxl
 
     _check_zip_bomb(data)
@@ -298,8 +377,10 @@ def _parse_xlsx(data: bytes, sheet: int | str, header_row: int) -> ParsedTable:
             if cells > MAX_IMPORT_CELLS:
                 raise import_too_big(f"более {MAX_IMPORT_CELLS} ячеек")
             grid.append(list(row))
+        merged = _xlsx_merged_ranges(workbook, worksheet)
     finally:
         workbook.close()
+    _fill_merged(grid, merged)
     columns, rows = _normalize_grid(grid, header_row)
     return ParsedTable(
         file_format="xlsx",
@@ -311,13 +392,18 @@ def _parse_xlsx(data: bytes, sheet: int | str, header_row: int) -> ParsedTable:
     )
 
 
-def _parse_xls(data: bytes, sheet: int | str, header_row: int) -> ParsedTable:
+def _parse_xls(data: bytes, sheet: int | str, header_row: int | None) -> ParsedTable:
     import xlrd
 
     try:
-        workbook = xlrd.open_workbook(file_contents=data)
-    except Exception as exc:  # noqa: BLE001
-        raise import_bad_format("Файл XLS повреждён или не является книгой Excel") from exc
+        # formatting_info — ради merged_cells (объединённые ячейки); старые книги без
+        # записей форматирования читаются вторым заходом без него
+        workbook = xlrd.open_workbook(file_contents=data, formatting_info=True)
+    except Exception:  # noqa: BLE001
+        try:
+            workbook = xlrd.open_workbook(file_contents=data)
+        except Exception as exc:  # noqa: BLE001
+            raise import_bad_format("Файл XLS повреждён или не является книгой Excel") from exc
     sheets = [
         {"index": idx, "name": ws.name, "rows": ws.nrows}
         for idx, ws in enumerate(workbook.sheets())
@@ -341,6 +427,13 @@ def _parse_xls(data: bytes, sheet: int | str, header_row: int) -> ParsedTable:
             else:
                 row.append(cell.value)
         grid.append(row)
+    # merged_cells xlrd: (rlo, rhi, clo, chi), верхние границы — не включительно
+    merged = [
+        (rlo, clo, rhi - 1, chi - 1)
+        for rlo, rhi, clo, chi in getattr(worksheet, "merged_cells", None) or []
+        if rhi > rlo and chi > clo
+    ]
+    _fill_merged(grid, merged)
     columns, rows = _normalize_grid(grid, header_row)
     return ParsedTable(
         file_format="xls",
@@ -352,7 +445,7 @@ def _parse_xls(data: bytes, sheet: int | str, header_row: int) -> ParsedTable:
     )
 
 
-def _parse_csv(data: bytes, header_row: int, forced_encoding: str | None) -> ParsedTable:
+def _parse_csv(data: bytes, header_row: int | None, forced_encoding: str | None) -> ParsedTable:
     text, encoding, confidence = decode_text(data, forced_encoding)
     sample = text[:8192]
     try:
@@ -457,10 +550,13 @@ def parse_table(
     file_format: str | None = None,
     *,
     sheet: int | str = 0,
-    header_row: int = 0,
+    header_row: int | None = 0,
     encoding: str | None = None,
 ) -> ParsedTable:
-    """Единая точка парсинга; формат определяется по magic bytes, если не передан."""
+    """Единая точка парсинга; формат определяется по magic bytes, если не передан.
+
+    `header_row=None` — файл без строки заголовков: все строки — данные.
+    """
     fmt = file_format or detect_format(data)
     if fmt == "xlsx":
         return _parse_xlsx(data, sheet, header_row)

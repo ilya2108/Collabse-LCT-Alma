@@ -1,14 +1,30 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, FilePlus2, Info, Loader2, Search, Table2 } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  FilePlus2,
+  Info,
+  Loader2,
+  Pencil,
+  Plus,
+  Search,
+  Table2,
+} from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   importDictionaryJson,
   listDictionaries,
   listDictionaryItems,
 } from '@/shared/api/endpoints/admin';
+import {
+  createItDirection,
+  listAllItDirections,
+  updateItDirection,
+} from '@/shared/api/endpoints/itDirections';
 import { notifyApiError, notifySuccess } from '@/shared/api/feedback';
-import type { DictionaryInfo } from '@/shared/api/types';
+import type { DictionaryInfo, ItDirection } from '@/shared/api/types';
+import { useAuth } from '@/shared/auth/AuthContext';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
 import { Button } from '@/shared/ui/button';
 import {
@@ -20,6 +36,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog';
@@ -33,6 +51,7 @@ import {
   SheetTitle,
 } from '@/shared/ui/sheet';
 import { Skeleton } from '@/shared/ui/skeleton';
+import { Switch } from '@/shared/ui/switch';
 import {
   Table,
   TableBody,
@@ -302,6 +321,326 @@ function ItemsDrawer({ dictionary, onClose }: ItemsDrawerProps): ReactNode {
   );
 }
 
+// --- ИТ-направления: каталог в БД с правкой на месте ---------------------------------------
+
+const DIRECTION_CODE_RE = /^[0-9A-Za-zА-Яа-яЁё][0-9A-Za-zА-Яа-яЁё_.-]{0,63}$/;
+
+interface DirectionDraft {
+  code: string;
+  name: string;
+  description: string;
+  sort_order: string;
+}
+
+function draftOf(direction: ItDirection | null, nextOrder: number): DirectionDraft {
+  return direction
+    ? {
+        code: direction.code,
+        name: direction.name,
+        description: direction.description ?? '',
+        sort_order: String(direction.sort_order),
+      }
+    : { code: '', name: '', description: '', sort_order: String(nextOrder) };
+}
+
+function draftErrors(draft: DirectionDraft): Partial<Record<keyof DirectionDraft, string>> {
+  const errors: Partial<Record<keyof DirectionDraft, string>> = {};
+  if (!DIRECTION_CODE_RE.test(draft.code.trim())) {
+    errors.code = 'Код — буквы, цифры, «_», «-», «.» без пробелов (до 64 символов)';
+  }
+  if (draft.name.trim().length < 2) errors.name = 'Название — не короче 2 символов';
+  const order = Number(draft.sort_order);
+  if (!Number.isInteger(order) || order < 0) errors.sort_order = 'Порядок — целое число от 0';
+  return errors;
+}
+
+interface DirectionDialogProps {
+  open: boolean;
+  direction: ItDirection | null;
+  nextOrder: number;
+  onClose: () => void;
+}
+
+function DirectionDialog({ open, direction, nextOrder, onClose }: DirectionDialogProps): ReactNode {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<DirectionDraft>(() => draftOf(direction, nextOrder));
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setDraft(draftOf(direction, nextOrder));
+      setTouched(false);
+    }
+  }, [open, direction, nextOrder]);
+  const errors = draftErrors(draft);
+  const valid = Object.keys(errors).length === 0;
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      const payload = {
+        code: draft.code.trim(),
+        name: draft.name.trim(),
+        description: draft.description.trim() || null,
+        sort_order: Number(draft.sort_order),
+      };
+      return direction
+        ? updateItDirection(direction.id, { ...payload, version: direction.version })
+        : createItDirection(payload);
+    },
+    meta: { silent: true },
+    onSuccess: (saved) => {
+      notifySuccess(direction ? 'Направление сохранено' : 'Направление добавлено', saved.name);
+      void queryClient.invalidateQueries({ queryKey: ['it-directions'] });
+      onClose();
+    },
+    onError: (error) =>
+      notifyApiError(
+        error,
+        direction ? 'Не удалось сохранить направление' : 'Не удалось добавить направление',
+      ),
+  });
+
+  const field = (key: keyof DirectionDraft, value: string): void =>
+    setDraft((prev) => ({ ...prev, [key]: value }));
+  const showError = (key: keyof DirectionDraft): ReactNode =>
+    touched && errors[key] ? (
+      <p className="text-xs text-status-danger-deep" role="alert">
+        {errors[key]}
+      </p>
+    ) : null;
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>{direction ? `ИТ-направление: ${direction.name}` : 'Новое ИТ-направление'}</DialogTitle>
+          <DialogDescription>
+            Направление выбирается в карточке программы (одно) и продукта (несколько) и
+            фильтрует дашборд и отчёты КАМов.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setTouched(true);
+            if (valid) mutation.mutate();
+          }}
+        >
+          <div className="grid gap-1.5">
+            <Label htmlFor="direction-name">Название</Label>
+            <Input
+              id="direction-name"
+              value={draft.name}
+              onChange={(e) => field('name', e.target.value)}
+              placeholder="DevOps, Тестирование (QA)…"
+              autoComplete="off"
+            />
+            {showError('name')}
+          </div>
+          <div className="grid grid-cols-[1fr_120px] gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="direction-code">Код</Label>
+              <Input
+                id="direction-code"
+                value={draft.code}
+                onChange={(e) => field('code', e.target.value)}
+                placeholder="devops"
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+              />
+              {showError('code')}
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="direction-order">Порядок</Label>
+              <Input
+                id="direction-order"
+                inputMode="numeric"
+                value={draft.sort_order}
+                onChange={(e) => field('sort_order', e.target.value)}
+                className="tabular"
+              />
+              {showError('sort_order')}
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="direction-description">Описание</Label>
+            <Textarea
+              id="direction-description"
+              rows={3}
+              value={draft.description}
+              onChange={(e) => field('description', e.target.value)}
+              placeholder="Чему учат по направлению"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button type="submit" disabled={mutation.isPending || (touched && !valid)}>
+              {mutation.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
+              {mutation.isPending ? 'Сохраняем…' : direction ? 'Сохранить' : 'Добавить'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Каталог ИТ-направлений — справочник в БД наравне с вузами и ИТ-продуктами: правка на
+ * месте с правом «Справочники». Деактивация мягкая — связи с программами и
+ * продуктами сохраняются для отчётов прошлых периодов; направление активных программ
+ * не деактивируется (сервер объяснит, какие программы перевести).
+ */
+function ItDirectionsSection(): ReactNode {
+  const { hasPermission } = useAuth();
+  const queryClient = useQueryClient();
+  const canEdit = hasPermission('admin:dictionaries');
+  const [editing, setEditing] = useState<ItDirection | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+  });
+  const toggleMutation = useMutation({
+    mutationFn: ({ direction, isActive }: { direction: ItDirection; isActive: boolean }) =>
+      updateItDirection(direction.id, { is_active: isActive, version: direction.version }),
+    meta: { silent: true },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['it-directions'] }),
+    onError: (error) => notifyApiError(error, 'Не удалось изменить активность направления'),
+  });
+  const items = directionsQuery.data?.items ?? [];
+  const nextOrder = items.reduce((max, d) => Math.max(max, d.sort_order), 0) + 10;
+
+  let body: ReactNode;
+  if (directionsQuery.isLoading) {
+    body = <LoadingState rows={4} card={false} />;
+  } else if (directionsQuery.isError) {
+    body = (
+      <ErrorState
+        error={directionsQuery.error}
+        onRetry={() => void directionsQuery.refetch()}
+        title="Не удалось загрузить ИТ-направления"
+      />
+    );
+  } else if (items.length === 0) {
+    body = (
+      <p className="py-4 text-sm text-muted-foreground">
+        Направлений пока нет — добавьте DevOps, QA, анализ данных и другие.
+      </p>
+    );
+  } else {
+    body = (
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead scope="col">Название</TableHead>
+            <TableHead scope="col" className="max-sm:hidden">
+              Код
+            </TableHead>
+            <TableHead scope="col" className="text-right">
+              Программ
+            </TableHead>
+            <TableHead scope="col" className="text-right max-sm:hidden">
+              Продуктов
+            </TableHead>
+            <TableHead scope="col">Активно</TableHead>
+            {canEdit ? <TableHead scope="col" className="w-[48px]" /> : null}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((direction) => (
+            <TableRow key={direction.id}>
+              <TableCell>
+                <span className="block font-medium">{direction.name}</span>
+                {direction.description ? (
+                  <span className="block text-xs text-muted-foreground">{direction.description}</span>
+                ) : null}
+              </TableCell>
+              <TableCell className="font-mono text-xs text-muted-foreground max-sm:hidden">
+                {direction.code}
+              </TableCell>
+              <TableCell className="tabular text-right">{direction.programs_count}</TableCell>
+              <TableCell className="tabular text-right max-sm:hidden">
+                {direction.products_count}
+              </TableCell>
+              <TableCell>
+                <Switch
+                  checked={direction.is_active}
+                  disabled={
+                    !canEdit ||
+                    (toggleMutation.isPending &&
+                      toggleMutation.variables?.direction.id === direction.id)
+                  }
+                  aria-label={`Активность направления ${direction.name}`}
+                  onCheckedChange={(checked) =>
+                    toggleMutation.mutate({ direction, isActive: checked })
+                  }
+                />
+              </TableCell>
+              {canEdit ? (
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Изменить направление ${direction.name}`}
+                    onClick={() => {
+                      setEditing(direction);
+                      setDialogOpen(true);
+                    }}
+                  >
+                    <Pencil aria-hidden="true" />
+                  </Button>
+                </TableCell>
+              ) : null}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    );
+  }
+
+  return (
+    <section
+      aria-labelledby="it-directions-title"
+      className="mb-6 rounded-lg border border-border bg-card px-4 py-3 shadow-card"
+    >
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <h2 id="it-directions-title" className="text-sm font-semibold">
+            ИТ-направления
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Программа — одно направление, продукт — несколько; фильтр дашборда и отчётов КАМов,
+            колонка «ИТ-направление» в выгрузке взаимодействий
+          </p>
+        </div>
+        {canEdit ? (
+          <Button
+            size="sm"
+            onClick={() => {
+              setEditing(null);
+              setDialogOpen(true);
+            }}
+          >
+            <Plus aria-hidden="true" />
+            Добавить направление
+          </Button>
+        ) : null}
+      </div>
+      {body}
+      <DirectionDialog
+        open={dialogOpen}
+        direction={editing}
+        nextOrder={nextOrder}
+        onClose={() => setDialogOpen(false)}
+      />
+    </section>
+  );
+}
+
 export function AdminDictionariesPage(): ReactNode {
   const [uploadTarget, setUploadTarget] = useState<DictionaryInfo | null>(null);
   const [viewTarget, setViewTarget] = useState<DictionaryInfo | null>(null);
@@ -369,6 +708,7 @@ export function AdminDictionariesPage(): ReactNode {
           обращается в интернет в рантайме — закрытый контур.
         </p>
       </div>
+      <ItDirectionsSection />
       {body}
       <UploadModal dictionary={uploadTarget} onClose={() => setUploadTarget(null)} />
       <ItemsDrawer dictionary={viewTarget} onClose={() => setViewTarget(null)} />

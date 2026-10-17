@@ -16,7 +16,7 @@ import { isApiError } from '@/shared/api/errors';
 import { createRequest, type CreateRequestPayload } from '@/shared/api/endpoints/requests';
 import type { RequestItem, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
-import { toastError, toastSuccess } from '@/shared/lib/toast';
+import { toastError, toastInfo, toastSuccess } from '@/shared/lib/toast';
 import { Button } from '@/shared/ui/button';
 import {
   Form,
@@ -36,7 +36,9 @@ import { Textarea } from '@/shared/ui/textarea';
  * Создание заявки (ux.md §7.4, redesign.md §5.2): Sheet 480px, react-hook-form
  * + zod. Заявка всегда создаётся в начальном этапе схемы; B2B — вуз
  * обязателен, B2C — контрагент (физлицо/юрлицо) + тип взаимодействия.
- * Ошибки 422 маппятся в поля через form.setError.
+ * Нового клиента B2C сервер находит в базе (физлицо — по email, юрлицо — по ИНН
+ * или названию) или создаёт; найденный — сообщаем отдельным тостом.
+ * Ошибки 400 `validation_error` маппятся в поля через form.setError.
  */
 
 interface CreateRequestDrawerProps {
@@ -123,7 +125,7 @@ const FORM_FIELDS = [
   'description',
 ] as const;
 
-/** 422: `loc/field` бэкенда → имя поля формы (client.full_name → client_full_name). */
+/** 400 `validation_error`: `loc/field` бэкенда → имя поля формы (client.full_name → client_full_name). */
 function apiFieldToFormField(field: string): Path<FormValues> | null {
   const normalized = field.replace(/^body\./, '').replace('client.', 'client_');
   return (FORM_FIELDS as readonly string[]).includes(normalized)
@@ -138,7 +140,10 @@ export function CreateRequestDrawer({
   onCreated,
 }: CreateRequestDrawerProps): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
+  // назначить другого ответственного — право в процессе заявки + список пользователей
+  const canAssignOther =
+    hasPermission('requests:assign_any', workflowType) && hasPermission('admin:users');
 
   const schema = useMemo(() => buildSchema(workflowType), [workflowType]);
   const form = useForm<FormValues>({
@@ -160,6 +165,16 @@ export function CreateRequestDrawer({
     meta: { silent: true },
     onSuccess: (request) => {
       toastSuccess('Заявка создана', `«${request.title}» — этап «${request.status.name}»`);
+      if (request.client_matched) {
+        const name = request.client?.company_name ?? request.client?.full_name;
+        toastInfo(
+          'Клиент уже был в базе',
+          name
+            ? `Заявка привязана к существующему клиенту «${name}»`
+            : 'Заявка привязана к существующему клиенту',
+        );
+      }
+      if (request.warning_duplicate) toastInfo('Проверьте, не дубль ли это', request.warning_duplicate);
       void queryClient.invalidateQueries({ queryKey: ['board-requests'] });
       void queryClient.invalidateQueries({ queryKey: ['registry'] });
       form.reset(DEFAULTS);
@@ -167,8 +182,12 @@ export function CreateRequestDrawer({
       onCreated?.(request);
     },
     onError: (error) => {
-      // 422 → inline-ошибки полей (§5.2), непривязанные — toast
-      if (isApiError(error) && error.status === 422 && error.details.length > 0) {
+      // 400 validation_error → inline-ошибки полей (§5.2), непривязанные — toast
+      if (
+        isApiError(error) &&
+        (error.code === 'validation_error' || error.status === 422) &&
+        error.details.length > 0
+      ) {
         let unbound = false;
         for (const detail of error.details) {
           const field = detail.field ? apiFieldToFormField(detail.field) : null;
@@ -364,6 +383,7 @@ export function CreateRequestDrawer({
                               placeholder="ИНН, 10 цифр…"
                             />
                           </FormControl>
+                          <FormDescription>Если организация с этим ИНН уже есть в базе, заявка привяжется к ней</FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -386,6 +406,9 @@ export function CreateRequestDrawer({
                           placeholder="client@example.com…"
                         />
                       </FormControl>
+                      {clientKind === 'person' ? (
+                        <FormDescription>Если клиент с этим email уже есть в базе, заявка привяжется к нему</FormDescription>
+                      ) : null}
                       <FormMessage />
                     </FormItem>
                   )}
@@ -454,7 +477,7 @@ export function CreateRequestDrawer({
                 </FormItem>
               )}
             />
-            {hasRole('admin', 'head_kam') ? (
+            {canAssignOther ? (
               <FormField
                 control={form.control}
                 name="assignee_id"

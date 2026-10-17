@@ -29,19 +29,14 @@ from app.core.events import (
     LMS_INBOUND_EVENTS,
 )
 from app.core.outbox import DirectRecipient, emit_event_notifications
-from app.core.pii import (
-    display_name_from_full_name,
-    get_pii_crypto,
-    mask_email,
-    mask_full_name,
-    mask_phone,
-)
+from app.core.pii import mask_email, mask_full_name, mask_phone
 from app.models.crm import Counterparty, Product, Program
 from app.models.deal import Deal, DealStageHistory
 from app.models.service import ExternalLink, IntegrationEvent
 from app.models.user import AppUser
 from app.models.workflow import Workflow, WorkflowStage
 from app.modules.integrations.schemas import InboundEnvelope, LeadBlock
+from app.modules.requests.service import find_or_create_counterparty
 
 logger = logging.getLogger("app.integrations")
 
@@ -58,13 +53,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def find_seen_event(
-    session: AsyncSession, event_id: uuid.UUID
-) -> IntegrationEvent | None:
+async def find_seen_event(session: AsyncSession, event_id: uuid.UUID) -> IntegrationEvent | None:
     return (
-        await session.execute(
-            select(IntegrationEvent).where(IntegrationEvent.event_id == event_id)
-        )
+        await session.execute(select(IntegrationEvent).where(IntegrationEvent.event_id == event_id))
     ).scalar_one_or_none()
 
 
@@ -135,13 +126,13 @@ async def _upsert_external_link(
     await session.execute(
         pg_insert(ExternalLink)
         .values(
-            entity_type=entity_type, entity_id=entity_id, system=system,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            system=system,
             external_id=external_id,
         )
         .on_conflict_do_update(
-            index_elements=[
-                ExternalLink.entity_type, ExternalLink.entity_id, ExternalLink.system
-            ],
+            index_elements=[ExternalLink.entity_type, ExternalLink.entity_id, ExternalLink.system],
             set_={"external_id": external_id},
         )
     )
@@ -152,9 +143,7 @@ async def _upsert_external_link(
 # --------------------------------------------------------------------------------------
 
 
-async def handle_lms_event(
-    session: AsyncSession, envelope: InboundEnvelope
-) -> dict[str, Any]:
+async def handle_lms_event(session: AsyncSession, envelope: InboundEnvelope) -> dict[str, Any]:
     """Эффект в CRM (§13.3): запись в историю заявки + нотификация ответственному.
 
     Автоперехода по workflow нет — движение только людьми (открытое допущение №2
@@ -239,59 +228,29 @@ async def handle_lms_event(
 # --------------------------------------------------------------------------------------
 
 
-async def _find_or_create_counterparty(
-    session: AsyncSession, lead: LeadBlock
-) -> Counterparty:
-    crypto = get_pii_crypto()
+async def _find_or_create_counterparty(session: AsyncSession, lead: LeadBlock) -> Counterparty:
+    # поиск/создание — общий хелпер с формой создания заявки (requests.service);
+    # требования к лиду строже формы: у физлица email обязателен
     if lead.client_kind == "person":
         if not lead.full_name or not lead.email:
             raise unprocessable("Для физлица в lead обязательны full_name и email")
-        email_hmac = crypto.email_hmac(lead.email)
-        existing = (
-            await session.execute(
-                select(Counterparty).where(Counterparty.email_hmac == email_hmac)
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-        counterparty = Counterparty(
-            kind="person",
-            display_name=display_name_from_full_name(lead.full_name),
-            full_name=lead.full_name,
-            email=lead.email,
-            phone=lead.phone,
-            email_hmac=email_hmac,
-            full_name_hmac=crypto.full_name_hmac(lead.full_name),
-        )
-        session.add(counterparty)
-        await session.flush()
-        return counterparty
-
-    if not lead.company_name:
+    elif not lead.company_name:
         raise unprocessable("Для юрлица в lead обязателен company_name")
-    stmt = select(Counterparty).where(Counterparty.kind == "legal_entity")
-    stmt = (
-        stmt.where(Counterparty.inn == lead.inn)
-        if lead.inn
-        else stmt.where(Counterparty.org_name == lead.company_name)
-    )
-    existing = (await session.execute(stmt)).scalars().first()
-    if existing is not None:
-        return existing
-    counterparty = Counterparty(
-        kind="legal_entity",
-        display_name=lead.company_name,
-        org_name=lead.company_name,
+    counterparty, _created = await find_or_create_counterparty(
+        session,
+        client_kind=lead.client_kind,
+        full_name=lead.full_name,
+        email=lead.email,
+        phone=lead.phone,
+        company_name=lead.company_name,
         inn=lead.inn,
-        org_email=lead.email,
-        org_phone=lead.phone,
     )
-    session.add(counterparty)
-    await session.flush()
     return counterparty
 
 
 async def _lead_responsible(session: AsyncSession) -> AppUser:
+    # коды системных ролей неизменяемы и не удаляются (app.core.rbac_catalog), поэтому
+    # распределение лидов по-прежнему опирается на них, а не на права своих ролей
     for role in ("head_kam", "admin"):
         user = (
             (
@@ -360,16 +319,12 @@ async def handle_cms_lead(
     product = None
     if program_block.get("crm_program_id"):
         try:
-            program = await session.get(
-                Program, uuid.UUID(str(program_block["crm_program_id"]))
-            )
+            program = await session.get(Program, uuid.UUID(str(program_block["crm_program_id"])))
         except ValueError:
             program = None
     if product_block.get("crm_product_id"):
         try:
-            product = await session.get(
-                Product, uuid.UUID(str(product_block["crm_product_id"]))
-            )
+            product = await session.get(Product, uuid.UUID(str(product_block["crm_product_id"])))
         except ValueError:
             product = None
 

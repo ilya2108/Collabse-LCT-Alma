@@ -126,12 +126,31 @@ class TestParseCsv:
         assert table.columns == ["ФИО", "Почта"]
         assert table.rows == [["Иванов", "i@example.com"]]
 
+    def test_without_header_row(self) -> None:
+        # флажок «первая строка — заголовок» снят: все строки — данные, колонки «Колонка N»
+        data = "Иванов;i@example.com\nПетров;p@example.com;лишнее\n".encode("cp1251")
+        table = parse_table(data, "csv", header_row=None)
+        assert table.header_row is None
+        assert table.columns == ["Колонка 1", "Колонка 2", "Колонка 3"]
+        assert table.rows == [
+            ["Иванов", "i@example.com", None],
+            ["Петров", "p@example.com", "лишнее"],
+        ]
+
+    def test_mapping_options_accept_no_header(self) -> None:
+        from app.modules.import_export.schemas import MappingOptions
+        from app.modules.import_export.service import _header_row_option
+
+        options = MappingOptions.model_validate({"header_row": None})
+        assert options.header_row is None
+        assert _header_row_option(options.model_dump()) is None
+        assert _header_row_option({}) == 0
+        assert _header_row_option({"header_row": 2}) == 2
+
 
 class TestParseXlsx:
     def test_roundtrip(self) -> None:
-        data = _xlsx_bytes(
-            [["ФИО", "Email"], ["Иванов Иван", "ivanov@example.com"], [None, None]]
-        )
+        data = _xlsx_bytes([["ФИО", "Email"], ["Иванов Иван", "ivanov@example.com"], [None, None]])
         table = parse_table(data)
         assert table.file_format == "xlsx"
         assert table.columns == ["ФИО", "Email"]
@@ -142,6 +161,12 @@ class TestParseXlsx:
         with pytest.raises(ApiError) as exc:
             parse_table(b"PK\x03\x04" + b"\x00" * 100)
         assert exc.value.code == "import_bad_format"
+
+    def test_without_header_row(self) -> None:
+        data = _xlsx_bytes([["Иванов Иван", "ivanov@example.com"], ["Петров Пётр", None]])
+        table = parse_table(data, header_row=None)
+        assert table.columns == ["Колонка 1", "Колонка 2"]
+        assert table.rows == [["Иванов Иван", "ivanov@example.com"], ["Петров Пётр", None]]
 
     def test_unknown_sheet(self) -> None:
         data = _xlsx_bytes([["a"], [1]])
@@ -162,7 +187,10 @@ class TestParseXls:
         assert table.sheets == [{"index": 0, "name": "Студенты", "rows": 3}]
         # дата → ISO, целое без «.0», дробное как есть, пустая ячейка → None
         assert table.rows[0] == [
-            "Иванов Иван Иванович", "ivanov@example.com", "2000-05-01", "42",
+            "Иванов Иван Иванович",
+            "ivanov@example.com",
+            "2000-05-01",
+            "42",
         ]
         assert table.rows[1] == ["Петрова Анна", None, "1999-12-31", "3.5"]
 
@@ -269,7 +297,7 @@ class TestParseJson:
     def test_array_of_only_invalid_elements_rejected(self) -> None:
         # сообщение о формате остаётся для случая «объектов нет вообще»
         with pytest.raises(ApiError) as exc:
-            parse_table(b"[null, 1, \"x\"]")
+            parse_table(b'[null, 1, "x"]')
         assert exc.value.code == "import_bad_format"
 
 

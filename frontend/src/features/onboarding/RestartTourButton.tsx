@@ -1,6 +1,6 @@
 import { CircleHelp } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/shared/ui/button';
 import {
   DropdownMenu,
@@ -15,11 +15,12 @@ import { useOnboarding } from './OnboardingProvider';
 /**
  * Кнопка перезапуска тура в шапке (redesign.md §7.6, слот в топбаре — WP3;
  * подключает стадия Integrate). Меню: туры роли (текущий раздел — первым),
- * «Показать чек-лист» (если скрыт), «Приветственный экран». Перезапуск
- * не сбрасывает чек-лист.
+ * «Показать чек-лист» (если скрыт), «Приветственный экран», «Справка» (/help).
+ * Перезапуск не сбрасывает чек-лист.
  */
 export function RestartTourButton(): ReactNode {
   const location = useLocation();
+  const navigate = useNavigate();
   const { ready, tours, state, startTour, showChecklist, showWelcome } = useOnboarding();
 
   if (!ready || tours.length === 0) return null;
@@ -51,6 +52,7 @@ export function RestartTourButton(): ReactNode {
           <DropdownMenuItem onSelect={showChecklist}>Показать контрольный список</DropdownMenuItem>
         ) : null}
         <DropdownMenuItem onSelect={showWelcome}>Приветственный экран</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => navigate('/help')}>Справка — руководство</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

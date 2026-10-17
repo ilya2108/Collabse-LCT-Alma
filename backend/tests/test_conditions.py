@@ -25,20 +25,19 @@ class TestLeafOperators:
         assert not evaluate_condition(
             {"field": "client_kind", "op": "eq", "value": "person"}, CONTEXT
         )
-        assert evaluate_condition(
-            {"field": "client_kind", "op": "neq", "value": "person"}, CONTEXT
-        )
+        assert evaluate_condition({"field": "client_kind", "op": "neq", "value": "person"}, CONTEXT)
 
     def test_numeric_comparison_coerces_decimal(self) -> None:
         assert evaluate_condition({"field": "amount", "op": "gte", "value": 100000}, CONTEXT)
-        assert evaluate_condition(
-            {"field": "amount", "op": "lt", "value": "200000.50"}, CONTEXT
-        )
+        assert evaluate_condition({"field": "amount", "op": "lt", "value": "200000.50"}, CONTEXT)
         assert not evaluate_condition({"field": "amount", "op": "gt", "value": 150000}, CONTEXT)
 
     def test_in_not_in(self) -> None:
-        node = {"field": "interaction_type_code", "op": "in",
-                "value": ["corporate_training", "event"]}
+        node = {
+            "field": "interaction_type_code",
+            "op": "in",
+            "value": ["corporate_training", "event"],
+        }
         assert evaluate_condition(node, CONTEXT)
         assert not evaluate_condition(
             {"field": "interaction_type_code", "op": "not_in", "value": ["corporate_training"]},
@@ -50,9 +49,7 @@ class TestLeafOperators:
         assert not evaluate_condition({"field": "university_id", "op": "is_set"}, CONTEXT)
 
     def test_null_value_never_matches_comparisons(self) -> None:
-        assert not evaluate_condition(
-            {"field": "university_id", "op": "eq", "value": "x"}, CONTEXT
-        )
+        assert not evaluate_condition({"field": "university_id", "op": "eq", "value": "x"}, CONTEXT)
 
 
 class TestNesting:
@@ -64,16 +61,17 @@ class TestNesting:
                 {
                     "any": [
                         {"field": "amount", "op": "gte", "value": 100000},
-                        {"field": "interaction_type_code", "op": "eq",
-                         "value": "corporate_training"},
+                        {
+                            "field": "interaction_type_code",
+                            "op": "eq",
+                            "value": "corporate_training",
+                        },
                     ]
                 },
             ]
         }
         assert evaluate_condition(condition, CONTEXT)
-        assert not evaluate_condition(
-            condition, {**CONTEXT, "client_kind": "person"}
-        )
+        assert not evaluate_condition(condition, {**CONTEXT, "client_kind": "person"})
 
     def test_empty_condition_always_true(self) -> None:
         assert evaluate_condition(None, CONTEXT)
@@ -87,9 +85,7 @@ class TestRobustness:
         assert not evaluate_condition({"field": "bogus", "op": "eq", "value": 1}, CONTEXT)
 
     def test_unknown_op_false(self) -> None:
-        assert not evaluate_condition(
-            {"field": "amount", "op": "matches", "value": 1}, CONTEXT
-        )
+        assert not evaluate_condition({"field": "amount", "op": "matches", "value": 1}, CONTEXT)
 
     def test_incomparable_types_false(self) -> None:
         assert not evaluate_condition(
@@ -105,16 +101,12 @@ class TestRobustness:
 class TestSyntaxValidation:
     def test_valid_syntax(self) -> None:
         assert validate_condition_syntax(None)
-        assert validate_condition_syntax(
-            {"all": [{"field": "amount", "op": "is_set"}]}
-        )
+        assert validate_condition_syntax({"all": [{"field": "amount", "op": "is_set"}]})
 
     def test_invalid_syntax(self) -> None:
         assert not validate_condition_syntax({"field": "bogus", "op": "eq", "value": 1})
         assert not validate_condition_syntax({"all": "не список"})
         assert not validate_condition_syntax({"field": "amount", "op": "eq"})  # нет value
-        assert not validate_condition_syntax(
-            {"field": "amount", "op": "in", "value": "строка"}
-        )
+        assert not validate_condition_syntax({"field": "amount", "op": "in", "value": "строка"})
         assert not validate_condition_syntax({"field": "amount"})
         assert not validate_condition_syntax([])

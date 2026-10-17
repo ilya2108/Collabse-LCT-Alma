@@ -1,12 +1,15 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, GraduationCap } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
-import { getProduct } from '@/shared/api/endpoints/products';
+import { listAllItDirections } from '@/shared/api/endpoints/itDirections';
+import { getProduct, updateProduct } from '@/shared/api/endpoints/products';
 import { listProgramsByProduct } from '@/shared/api/endpoints/programs';
 import { listRequests } from '@/shared/api/endpoints/requests';
+import type { Product } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { formatDate, formatText } from '@/shared/lib/format';
+import { toastError } from '@/shared/lib/toast';
 import { Badge } from '@/shared/ui/badge';
 import {
   DL,
@@ -14,6 +17,7 @@ import {
   ErrorState,
   LoadingState,
   MiniCard,
+  MultiCombobox,
   PageHeader,
   SectionCard,
   StageTag,
@@ -23,10 +27,71 @@ import {
 } from '@/shared/ui/data-table';
 import { PRODUCT_TYPE_LABELS } from './ProductsPage';
 
+/**
+ * ИТ-направления продукта (M:N): продукт помогает учить по одному или нескольким. С правом
+ * «Создание и правка продуктов» набор правится прямо в карточке; программы продукта без
+ * своего направления относятся к этим направлениям.
+ */
+function ProductDirections({ product }: { product: Product }): ReactNode {
+  const { hasPermission } = useAuth();
+  const queryClient = useQueryClient();
+  const canEdit = hasPermission('products:write');
+  const directionsQuery = useQuery({
+    queryKey: ['it-directions', 'all'],
+    queryFn: ({ signal }) => listAllItDirections(signal),
+    enabled: canEdit,
+    staleTime: 5 * 60_000,
+  });
+  const mutation = useMutation({
+    mutationFn: (directionIds: string[]) =>
+      updateProduct(product.id, { direction_ids: directionIds, version: product.version }),
+    meta: { silent: true },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['product', product.id], updated);
+      void queryClient.invalidateQueries({ queryKey: ['registry', 'registry.products'] });
+      void queryClient.invalidateQueries({ queryKey: ['product-programs', product.id] });
+      void queryClient.invalidateQueries({ queryKey: ['it-directions'] });
+    },
+    onError: (error) => toastError(error, { title: 'Не удалось изменить направления' }),
+  });
+  const current = product.directions ?? [];
+  if (!canEdit) {
+    return current.length > 0 ? (
+      <span className="flex flex-wrap gap-1">
+        {current.map((d) => (
+          <Badge key={d.id} variant="secondary">
+            {d.name}
+          </Badge>
+        ))}
+      </span>
+    ) : (
+      '—'
+    );
+  }
+  const selected = new Set(product.direction_ids ?? current.map((d) => d.id));
+  const options = (directionsQuery.data?.items ?? [])
+    .filter((d) => d.is_active || selected.has(d.id))
+    .map((d) => ({ value: d.id, label: d.is_active ? d.name : `${d.name} (неактивно)` }));
+  return (
+    <MultiCombobox
+      className="w-full max-w-[360px]"
+      options={options}
+      value={[...selected]}
+      onChange={(value) => mutation.mutate(value)}
+      placeholder="Выберите ИТ-направления"
+      searchPlaceholder="Найти направление…"
+      emptyText="Направления не найдены"
+      loading={directionsQuery.isLoading}
+      disabled={mutation.isPending}
+      ariaLabel="ИТ-направления продукта"
+    />
+  );
+}
+
 /** Карточка продукта (ux.md §9.3, redesign.md §6.5): DL-описание, программы, заявки. */
 export function ProductDetailPage(): ReactNode {
   const { id = '' } = useParams<'id'>();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
 
   const productQuery = useQuery({
     queryKey: ['product', id],
@@ -84,6 +149,9 @@ export function ProductDetailPage(): ReactNode {
                     ? (PRODUCT_TYPE_LABELS[product.product_type] ?? product.product_type)
                     : '—'}
                 </DLRow>
+                <DLRow label="ИТ-направления">
+                  <ProductDirections product={product} />
+                </DLRow>
                 <DLRow label="Описание">{formatText(product.description)}</DLRow>
               </DL>
             </SectionCard>
@@ -104,6 +172,7 @@ export function ProductDetailPage(): ReactNode {
                       title={program.name}
                       description={
                         <>
+                          {program.direction ? `${program.direction.name} · ` : ''}
                           Приоритет {program.priority_rank}
                           {program.starts_on ? ` · старт ${formatDate(program.starts_on)}` : ''}
                           {program.seats ? ` · мест: ${program.seats}` : ''}
@@ -141,7 +210,7 @@ export function ProductDetailPage(): ReactNode {
                       icon={FileText}
                       title={request.title}
                       description={
-                        hasRole('admin', 'head_kam', 'kam')
+                        hasPermission('requests:write')
                           ? (request.assignee?.full_name ?? 'Не назначен')
                           : undefined
                       }

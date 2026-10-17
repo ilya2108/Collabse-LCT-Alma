@@ -1,8 +1,9 @@
 """Админка: пользователи, настройки, фичефлаги, аудит (api-contract.md §10).
 
 Справочники (`/admin/dictionaries*`) — модуль import_export; журнал интеграций
-(`/admin/integration/*`) — модуль integrations. Изменение фичефлага публикует
-SSE `flags.updated` — открытые интерфейсы перечитывают `/flags` без перезагрузки.
+(`/admin/integration/*`) — модуль integrations; роли и права, назначение ролей
+(`/admin/roles*`, `PUT /admin/users/{id}/roles`) — модуль access. Изменение фичефлага
+публикует SSE `flags.updated` — открытые интерфейсы перечитывают `/flags` без перезагрузки.
 """
 
 from __future__ import annotations
@@ -17,9 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import client_ip, write_audit
 from app.core.db import get_session
+from app.core.errors import validation_error
 from app.core.events import SSE_FLAGS_UPDATED
 from app.core.pagination import ListParams, list_envelope, list_params
-from app.core.security import require_roles
+from app.core.rbac_catalog import PERMISSION_CODES
+from app.core.security import require_permission
 from app.core.sse import publish_event
 from app.models.user import AppUser
 from app.modules.admin import service
@@ -28,11 +31,14 @@ from app.modules.crm.deps import check_version
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-AdminUser = Annotated[AppUser, Depends(require_roles("admin"))]
+UsersWriter = Annotated[AppUser, Depends(require_permission("admin:users_write"))]
+SettingsAdmin = Annotated[AppUser, Depends(require_permission("admin:settings"))]
+FlagsAdmin = Annotated[AppUser, Depends(require_permission("admin:flags"))]
 
 
 class UserPatch(BaseModel):
-    """§10.2: через CRM меняется только иерархия эскалаций; роли — в Keycloak."""
+    """§10.2: руководитель для эскалаций. Роли назначаются в CRM отдельно:
+    `PUT /admin/users/{id}/roles` (право admin:roles); Keycloak отвечает только за вход."""
 
     manager_id: uuid.UUID | None = None
     version: int | None = None
@@ -57,17 +63,40 @@ class FlagPatch(BaseModel):
 
 @router.get(
     "/users",
-    summary="Пользователи (PG-зеркало Keycloak)",
-    dependencies=[Depends(require_roles("admin", "head_kam"))],
+    summary="Пользователи (PG-зеркало Keycloak, роли — из CRM)",
+    dependencies=[Depends(require_permission("admin:users"))],
 )
 async def list_users(
     session: SessionDep,
     params: Annotated[ListParams, Depends(list_params)],
-    role: Annotated[str | None, Query(description="Фильтр по роли")] = None,
+    role: Annotated[str | None, Query(description="Фильтр по коду роли")] = None,
+    permission: Annotated[
+        str | None,
+        Query(description="Пользователи с правом (через роли), например requests:kam"),
+    ] = None,
+    no_roles: Annotated[
+        bool | None, Query(description="true — только пользователи без ролей CRM")
+    ] = None,
     search: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
+    if permission is not None and permission not in PERMISSION_CODES:
+        raise validation_error(
+            "Ошибка валидации данных",
+            [
+                {
+                    "field": "permission",
+                    "code": "unknown_permission",
+                    "message": f"Неизвестное право «{permission}»",
+                }
+            ],
+        )
     items, total = await service.list_users(
-        session, role=role, search=search, params=params
+        session,
+        role=role,
+        permission=permission,
+        no_roles=no_roles,
+        search=search,
+        params=params,
     )
     return list_envelope(items, total, params)
 
@@ -78,7 +107,7 @@ async def update_user(
     body: UserPatch,
     request: Request,
     session: SessionDep,
-    admin: AdminUser,
+    admin: UsersWriter,
 ) -> dict[str, Any]:
     user, previous = await service.set_manager(session, user_id, body.manager_id)
     if body.version is not None:
@@ -99,7 +128,7 @@ async def update_user(
 
 
 @router.post("/users/sync", summary="Синхронизация зеркала из Keycloak Admin API")
-async def sync_users(session: SessionDep, admin: AdminUser) -> dict[str, int]:
+async def sync_users(session: SessionDep, admin: UsersWriter) -> dict[str, int]:
     return await service.sync_users_from_keycloak(session)
 
 
@@ -109,7 +138,9 @@ async def sync_users(session: SessionDep, admin: AdminUser) -> dict[str, int]:
 
 
 @router.get(
-    "/settings", summary="Настройки системы", dependencies=[Depends(require_roles("admin"))]
+    "/settings",
+    summary="Настройки системы",
+    dependencies=[Depends(require_permission("admin:settings"))],
 )
 async def get_settings(session: SessionDep) -> dict[str, Any]:
     return await service.get_system_settings(session)
@@ -117,12 +148,10 @@ async def get_settings(session: SessionDep) -> dict[str, Any]:
 
 @router.put("/settings", summary="Изменить настройки системы")
 async def put_settings(
-    body: SettingsPut, request: Request, session: SessionDep, admin: AdminUser
+    body: SettingsPut, request: Request, session: SessionDep, admin: SettingsAdmin
 ) -> dict[str, Any]:
     before = await service.get_system_settings(session)
-    result = await service.put_system_settings(
-        session, admin, body.model_dump(exclude_unset=True)
-    )
+    result = await service.put_system_settings(session, admin, body.model_dump(exclude_unset=True))
     await write_audit(
         session,
         actor_user_id=admin.id,
@@ -145,7 +174,7 @@ async def put_settings(
 @router.get(
     "/feature-flags",
     summary="Фичефлаги с описаниями",
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_permission("admin:flags"))],
 )
 async def feature_flags(session: SessionDep) -> dict[str, Any]:
     flags = await service.get_flags(session)
@@ -158,7 +187,7 @@ async def toggle_feature_flag(
     body: FlagPatch,
     request: Request,
     session: SessionDep,
-    admin: AdminUser,
+    admin: FlagsAdmin,
 ) -> dict[str, Any]:
     result = await service.set_flag(session, admin, name, body.enabled)
     await write_audit(
@@ -183,7 +212,7 @@ async def toggle_feature_flag(
 @router.get(
     "/audit-log",
     summary="Сквозной журнал действий",
-    dependencies=[Depends(require_roles("admin", "observer"))],
+    dependencies=[Depends(require_permission("admin:audit"))],
 )
 async def audit_log(
     session: SessionDep,

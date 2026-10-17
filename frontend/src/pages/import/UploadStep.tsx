@@ -1,5 +1,8 @@
+import { Download, Info } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { FileDropzone } from '@/components/wp5/FileDropzone';
+import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert';
+import { Button } from '@/shared/ui/button';
 import {
   Select,
   SelectContent,
@@ -11,8 +14,11 @@ import {
   ACCEPTED_EXTENSIONS,
   ENTITY_OPTIONS,
   MAX_FILE_SIZE_MB,
+  downloadTemplate,
+  entityGuide,
   entityLabel,
   isDictionaryEntity,
+  type EntityGuide,
 } from './importModel';
 
 /**
@@ -20,6 +26,47 @@ import {
  * во всю ширину + выбор целевой сущности. Ошибки формата/размера — inline
  * в дропзоне, не toast. Файл сразу уходит на сервер для распознавания.
  */
+
+/** Памятка составного импорта: какие колонки ждёт сервер и шаблон файла. */
+function EntityGuidePanel({ guide }: { guide: EntityGuide }): ReactNode {
+  return (
+    <Alert variant="info">
+      <Info aria-hidden="true" />
+      <AlertTitle>Какие колонки нужны</AlertTitle>
+      <AlertDescription>
+        <p>{guide.summary}</p>
+        <ul className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2">
+          {guide.columns.map((column) => (
+            <li key={column.name} className="min-w-0 text-sm">
+              <span className="font-medium">
+                {column.name}
+                {column.required ? (
+                  <span className="text-status-danger-deep" aria-label="обязательная колонка">
+                    {' '}
+                    *
+                  </span>
+                ) : null}
+              </span>
+              <span className="text-muted-foreground"> — {column.hint}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-sm">
+          Названия колонок могут отличаться: мастер узнаёт синонимы, а сопоставление можно
+          поправить на шаге маппинга. Лишние колонки не мешают.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          onClick={() => downloadTemplate(guide)}
+        >
+          <Download aria-hidden="true" /> Скачать шаблон CSV
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
 
 interface UploadStepProps {
   entity: string;
@@ -35,13 +82,14 @@ export function UploadStep({
   onStart,
 }: UploadStepProps): ReactNode {
   const [pendingName, setPendingName] = useState('');
+  const guide = entityGuide(entity);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm font-medium">Что импортируем:</span>
         <Select value={entity} onValueChange={onEntityChange} disabled={uploading}>
-          <SelectTrigger className="w-[280px]" aria-label="Целевая сущность импорта">
+          <SelectTrigger className="w-full sm:w-[340px]" aria-label="Целевая сущность импорта">
             <SelectValue placeholder="Выберите сущность…" />
           </SelectTrigger>
           <SelectContent>
@@ -57,6 +105,7 @@ export function UploadStep({
           </SelectContent>
         </Select>
       </div>
+      {guide ? <EntityGuidePanel guide={guide} /> : null}
       <FileDropzone
         accept={ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`)}
         maxSizeMb={MAX_FILE_SIZE_MB}

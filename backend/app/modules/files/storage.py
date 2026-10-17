@@ -33,8 +33,7 @@ def storage_unavailable(detail: str = "") -> ApiError:
     return ApiError(
         502,
         "integration_unavailable",
-        "Файловое хранилище недоступно, повторите позже"
-        + (f" ({detail})" if detail else ""),
+        "Файловое хранилище недоступно, повторите позже" + (f" ({detail})" if detail else ""),
     )
 
 
@@ -83,9 +82,7 @@ class S3Storage:
         await asyncio.to_thread(_make)
         self._known_buckets.add(bucket)
 
-    async def put_bytes(
-        self, bucket: str, key: str, data: bytes, content_type: str | None
-    ) -> None:
+    async def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str | None) -> None:
         await self._ensure_bucket(bucket)
 
         def _put() -> None:

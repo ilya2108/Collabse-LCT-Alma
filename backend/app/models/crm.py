@@ -103,6 +103,28 @@ class InteractionType(CreatedAtMixin, VersionedMixin, Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(sa.ForeignKey("app_user.id"))
 
 
+class ItDirection(TimestampMixin, VersionedMixin, Base):
+    """ИТ-направление обучения (DevOps, QA, анализ данных…) — каталог в БД (миграция 0007).
+
+    Программа ведётся по одному направлению (`program.direction_id`, N:1), ИТ-продукт
+    помогает учить одному или нескольким (`product_direction`, M:N). Удаление — мягкое
+    (`is_active`): на направление ссылаются программы, продукты и отчёты прошлых периодов.
+    """
+
+    __tablename__ = "it_direction"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    code: Mapped[str] = mapped_column(sa.Text, nullable=False)  # уникален без регистра
+    name: Mapped[str] = mapped_column(sa.Text, nullable=False)  # уникально без регистра
+    description: Mapped[str | None] = mapped_column(sa.Text)
+    sort_order: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, server_default=sa.text("100"), default=100
+    )
+    is_active: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.true(), default=True
+    )
+
+
 class Product(TimestampMixin, VersionedMixin, Base):
     __tablename__ = "product"
 
@@ -128,6 +150,10 @@ class Program(TimestampMixin, VersionedMixin, Base):
     university_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.ForeignKey("university.id", ondelete="SET NULL")
     )
+    # ИТ-направление программы (N:1); не задано — направления берутся у её продукта
+    direction_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.ForeignKey("it_direction.id", ondelete="RESTRICT")
+    )
     name: Mapped[str] = mapped_column(sa.Text, nullable=False)
     description: Mapped[str | None] = mapped_column(sa.Text)
     duration_hours: Mapped[int | None] = mapped_column(sa.Integer)
@@ -144,6 +170,19 @@ class Program(TimestampMixin, VersionedMixin, Base):
     priority_updated_at: Mapped[datetime | None] = mapped_column(sa.TIMESTAMP(timezone=True))
     is_active: Mapped[bool] = mapped_column(
         sa.Boolean, nullable=False, server_default=sa.true(), default=True
+    )
+
+
+class ProductDirection(CreatedAtMixin, Base):
+    """M:N «ИТ-продукт — ИТ-направления»: продукт помогает учить одному или нескольким."""
+
+    __tablename__ = "product_direction"
+
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        sa.ForeignKey("product.id", ondelete="CASCADE"), primary_key=True
+    )
+    direction_id: Mapped[uuid.UUID] = mapped_column(
+        sa.ForeignKey("it_direction.id", ondelete="RESTRICT"), primary_key=True
     )
 
 
@@ -176,8 +215,22 @@ class Contract(TimestampMixin, VersionedMixin, Base):
     )
 
 
+CONTRACT_PRODUCT_TRANSFER_STATUSES: tuple[str, ...] = (
+    "not_started",
+    "in_progress",
+    "transferred",
+    "cancelled",
+)
+
+
 class ContractProduct(Base):
-    """M:N «1 договор — N продуктов»; added_by/added_at — история расширения набора."""
+    """M:N «1 договор — N продуктов»; added_by/added_at — история расширения набора.
+
+    Строка договора — это и лицензия на ИТ-продукт (миграция 0008): дата подписания,
+    срок в годах, дата окончания и статус передачи лицензии вузу
+    (`CONTRACT_PRODUCT_TRANSFER_STATUSES`, NULL — не указан). Поля необязательные:
+    договоры, заведённые без лицензий, остаются валидными.
+    """
 
     __tablename__ = "contract_product"
 
@@ -192,6 +245,11 @@ class ContractProduct(Base):
     added_at: Mapped[datetime] = mapped_column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()
     )
+    license_signed_at: Mapped[date | None] = mapped_column(sa.Date)
+    license_term_years: Mapped[int | None] = mapped_column(sa.SmallInteger)  # 1–99, CHECK
+    license_valid_to: Mapped[date | None] = mapped_column(sa.Date)  # включительно
+    transfer_status: Mapped[str | None] = mapped_column(sa.Text)
+    transfer_status_updated_at: Mapped[datetime | None] = mapped_column(sa.TIMESTAMP(timezone=True))
 
     contract: Mapped[Contract] = relationship(back_populates="products")
     product: Mapped[Product] = relationship()
@@ -202,7 +260,9 @@ __all__ = [
     "UniversityContact",
     "Counterparty",
     "InteractionType",
+    "ItDirection",
     "Product",
+    "ProductDirection",
     "Program",
     "Contract",
     "ContractProduct",

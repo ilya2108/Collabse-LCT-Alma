@@ -182,3 +182,55 @@ stuck-check-29844780-hjsjc     0/1     Completed   0              5h3m
 stuck-check-29845020-cqzsn     0/1     Completed   0              11m
 stuck-check-29845080-wr78x     0/1     Completed   0              3m34s
 ```
+
+## Актуализация 2026-10-17: llm-gateway — второй DMZ-под («Сводка ИИ»)
+
+Шлюз GigaChat (`services/llm-gateway`, deployment.md §2.5, §3.11) развёрнут в тот же кластер:
+`make k8s-secrets` → `make llm-secret LLM_SRC=<файл с GIGACHAT_*>` (ключ — только в
+gitignored `overlays/k3d/secrets/crm-llm.env`, значения скрипт не печатает) → `make k8s-apply`.
+Одна реплика, `strategy: Recreate`, ключ GigaChat видит только этот под.
+
+```
+NAME                           READY   STATUS    RESTARTS   AGE   IP           NODE
+llm-gateway-598bd6d5b6-cc8w4   1/1     Running   0          17m   10.42.1.70   k3d-crm-agent-0
+
+NAME                 POD-SELECTOR                                                                    AGE
+llm-gateway-dmz      app.kubernetes.io/name=llm-gateway                                              17m
+notification-dmz     app.kubernetes.io/name=notification                                             30d
+backend              app.kubernetes.io/name=backend                                                  30d
+```
+
+**Ядро наружу не выходит** — из пода backend GigaChat недоступен ни на 443, ни на 9443
+(kube-router отклоняет соединение по `default-deny-all` + `backend`):
+
+```
+$ kubectl -n crm exec deploy/backend -c backend -- curl -sS -m 5 https://gigachat.devices.sberbank.ru/api/v1/models
+curl: (7) Failed to connect to gigachat.devices.sberbank.ru port 443 after 11 ms: Couldn't connect to server
+$ kubectl -n crm exec deploy/backend -c backend -- curl -sS -m 5 https://ngw.devices.sberbank.ru:9443/api/v2/oauth
+curl: (7) Failed to connect to ngw.devices.sberbank.ru port 9443 after 5 ms: Couldn't connect to server
+```
+
+**Из DMZ-пода шлюза — проходит** (`make llm-smoke-k8s`: OAuth на 9443, два вызова на 443,
+бандл НУЦ Минцифры из ConfigMap `llm-gateway-ca`; токен и ключ не печатаются):
+
+```
+$ make llm-smoke-k8s
+llm-smoke: API gigachat.devices.sberbank.ru, OAuth ngw.devices.sberbank.ru:9443, scope GIGACHAT_API_PERS, бандл НУЦ: loaded
+1/3 OAuth
+  токен получен за 377 мс, истекает через 30 мин
+2/3 tier=fast (GigaChat-2): «Ответь одним словом: ОК»
+  ответ получен: модель GigaChat-2:2.0.28.2, 380 мс, токены 16+2=18, попыток 1, structured=False
+3/3 tier=strong (GigaChat-2-Pro): сводка со схемой
+  ответ получен: модель GigaChat-2-Pro:2.0.28.2, 2200 мс, токены 345+118=463, попыток 1, structured=True
+  JSON разобран, поля на месте; headline: Отчёт команды за период с 16.09.2026 по 16.10.2026
+structured_supported=True
+llm-smoke: OK
+```
+
+`GET /readyz` шлюза: `{"status":"ok","checks":{"provider":"gigachat","configured":true,"ca_bundle":"loaded","token":"none"}}`
+— доступность GigaChat на готовность не влияет, под не флапает при проблемах с интернетом.
+
+Сквозной прогон backend → шлюз → GigaChat на синтетических фактах отчёта
+(`backend/tests/test_ai_summary_live.py`, шлюз из compose на `localhost:8040`): сводка по
+команде и по КАМу — GigaChat-2-Pro, 3,0–3,7 тыс. токенов на входе, 6–7 с на ответ, все
+18 и 23 числа ответа совпали с фактами, ни одна фраза не удалена проверкой.

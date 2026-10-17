@@ -2,11 +2,18 @@
 
 `priority_rank`: **меньше = выше**. Изменения приоритета пишутся в audit_log
 (`action='program.priority_changed'`, before/after — старый/новый rank).
+
+ИТ-направление программы — одно (`direction_id`); в ответе — `direction` и направления её
+ИТ-продукта (`product_directions`): если своё не задано, программа относится к ним (то же
+правило, что у отчётов, `directions.direction_match`). Фильтр списка `direction_id` —
+повторяемый, по этому правилу.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -19,12 +26,14 @@ from app.core.cache import get_cache
 from app.core.db import get_session
 from app.core.errors import validation_error
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_permission
 from app.models.crm import Product, Program, University
 from app.models.service import ExternalLink
 from app.models.user import AppUser
+from app.modules.crm import directions as directions_service
 from app.modules.crm.deps import check_version, get_or_404
 from app.modules.crm.schemas import (
+    DirectionBrief,
     PriorityPatch,
     ProgramCreate,
     ProgramOut,
@@ -64,30 +73,77 @@ async def _external_ids(
     return result
 
 
-def _to_out(program: Program, links: dict[str, str] | None = None) -> ProgramOut:
+@dataclass(frozen=True)
+class _Directions:
+    """Направления программ страницы: свои и направления их продуктов."""
+
+    own: dict[uuid.UUID, DirectionBrief]
+    by_product: dict[uuid.UUID, list[DirectionBrief]]
+
+
+async def _directions(session: AsyncSession, programs: Iterable[Program]) -> _Directions:
+    programs = list(programs)
+    return _Directions(
+        own=await directions_service.briefs_by_id(session, (p.direction_id for p in programs)),
+        by_product=await directions_service.product_directions(
+            session, (p.product_id for p in programs)
+        ),
+    )
+
+
+def _to_out(
+    program: Program,
+    links: dict[str, str] | None = None,
+    directions: _Directions | None = None,
+) -> ProgramOut:
     out = ProgramOut.model_validate(program)
     if links:
         out.cms_external_id = links.get("cms")
         out.lms_course_id = links.get("lms")
+    if directions is not None:
+        if program.direction_id is not None:
+            out.direction = directions.own.get(program.direction_id)
+        if program.product_id is not None:
+            out.product_directions = directions.by_product.get(program.product_id, [])
     return out
 
 
-async def _validate_refs(session: AsyncSession, payload: dict[str, Any]) -> None:
+async def _out(session: AsyncSession, program: Program) -> ProgramOut:
+    links = await _external_ids(session, [program.id])
+    return _to_out(program, links.get(program.id), await _directions(session, [program]))
+
+
+async def _validate_refs(
+    session: AsyncSession, payload: dict[str, Any], current: Program | None = None
+) -> None:
     if payload.get("product_id") is not None:
         await get_or_404(session, Product, payload["product_id"], "Продукт не найден")
     if payload.get("university_id") is not None:
         await get_or_404(session, University, payload["university_id"], "Вуз не найден")
+    if payload.get("direction_id") is not None:
+        # уже привязанное деактивированное направление не мешает сохранить карточку
+        keep = [current.direction_id] if current is not None and current.direction_id else []
+        await directions_service.ensure_directions(
+            session, [payload["direction_id"]], field="direction_id", allow_inactive=keep
+        )
 
 
 @router.get("/programs", summary="Программы (сортировка по приоритету: меньше = выше)")
 async def list_programs(
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("programs:read"))],
     params: Annotated[ListParams, Depends(list_params)],
     product_id: Annotated[uuid.UUID | None, Query()] = None,
     university_id: Annotated[uuid.UUID | None, Query()] = None,
     is_active: Annotated[bool | None, Query()] = None,
     search: Annotated[str | None, Query()] = None,
+    direction_id: Annotated[
+        list[uuid.UUID] | None,
+        Query(
+            description="ИТ-направление — повторяемый параметр: своё направление программы, "
+            "без него — направления её продукта"
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     stmt = select(Program)
     if product_id:
@@ -98,17 +154,16 @@ async def list_programs(
         stmt = stmt.where(Program.is_active.is_(is_active))
     if search:
         stmt = stmt.where(Program.name.ilike(f"%{search.strip()}%"))
-    total = (
-        await session.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    if direction_id:
+        stmt = stmt.where(
+            directions_service.direction_match(Program.id, Program.product_id, direction_id)
+        )
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     stmt = apply_sort(stmt, params.sort, _SORT_FIELDS, default="priority_rank")
-    rows = (
-        (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
-    )
+    rows = (await session.execute(stmt.limit(params.limit).offset(params.offset))).scalars().all()
     links = await _external_ids(session, [row.id for row in rows])
-    items = [
-        _to_out(row, links.get(row.id)).model_dump(mode="json") for row in rows
-    ]
+    directions = await _directions(session, rows)
+    items = [_to_out(row, links.get(row.id), directions).model_dump(mode="json") for row in rows]
     return list_envelope(items, total, params)
 
 
@@ -116,7 +171,7 @@ async def list_programs(
 async def create_program(
     body: ProgramCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    _user: Annotated[AppUser, Depends(require_permission("programs:write"))],
 ) -> ProgramOut:
     payload = body.model_dump()
     await _validate_refs(session, payload)
@@ -124,18 +179,17 @@ async def create_program(
     session.add(program)
     await session.commit()
     await get_cache().delete("dict:programs")
-    return _to_out(program)
+    return await _out(session, program)
 
 
 @router.get("/programs/{program_id}", summary="Карточка программы")
 async def get_program(
     program_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(get_current_user)],
+    _user: Annotated[AppUser, Depends(require_permission("programs:read"))],
 ) -> ProgramOut:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
-    links = await _external_ids(session, [program_id])
-    return _to_out(program, links.get(program_id))
+    return await _out(session, program)
 
 
 @router.patch("/programs/{program_id}", summary="Изменить программу")
@@ -143,25 +197,24 @@ async def update_program(
     program_id: uuid.UUID,
     body: ProgramUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    _user: Annotated[AppUser, Depends(require_permission("programs:write"))],
 ) -> ProgramOut:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
     check_version(program, body.version)
     payload = body.model_dump(exclude_unset=True, exclude={"version"})
-    await _validate_refs(session, payload)
+    await _validate_refs(session, payload, program)
     for attr, value in payload.items():
         setattr(program, attr, value)
     await session.commit()
     await get_cache().delete("dict:programs")
-    links = await _external_ids(session, [program_id])
-    return _to_out(program, links.get(program_id))
+    return await _out(session, program)
 
 
 @router.delete("/programs/{program_id}", summary="Деактивировать программу")
 async def delete_program(
     program_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    _user: Annotated[AppUser, Depends(require_roles("admin"))],
+    _user: Annotated[AppUser, Depends(require_permission("programs:delete"))],
 ) -> dict[str, bool]:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
     program.is_active = False
@@ -178,7 +231,7 @@ async def patch_priority(
     program_id: uuid.UUID,
     body: PriorityPatch,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("programs:priority"))],
     request: Request,
 ) -> ProgramOut:
     program = await get_or_404(session, Program, program_id, "Программа не найдена")
@@ -199,7 +252,7 @@ async def patch_priority(
     )
     await session.commit()
     await get_cache().delete("dict:programs")
-    return _to_out(program)
+    return await _out(session, program)
 
 
 @router.post(
@@ -209,7 +262,7 @@ async def patch_priority(
 async def reorder_priorities(
     body: ReorderBody,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[AppUser, Depends(require_roles("admin", "head_kam", "kam"))],
+    user: Annotated[AppUser, Depends(require_permission("programs:priority"))],
     request: Request,
 ) -> dict[str, int]:
     ids = [item.id for item in body.items]

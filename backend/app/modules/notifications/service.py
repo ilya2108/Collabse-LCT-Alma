@@ -16,6 +16,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import DealScope, get_catalog_snapshot
 from app.core.cache import cache_key, get_cache
 from app.core.config import get_settings
 from app.core.errors import (
@@ -41,6 +42,7 @@ TG_LINK_CODE_TTL_SECONDS = 600  # 10 минут (Р-8)
 TG_LINK_KEY_PREFIX = "tg:link:"
 READ_IDS_LIMIT = 500  # маркеры прочтения не растут бесконечно
 
+# запасные подписи системных ролей (названия ролей — каталог ролей CRM, app_role.name)
 ROLE_LABELS = {
     "admin": "Администратор",
     "head_kam": "Руководитель КАМов",
@@ -167,11 +169,7 @@ async def list_feed(
     marker = await _read_marker(session, user.id)
     base = select(Notification).where(Notification.recipient_user_id == user.id)
     rows = list(
-        (
-            await session.execute(
-                base.order_by(Notification.created_at.desc()).limit(1000)
-            )
-        )
+        (await session.execute(base.order_by(Notification.created_at.desc()).limit(1000)))
         .scalars()
         .all()
     )
@@ -206,9 +204,7 @@ async def mark_read(
         merged = list(dict.fromkeys(marker["read_ids"] + [str(i) for i in (ids or [])]))
         marker["read_ids"] = merged[-READ_IDS_LIMIT:]
     if setting is None:
-        setting = AppSetting(
-            key=key, value=marker, description="Маркеры прочтения нотификаций"
-        )
+        setting = AppSetting(key=key, value=marker, description="Маркеры прочтения нотификаций")
         session.add(setting)
     else:
         setting.value = marker
@@ -308,8 +304,7 @@ async def bind_chat(
     ).scalar_one_or_none()
     if occupied is not None:
         raise conflict(
-            "Этот Telegram-аккаунт уже привязан к другому пользователю. "
-            "Сначала выполните /unlink"
+            "Этот Telegram-аккаунт уже привязан к другому пользователю. Сначала выполните /unlink"
         )
     user.tg_chat_id = chat_id
     user.tg_username = (tg_username or "").lstrip("@") or None
@@ -340,9 +335,7 @@ async def user_by_chat_id(session: AsyncSession, chat_id: int) -> AppUser:
 # --------------------------------------------------------------------------------------
 
 
-async def send_test(
-    session: AsyncSession, user: AppUser, channel: str
-) -> dict[str, Any]:
+async def send_test(session: AsyncSession, user: AppUser, channel: str) -> dict[str, Any]:
     if channel not in prefs_module.DELIVERY_CHANNELS:
         raise validation_error(
             f"Канал «{channel}» не поддерживает тестовую отправку. "
@@ -448,9 +441,7 @@ async def validate_rule_payload(
         if not isinstance(params, dict):
             raise validation_error("Поле params должно быть объектом")
         threshold = params.get("threshold_days")
-        if threshold is not None and not (
-            isinstance(threshold, int) and 1 <= threshold <= 60
-        ):
+        if threshold is not None and not (isinstance(threshold, int) and 1 <= threshold <= 60):
             raise validation_error("params.threshold_days — целое число от 1 до 60")
         repeat = params.get("repeat_every_days")
         if repeat is not None and not (isinstance(repeat, int) and repeat >= 1):
@@ -517,19 +508,30 @@ def _stuck_condition(global_default: int):
 
 
 def _bot_scope_is_all(user: AppUser, *, stuck_only: bool) -> bool:
-    """Зона выдачи бота: «мои» — всегда свои; зависшие для head_kam/admin/observer — все."""
+    """Зона выдачи бота: «мои» — всегда свои; зависшие с правом `reports:all`
+    (head_kam/admin/observer) — все в процессах роли."""
     if not stuck_only:
         return False
-    return bool(set(user.roles) & {"head_kam", "admin", "observer"})
+    return user.access.has("reports:all")
+
+
+def _bot_scope(user: AppUser, *, stuck_only: bool) -> DealScope:
+    """Область заявок бота: процессы ролей; «все КАМы» — только для зависших и с
+    `reports:all` в процессе (как отчёты), иначе — только свои."""
+    if _bot_scope_is_all(user, stuck_only=stuck_only):
+        return user.access.deal_scope("requests:read", user.id, wide_permission="reports:all")
+    return user.access.deal_scope("requests:read", user.id, own_only=True)
 
 
 async def bot_summary(session: AsyncSession, user: AppUser) -> dict[str, Any]:
-    is_manager = bool(set(user.roles) & {"head_kam", "admin"})
     global_default = await _global_stuck_default(session)
 
-    my_open = select(func.count()).select_from(Deal).where(
-        Deal.status == "open", Deal.responsible_user_id == user.id
+    my_open = (
+        select(func.count())
+        .select_from(Deal)
+        .where(Deal.status == "open", Deal.responsible_user_id == user.id)
     )
+    my_open = _bot_scope(user, stuck_only=False).apply(my_open)
     active_requests = (await session.execute(my_open)).scalar_one()
 
     stuck_stmt = (
@@ -543,12 +545,12 @@ async def bot_summary(session: AsyncSession, user: AppUser) -> dict[str, Any]:
             _stuck_condition(global_default),
         )
     )
-    if not is_manager and "observer" not in user.roles:
-        stuck_stmt = stuck_stmt.where(Deal.responsible_user_id == user.id)
+    stuck_stmt = _bot_scope(user, stuck_only=True).apply(stuck_stmt)
     stuck = (await session.execute(stuck_stmt)).scalar_one()
 
     waiting_approval = 0
-    if is_manager:
+    # пакеты на согласовании интересны тем, кто правит схему (workflow:change)
+    if user.access.has("workflow:change"):
         waiting_approval = (
             await session.execute(
                 select(func.count())
@@ -561,7 +563,8 @@ async def bot_summary(session: AsyncSession, user: AppUser) -> dict[str, Any]:
         "active_requests": int(active_requests),
         "stuck": int(stuck),
         "waiting_approval": int(waiting_approval),
-        "role_labels": [ROLE_LABELS[r] for r in sorted(user.roles) if r in ROLE_LABELS],
+        "role_labels": get_catalog_snapshot().names(user.access.role_codes)
+        or [ROLE_LABELS[r] for r in sorted(user.roles or []) if r in ROLE_LABELS],
     }
 
 
@@ -576,12 +579,9 @@ async def bot_requests(
         .join(Workflow, Workflow.id == Deal.workflow_id)
         .where(Deal.status == "open")
     )
-    if not _bot_scope_is_all(user, stuck_only=stuck_only):
-        stmt = stmt.where(Deal.responsible_user_id == user.id)
+    stmt = _bot_scope(user, stuck_only=stuck_only).apply(stmt)
     if stuck_only:
-        stmt = stmt.where(
-            WorkflowStage.is_terminal.is_(False), _stuck_condition(global_default)
-        )
+        stmt = stmt.where(WorkflowStage.is_terminal.is_(False), _stuck_condition(global_default))
         stmt = stmt.order_by(Deal.stage_entered_at.asc())
     else:
         stmt = stmt.order_by(Deal.created_at.desc())
@@ -590,7 +590,10 @@ async def bot_requests(
     now = _now()
     items = []
     for deal, stage, workflow in rows:
-        days = max((now - deal.stage_entered_at).days, 0)
+        # «зависла» — по точному времени, как SQL-условие выше и бейдж карточки;
+        # stuck_days — целые сутки для показа
+        elapsed = now - deal.stage_entered_at
+        days = max(elapsed.days, 0)
         threshold = (
             stage.stuck_threshold_days
             if stage.stuck_threshold_days is not None
@@ -614,7 +617,7 @@ async def bot_requests(
                 "stuck_days": days,
                 "is_stuck": deal.status == "open"
                 and not stage.is_terminal
-                and days > threshold,
+                and elapsed > timedelta(days=threshold),
             }
         )
     return items

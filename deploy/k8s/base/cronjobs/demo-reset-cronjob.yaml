@@ -1,0 +1,61 @@
+# Сброс демо-стенда к эталону — шаблон Job, по расписанию НЕ запускается (suspend: true).
+# Запуск — deploy/scripts/demo-reset.sh (make demo-reset): CronJob stuck-check на время
+# сброса приостанавливается, Job создаётся из этого шаблона:
+#   kubectl -n crm create job demo-reset-<ts> --from=cronjob/demo-reset
+# В одной транзакции очищаются доменные таблицы (заявки, история, вузы, каталог, договоры,
+# студенты, мероприятия, файлы, уведомления, этапы и переходы) и засеваются заново от
+# «сегодня» или DEMO_ANCHOR_DATE (дата показа, скрипт подставляет её в env Job'а) —
+# сид не «стареет». app_user (keycloak_sub, привязки Telegram) и журнал аудита не
+# очищаются; роли и права F2 возвращаются к исходным, онбординг демо-учёток скрыт.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: demo-reset
+  labels: {app.kubernetes.io/name: demo-reset, role: job}
+spec:
+  schedule: "0 3 1 1 *" # формальность: шаблон приостановлен, запуск только вручную
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      # без повторов: при ошибке транзакция откатывается целиком, стенд остаётся прежним
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: demo-reset, role: job}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: reset
+              image: crm/backend:dev
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-m", "app.tools.seed", "--reset"]
+              env:
+                # пусто — «сейчас»; ГГГГ-ММ-ДД — 09:00 МСК дня показа (demo-reset.sh ANCHOR=…)
+                - {name: DEMO_ANCHOR_DATE, value: ""}
+                # один процесс сида: два соединения — бюджет PostgreSQL см. load-report.md §5
+                - {name: DB_POOL_SIZE, value: "2"}
+                - {name: DB_MAX_OVERFLOW, value: "0"}
+                # шлюз сиду не нужен: rules перекрывает gigachat из crm-config, и fail-fast
+                # Settings не требует токен шлюза (секрет crm-llm сюда не монтируется)
+                - {name: AI_SUMMARY_PROVIDER, value: rules}
+              envFrom:
+                - configMapRef: {name: crm-config}
+                - secretRef: {name: crm-db}
+                - secretRef: {name: crm-pii}
+                - secretRef: {name: crm-s3}
+                - secretRef: {name: crm-internal}
+              resources:
+                requests: {cpu: 100m, memory: 192Mi}
+                limits: {cpu: "1", memory: 512Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: {drop: ["ALL"]}

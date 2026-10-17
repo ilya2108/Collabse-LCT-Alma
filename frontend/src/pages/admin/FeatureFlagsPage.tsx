@@ -13,21 +13,24 @@ import {
   PageHeader,
 } from '@/shared/ui/data-table';
 import { Switch } from '@/shared/ui/switch';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip';
 
 /**
  * Фичефлаги (ux.md §14.3, redesign.md §6.9): строки-карточки с Switch —
  * переключение мгновенно публикуется всем клиентам по SSE `flags.updated`.
- * `llm_features` — disabled с тултипом (в закрытом контуре выключено).
+ * `ai_summaries` — кнопка «Сводка ИИ» в отчёте «Активность КАМов» (заменил пустой
+ * заблокированный `llm_features`): без GigaChat работает сводка по правилам.
  */
 
 /** Русские описания известных флагов MVP (сервер может отдавать свои). */
 const FLAG_DESCRIPTIONS: Record<string, string> = {
-  auto_ranking: 'Расчётный спрос программ (автоформула ранжирования — бонус)',
-  report_pdf: 'PDF-отчёт аналитики (вне MVP, по умолчанию выключен)',
+  auto_ranking:
+    'Расчётный спрос программ: индекс 0–100 по заявкам, обучающимся и параллельным потокам (справочно, ручной приоритет не меняет)',
+  report_pdf:
+    'Серверная PDF-выгрузка таблиц отчётов (report:<code>); PDF графиков панели — на клиенте, флагом не закрыт',
   messenger_attachments: 'Вложения в комментариях заявок',
   max_channel: 'Канал уведомлений Max (заглушка интеграции)',
-  llm_features: 'LLM-функции — в закрытом контуре выключено',
+  ai_summaries:
+    'Сводки ИИ в отчёте «Активность КАМов»: GigaChat получает только агрегаты и псевдонимы КАМов; без GigaChat — сводка по правилам',
 };
 
 export function AdminFeatureFlagsPage(): ReactNode {
@@ -72,11 +75,10 @@ export function AdminFeatureFlagsPage(): ReactNode {
     body = (
       <ul className="grid gap-2">
         {(flagsQuery.data ?? []).map((flag) => {
-          const locked = flag.name === 'llm_features';
           const control = (
             <Switch
               checked={flag.enabled}
-              disabled={locked || (toggleMutation.isPending && toggleMutation.variables?.name === flag.name)}
+              disabled={toggleMutation.isPending && toggleMutation.variables?.name === flag.name}
               aria-label={`Флаг ${flag.name}`}
               onCheckedChange={(checked) => toggleMutation.mutate({ name: flag.name, enabled: checked })}
             />
@@ -87,15 +89,12 @@ export function AdminFeatureFlagsPage(): ReactNode {
               className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-card px-4 py-3 shadow-card"
             >
               <div className="min-w-0 flex-1">
-                <p className="flex items-center gap-2 font-mono text-sm font-medium">
-                  {flag.name}
-                  {locked ? (
-                    <span className="rounded-sm bg-muted px-1.5 py-0.5 font-sans text-xs font-medium text-muted-foreground">
-                      закрытый контур
-                    </span>
-                  ) : null}
-                </p>
-                <p className="truncate text-sm text-muted-foreground">
+                <p className="flex items-center gap-2 font-mono text-sm font-medium">{flag.name}</p>
+                {/* длинные описания (ai_summaries) — в две строки, целиком — в подсказке */}
+                <p
+                  className="line-clamp-2 text-pretty text-sm text-muted-foreground"
+                  title={flag.description || FLAG_DESCRIPTIONS[flag.name] || undefined}
+                >
                   {flag.description || FLAG_DESCRIPTIONS[flag.name] || '—'}
                 </p>
               </div>
@@ -104,16 +103,7 @@ export function AdminFeatureFlagsPage(): ReactNode {
                   ? `${flag.updated_by?.full_name ?? '—'} · ${formatDateTime(flag.updated_at)}`
                   : '—'}
               </span>
-              {locked ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="inline-flex">{control}</span>
-                  </TooltipTrigger>
-                  <TooltipContent>LLM-функции недоступны в закрытом контуре</TooltipContent>
-                </Tooltip>
-              ) : (
-                control
-              )}
+              {control}
             </li>
           );
         })}

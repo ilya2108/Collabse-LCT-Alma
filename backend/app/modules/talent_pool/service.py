@@ -22,9 +22,10 @@ from app.core.pii import (
     mask_full_name,
     mask_phone,
 )
+from app.models.crm import Program, University
 from app.models.deal import Deal
 from app.models.service import FileObject
-from app.models.talent import Student, StudentStatusHistory
+from app.models.talent import FederalProject, Student, StudentStatusHistory
 from app.models.user import AppUser
 
 FUNNEL_ORDER: tuple[str, ...] = ("candidate", "studying", "graduate", "talent_pool")
@@ -46,9 +47,7 @@ def _now() -> datetime:
 # --------------------------------------------------------------------------------------
 
 
-def validate_funnel_transition(
-    from_status: str, to_status: str, comment: str | None
-) -> str | None:
+def validate_funnel_transition(from_status: str, to_status: str, comment: str | None) -> str | None:
     """None — переход допустим; иначе код ошибки.
 
     Правила §8.2: соседний вперёд; любой назад — с комментарием (исправление
@@ -154,6 +153,32 @@ async def files_count_map(
     return {entity_id: int(count) for entity_id, count in rows.all()}
 
 
+async def attach_ref_names(
+    session: AsyncSession, items: list[dict[str, Any]], students: list[Student]
+) -> None:
+    """Подписи вуза, программы и федпроекта для списка — пачкой, по запросу на справочник.
+
+    Реестр и доска talent pool читают `university.name` / `program.name` /
+    `federal_project.name` (frontend Student); раньше их отдавала только карточка
+    GET /students/{id}, и колонки списка были пустыми. `items[i]` — сериализация
+    `students[i]`.
+    """
+    refs: list[tuple[str, type, str]] = [
+        ("university", University, "university_id"),
+        ("program", Program, "program_id"),
+        ("federal_project", FederalProject, "federal_project_id"),
+    ]
+    for key, model, fk in refs:
+        ids = {getattr(s, fk) for s in students if getattr(s, fk) is not None}
+        names: dict[uuid.UUID, str] = {}
+        if ids:
+            rows = await session.execute(select(model.id, model.name).where(model.id.in_(ids)))
+            names = dict(rows.tuples().all())
+        for item, student in zip(items, students, strict=True):
+            ref_id = getattr(student, fk)
+            item[key] = {"id": str(ref_id), "name": names[ref_id]} if ref_id in names else None
+
+
 async def latest_b2c_request_id(
     session: AsyncSession, counterparty_id: uuid.UUID | None
 ) -> uuid.UUID | None:
@@ -183,9 +208,7 @@ def serialize_history_row(
         "from_status": row.from_status,
         "to_status": row.to_status,
         "actor": (
-            {"id": str(actor.id), "full_name": actor.full_name or actor.username}
-            if actor
-            else None
+            {"id": str(actor.id), "full_name": actor.full_name or actor.username} if actor else None
         ),
         "reason": row.reason,
         "created_at": row.created_at.isoformat() if row.created_at else None,

@@ -210,9 +210,9 @@ function syncMeta(
 }
 
 function IntegrationsSection({ request }: { request: RequestItem }): ReactNode {
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
-  const canSeeLog = hasRole('admin', 'observer');
+  const canSeeLog = hasPermission('admin:audit');
   const eventsQuery = useQuery({
     queryKey: ['request-integration-events', request.id],
     queryFn: ({ signal }) =>
@@ -260,7 +260,7 @@ function IntegrationsSection({ request }: { request: RequestItem }): ReactNode {
             {externalId ? (
               <span className="min-w-0 truncate text-xs text-muted-foreground">{externalId}</span>
             ) : null}
-            {hasRole('admin') && latest?.status === 'dead' ? (
+            {hasPermission('admin:integrations') && latest?.status === 'dead' ? (
               <Button
                 variant="outline"
                 size="sm"

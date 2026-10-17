@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import {
+  UNIVERSITIES_ASSIGN,
   createUniversity,
   listUniversities,
   type UniversityPayload,
@@ -13,7 +14,6 @@ import {
 import type { University } from '@/shared/api/types';
 import { Can } from '@/shared/auth/Can';
 import { useAuth } from '@/shared/auth/AuthContext';
-import { IMPORT_ROLES } from '@/shared/auth/roles';
 import { formatDate, formatText } from '@/shared/lib/format';
 import { toastSuccess, toastError } from '@/shared/lib/toast';
 import { Button } from '@/shared/ui/button';
@@ -127,7 +127,11 @@ function CreateUniversitySheet({
   onClose: () => void;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { user, hasRole } = useAuth();
+  const { user, hasPermission } = useAuth();
+  // КАМа вуза назначает руководитель (universities:assign); КАМ без права заводит вуз на
+  // себя — сервер это разрешает, других ответственных без права не примет (403)
+  const canAssign = hasPermission(UNIVERSITIES_ASSIGN);
+  const ownsByDefault = !canAssign && hasPermission('requests:kam');
   const form = useForm<UniversityFormValues>({
     resolver: zodResolver(universitySchema),
     mode: 'onTouched',
@@ -142,8 +146,11 @@ function CreateUniversitySheet({
         inn: values.inn?.trim() || null,
         region: values.region?.trim() || null,
         city: values.city?.trim() || null,
-        // kam создаёт вуз на себя; выбор КАМа — у head_kam/admin
-        kam_user_id: values.kam_user_id ?? user?.id ?? null,
+        kam_user_id: canAssign
+          ? (values.kam_user_id ?? null)
+          : ownsByDefault
+            ? (user?.id ?? null)
+            : null,
       } as UniversityPayload),
     onSuccess: (university) => {
       toastSuccess(`Вуз «${university.name}» создан`);
@@ -239,7 +246,8 @@ function CreateUniversitySheet({
                 )}
               />
             </div>
-            {hasRole('admin', 'head_kam') ? (
+            {/* КАМа вуза назначает руководитель — право universities:assign */}
+            {canAssign ? (
               <FormField
                 control={form.control}
                 name="kam_user_id"
@@ -248,7 +256,7 @@ function CreateUniversitySheet({
                     <FormLabel>Ответственный КАМ</FormLabel>
                     <FormControl>
                       <UserCombobox
-                        role="kam"
+                        permission="requests:kam"
                         placeholder="КАМ вуза"
                         className="w-full"
                         value={field.value}
@@ -259,7 +267,22 @@ function CreateUniversitySheet({
                   </FormItem>
                 )}
               />
-            ) : null}
+            ) : (
+              <div className="grid gap-1.5">
+                <span className="text-sm font-medium">Ответственный КАМ</span>
+                <div
+                  aria-disabled="true"
+                  className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                >
+                  {ownsByDefault ? 'Вы' : 'Не назначен'}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {ownsByDefault
+                    ? 'Вуз закрепится за вами; передать его другому КАМу может руководитель'
+                    : 'Ответственного КАМа назначает руководитель'}
+                </span>
+              </div>
+            )}
             <div className="mt-2 flex gap-2">
               <Button type="submit" disabled={mutation.isPending}>
                 {mutation.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
@@ -332,7 +355,7 @@ export function UniversitiesPage(): ReactNode {
                 Создать вуз
               </Button>
             </Can>
-            <Can roles={IMPORT_ROLES}>
+            <Can permission="import:run">
               <Button variant="outline" onClick={() => navigate('/import')}>
                 <FileUp aria-hidden="true" />
                 Импортировать из Excel

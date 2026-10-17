@@ -37,6 +37,9 @@ spec:
             # check_migrations строит полный Settings, а тот при APP_ENV=k8s
             # fail-fast'ится без боевых internal-секретов — монтируем их и сюда
             - secretRef: {name: crm-internal}
+          env: # шлюз init-контейнеру не нужен: rules перекрывает gigachat из crm-config, и
+            # fail-fast Settings не требует токен шлюза (секрет crm-llm сюда не монтируется)
+            - {name: AI_SUMMARY_PROVIDER, value: rules}
       containers:
         - name: backend
           image: crm/backend:dev
@@ -53,12 +56,16 @@ spec:
               value: crm-backend-admin
             - name: KEYCLOAK_ADMIN_CLIENT_SECRET
               valueFrom: {secretKeyRef: {name: crm-keycloak-clients, key: BACKEND_ADMIN_CLIENT_SECRET}}
+            # сводки ИИ: X-Internal-Token к llm-gateway. Из секрета crm-llm backend получает
+            # ТОЛЬКО этот ключ — GIGACHAT_* видит один шлюз
+            - name: LLM_GATEWAY_TOKEN
+              valueFrom: {secretKeyRef: {name: crm-llm, key: LLM_GATEWAY_TOKEN}}
           startupProbe:
             httpGet: {path: /healthz/live, port: http}
             periodSeconds: 2
             failureThreshold: 30 # до 60 с на старт
           readinessProbe:
-            httpGet: {path: /healthz/ready, port: http} # PG, KeyDB, MinIO, JWKS-кэш
+            httpGet: {path: /healthz/ready, port: http} # 503 только без PostgreSQL; KeyDB — status degraded, под в балансировке
             periodSeconds: 5
             failureThreshold: 3
           livenessProbe:

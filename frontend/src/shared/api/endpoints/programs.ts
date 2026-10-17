@@ -38,6 +38,8 @@ export interface ProgramPayload {
   name: string;
   product_id?: string | null;
   university_id?: string | null;
+  /** ИТ-направление программы; null — снять (тогда — направления продукта). */
+  direction_id?: string | null;
   description?: string | null;
   seats?: number | null;
   starts_on?: string | null;

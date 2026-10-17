@@ -23,10 +23,11 @@ import { UniversitySelect, ProductSelect, UserSelect } from '@/components/select
 import { listPresets } from '@/shared/api/endpoints/presets';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { useOnboarding } from '@/features/onboarding';
-import { listRequests, performTransition } from '@/shared/api/endpoints/requests';
+import { listRequests, transitionWithFiles } from '@/shared/api/endpoints/requests';
 import { getWorkflow, listWorkflows } from '@/shared/api/endpoints/workflows';
 import type { ListEnvelope, RequestItem, UiPreset, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
+import { WORKFLOW_TYPE_TITLES } from '@/shared/auth/permissions';
 import { springs } from '@/shared/lib/motion';
 import { toastError } from '@/shared/lib/toast';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
@@ -61,18 +62,31 @@ interface PendingTransition {
   target: TransitionTarget;
 }
 
-/** Локальный сегмент B2B/B2C со скользящей подложкой (§3.10 SegmentedControl). */
+/**
+ * Локальный сегмент B2B/B2C со скользящей подложкой (§3.10 SegmentedControl).
+ * Показывает только процессы, доступные ролям пользователя (F2); один процесс —
+ * статичная плашка вместо переключателя.
+ */
 function WorkflowSegmented({
   value,
+  available,
   onChange,
 }: {
   value: WorkflowType;
+  available: readonly WorkflowType[];
   onChange: (value: WorkflowType) => void;
 }): ReactNode {
-  const options: Array<{ value: WorkflowType; label: string }> = [
-    { value: 'b2b', label: 'B2B (вузы)' },
-    { value: 'b2c', label: 'B2C (физлица и юрлица)' },
-  ];
+  const options = available.map((wf) => ({ value: wf, label: WORKFLOW_TYPE_TITLES[wf] }));
+  if (options.length === 1) {
+    return (
+      <span
+        data-tour="board-wf-switch"
+        className="inline-flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium"
+      >
+        {options[0]?.label}
+      </span>
+    );
+  }
   return (
     <div
       className="inline-flex h-9 items-center gap-0.5 rounded-md bg-muted p-0.5"
@@ -125,16 +139,29 @@ function BoardSkeleton(): ReactNode {
 export function BoardPage(): ReactNode {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user, roles, hasRole, hasPermission } = useAuth();
+  const { user, hasPermission, workflowTypes, transitionRoles } = useAuth();
   // Чек-лист онбординга §7.5: no-op без провайдера.
   const { completeChecklistItem } = useOnboarding();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // --- Фильтры из URL (§7.3) -------------------------------------------------
-  const wfType: WorkflowType = searchParams.get('wf') === 'b2c' ? 'b2c' : 'b2b';
-  const filterKam = searchParams.get('kam') ?? undefined;
-  const filterUniversity = searchParams.get('university') ?? undefined;
-  const filterProduct = searchParams.get('product') ?? undefined;
+  // Процесс — только из доступных ролям (F2); чужой wf в ссылке → первый доступный.
+  const wfParam = searchParams.get('wf') as WorkflowType | null;
+  const wfType: WorkflowType =
+    wfParam && workflowTypes.includes(wfParam) ? wfParam : (workflowTypes[0] ?? 'b2b');
+  const noProcesses = workflowTypes.length === 0;
+  // КАМ, вуз, продукт: с дашборда приходит мультифильтр (повтор параметра) — запрос
+  // берёт все значения (IN на сервере), селекты показывают значение, только если оно одно
+  const kamIds = searchParams.getAll('kam').filter(Boolean);
+  const universityIds = searchParams.getAll('university').filter(Boolean);
+  const productIds = searchParams.getAll('product').filter(Boolean);
+  const filterKam = kamIds.length === 1 ? kamIds[0] : undefined;
+  const filterUniversity = universityIds.length === 1 ? universityIds[0] : undefined;
+  const filterProduct = productIds.length === 1 ? productIds[0] : undefined;
+  const multiFilterCount = [kamIds, universityIds, productIds].reduce(
+    (sum, ids) => sum + (ids.length > 1 ? ids.length : 0),
+    0,
+  );
   const filterStuck = searchParams.get('stuck') === 'true';
   const filterStatus = searchParams.get('status') ?? undefined;
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
@@ -184,15 +211,24 @@ export function BoardPage(): ReactNode {
       'board-requests',
       wfType,
       {
-        kam: filterKam ?? '',
-        university: filterUniversity ?? '',
-        product: filterProduct ?? '',
+        kam: kamIds.join(','),
+        university: universityIds.join(','),
+        product: productIds.join(','),
         stuck: filterStuck,
         status: statusIdFilter ?? '',
         search: debouncedSearch.trim(),
       },
     ],
-    [wfType, filterKam, filterUniversity, filterProduct, filterStuck, statusIdFilter, debouncedSearch],
+    // массивы из URL — новые на каждый рендер, поэтому в зависимостях их строковый ключ
+    [
+      wfType,
+      kamIds.join(','),
+      universityIds.join(','),
+      productIds.join(','),
+      filterStuck,
+      statusIdFilter,
+      debouncedSearch,
+    ],
   );
 
   const requestsQuery = useQuery({
@@ -201,9 +237,9 @@ export function BoardPage(): ReactNode {
       listRequests(
         {
           workflow_type: wfType,
-          assignee_id: filterKam,
-          university_id: filterUniversity,
-          product_id: filterProduct,
+          assignee_id: kamIds.length > 0 ? kamIds : undefined,
+          university_id: universityIds.length > 0 ? universityIds : undefined,
+          product_id: productIds.length > 0 ? productIds : undefined,
           stuck: filterStuck || undefined,
           status_id: statusIdFilter ? [statusIdFilter] : undefined,
           search: debouncedSearch.trim() || undefined,
@@ -253,6 +289,9 @@ export function BoardPage(): ReactNode {
             const value = filters[key];
             if (typeof value === 'string' && value) next.set(key, value);
             if (value === true) next.set(key, 'true');
+            if (Array.isArray(value)) {
+              for (const item of value) if (typeof item === 'string' && item) next.append(key, item);
+            }
           }
           return next;
         },
@@ -287,12 +326,21 @@ export function BoardPage(): ReactNode {
   }, []);
 
   const transitionMutation = useMutation({
-    mutationFn: ({ request, target, comment }: PendingTransition & { comment?: string }) =>
-      performTransition(request.id, {
-        to_status_id: target.toStatus.id,
-        comment,
-        version: request.version,
-      }),
+    mutationFn: ({
+      request,
+      target,
+      comment,
+      files,
+    }: PendingTransition & { comment?: string; files?: File[] }) =>
+      transitionWithFiles(
+        request.id,
+        {
+          to_status_id: target.toStatus.id,
+          comment: comment || undefined,
+          version: request.version,
+        },
+        files,
+      ),
     meta: { silent: true },
     onMutate: ({ request, target }) => {
       // optimistic: карточка сразу встаёт в целевую колонку (ux.md §7.2)
@@ -330,26 +378,30 @@ export function BoardPage(): ReactNode {
       void queryClient.invalidateQueries({ queryKey: ['board-requests'] });
       void queryClient.invalidateQueries({ queryKey: ['workflow-schema'] });
     },
-    onSuccess: () => {
+    onSuccess: (_updated, { request }) => {
       void queryClient.invalidateQueries({ queryKey: ['board-requests'] });
       void queryClient.invalidateQueries({ queryKey: ['request'] });
+      void queryClient.invalidateQueries({ queryKey: ['request-history', request.id] });
+      void queryClient.invalidateQueries({ queryKey: ['request-files', request.id] });
       completeChecklistItem('move-request');
     },
     onSettled: () => setPending(null),
   });
 
+  // ФТ2: после дропа — диалог перехода с необязательным комментарием и файлами
+  // (обязательный — у возвратов и `requires_comment`); карточка встаёт в колонку по «Перевести»
   const startTransition = (request: RequestItem, target: TransitionTarget): void => {
-    if (target.transition.requires_comment || target.transition.kind === 'return') {
-      setPending({ request, target });
-    } else {
-      transitionMutation.mutate({ request, target });
-    }
+    setPending({ request, target });
   };
 
   const handleDragStart = ({ active }: DragStartEvent): void => {
     const request = (active.data.current as { request?: RequestItem } | undefined)?.request;
     if (!request || !schema) return;
-    allowedTargetsRef.current = transitionsFrom(schema, request.status.id, roles);
+    allowedTargetsRef.current = transitionsFrom(
+      schema,
+      request.status.id,
+      transitionRoles(request.workflow_type),
+    );
     setActiveRequest(request);
   };
 
@@ -396,15 +448,33 @@ export function BoardPage(): ReactNode {
   };
 
   const canDrag = (request: RequestItem): boolean =>
-    hasPermission('requests:transition') && canDragRequest(request, roles, user?.id);
+    canDragRequest(request, hasPermission, user?.id);
+  // чужая заявка без права на чужие — подсказка, чья она
   const dragHint = (request: RequestItem): string | undefined =>
-    hasRole('kam') && !hasRole('admin', 'head_kam') && request.assignee && request.assignee.id !== user?.id
+    hasPermission('requests:transition', request.workflow_type) &&
+    !hasPermission('requests:write_any', request.workflow_type) &&
+    request.assignee &&
+    request.assignee.id !== user?.id
       ? `Заявка КАМа: ${request.assignee.full_name}`
       : undefined;
+  const canCreate = hasPermission('requests:write', wfType);
+  /** Схема процесса не пришла: у ролей нет права «Просмотр схемы процесса». */
+  const schemaUnavailable = workflowsQuery.isSuccess && !workflowId;
 
   // --- Рендер ----------------------------------------------------------------------
   let body: ReactNode;
-  if (schemaQuery.isError || workflowsQuery.isError) {
+  if (noProcesses || schemaUnavailable) {
+    body = (
+      <BoardEmptyState
+        title={noProcesses ? 'Заявки недоступны вашей роли' : 'Схема процесса недоступна'}
+        description={
+          noProcesses
+            ? 'Ни одной из ваших ролей не открыт просмотр заявок. Обратитесь к администратору.'
+            : 'У ваших ролей нет права «Просмотр схемы процесса» — без него доску не построить. Обратитесь к администратору.'
+        }
+      />
+    );
+  } else if (schemaQuery.isError || workflowsQuery.isError) {
     body = (
       <ErrorPanel
         error={schemaQuery.error ?? workflowsQuery.error}
@@ -460,7 +530,7 @@ export function BoardPage(): ReactNode {
                       description="Создайте первую заявку или импортируйте данные из Excel"
                       actions={
                         <>
-                          {hasPermission('requests:write') ? (
+                          {canCreate ? (
                             <Button onClick={() => setCreateOpen(true)}>
                               <Plus aria-hidden="true" />
                               Создать заявку
@@ -507,7 +577,7 @@ export function BoardPage(): ReactNode {
       {/* заголовок экрана (§3.3 PageHeader-паттерн) */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <h1 className="text-xl font-semibold leading-7 text-balance">Доска заявок</h1>
-        {hasPermission('requests:write') ? (
+        {canCreate ? (
           <Button onClick={() => setCreateOpen(true)}>
             <Plus aria-hidden="true" />
             Создать заявку
@@ -541,6 +611,7 @@ export function BoardPage(): ReactNode {
       >
         <WorkflowSegmented
           value={wfType}
+          available={workflowTypes}
           onChange={(value) => {
             // одним вызовом: два последовательных setSearchParams в одном клике
             // считаются от одних и тех же (устаревших) параметров рендера —
@@ -564,9 +635,9 @@ export function BoardPage(): ReactNode {
           currentState={() => ({
             filters: {
               wf: wfType,
-              kam: filterKam,
-              university: filterUniversity,
-              product: filterProduct,
+              kam: kamIds.length > 1 ? kamIds : filterKam,
+              university: universityIds.length > 1 ? universityIds : filterUniversity,
+              product: productIds.length > 1 ? productIds : filterProduct,
               stuck: filterStuck || undefined,
               search: debouncedSearch.trim() || undefined,
             },
@@ -591,14 +662,16 @@ export function BoardPage(): ReactNode {
             }}
           />
         </div>
-        {hasRole('admin', 'head_kam') ? (
+        {/* выбор КАМа — при доступе к списку пользователей; иначе «Только мои» (kam=<свой id>) */}
+        {hasPermission('admin:users') ? (
           <UserSelect
+            permission="requests:kam"
             style={{ width: 190 }}
-            placeholder="КАМ"
+            placeholder={kamIds.length > 1 ? `КАМов: ${kamIds.length}` : 'КАМ'}
             value={filterKam}
             onChange={(value) => setParam('kam', value)}
           />
-        ) : hasRole('kam') ? (
+        ) : hasPermission('requests:kam', wfType) ? (
           <label className="flex min-h-9 cursor-pointer items-center gap-2 text-sm">
             <Checkbox
               checked={filterKam === user?.id}
@@ -610,12 +683,14 @@ export function BoardPage(): ReactNode {
         {wfType === 'b2b' ? (
           <UniversitySelect
             style={{ width: 210 }}
+            placeholder={universityIds.length > 1 ? `Вузов: ${universityIds.length}` : 'Вуз'}
             value={filterUniversity}
             onChange={(value) => setParam('university', value)}
           />
         ) : null}
         <ProductSelect
           style={{ width: 190 }}
+          placeholder={productIds.length > 1 ? `Продуктов: ${productIds.length}` : 'Продукт'}
           value={filterProduct}
           onChange={(value) => setParam('product', value)}
         />
@@ -629,6 +704,26 @@ export function BoardPage(): ReactNode {
         {statusIdFilter ? (
           <Button variant="link" size="sm" onClick={() => setParam('status', undefined)}>
             Сбросить фильтр этапа
+          </Button>
+        ) : null}
+        {multiFilterCount > 0 ? (
+          <Button
+            variant="link"
+            size="sm"
+            onClick={() =>
+              setSearchParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  for (const key of ['kam', 'university', 'product']) {
+                    if (next.getAll(key).length > 1) next.delete(key);
+                  }
+                  return next;
+                },
+                { replace: true },
+              )
+            }
+          >
+            Сбросить фильтры с дашборда ({multiFilterCount})
           </Button>
         ) : null}
         {total > REQUESTS_LIMIT ? (
@@ -656,8 +751,15 @@ export function BoardPage(): ReactNode {
           actionName={pending.target.transition.name}
           toStatusName={pending.target.toStatus.name}
           isReturn={pending.target.transition.kind === 'return'}
+          required={
+            pending.target.transition.requires_comment ||
+            pending.target.transition.kind === 'return'
+          }
+          canAttach={hasPermission('requests:files', pending.request.workflow_type)}
           loading={transitionMutation.isPending}
-          onConfirm={(comment) => transitionMutation.mutate({ ...pending, comment })}
+          onConfirm={({ comment, files }) =>
+            transitionMutation.mutate({ ...pending, comment, files })
+          }
           onCancel={() => setPending(null)}
         />
       ) : null}

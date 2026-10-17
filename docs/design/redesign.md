@@ -17,7 +17,7 @@
 | Р1 | UI-кит: **Tailwind CSS v4 + shadcn/ui** (стиль `new-york`, Radix-примитивы). Ant Design 5 и `@ant-design/icons` полностью удаляются из зависимостей по завершении миграции. |
 | Р2 | Таблицы: **TanStack Table v8** в обёртке `DataTable`, **API-совместимой с текущим `RegistryTable`** (§3.2) — страницы-реестры мигрируют механической заменой импорта. |
 | Р3 | Анимации: пакет **`motion` v12** (это и есть framer-motion 12+; импорт строго `from 'motion/react'`, импорт из `framer-motion` запрещён). Токены/пружины — §2. |
-| Р4 | Формы: **react-hook-form + zod** (`@hookform/resolvers/zod`). Контролируемые формы AntD не сохраняются. Маппинг 422 → `setError` — §5.2. |
+| Р4 | Формы: **react-hook-form + zod** (`@hookform/resolvers/zod`). Контролируемые формы AntD не сохраняются. Маппинг 400 `validation_error` → `setError` — §5.2. |
 | Р5 | Иконки: **lucide-react** (в бандле, tree-shakeable). Эмодзи в UI не используются (кроме сообщений TG-бота). |
 | Р6 | Тосты: **sonner** (`Toaster` внизу справа), обёртки `toastSuccess/toastError` — §3.11. |
 | Р7 | **Остаются и перетемизируются**: Apache ECharts (тема `crm`, §2.6), `@xyflow/react`, `@dnd-kit/*`, `@tanstack/react-query`, `react-router-dom`, `zustand`, `keycloak-js`, `qrcode`, `dayjs`. API-слой (`shared/api`), auth, SSE, guard'ы, `menuConfig` — **не трогаем**. |
@@ -540,7 +540,7 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 | `Tabs` | `Tabs` shadcn | Подчёркнутый вариант (list `border-b`, активный таб `border-b-2 border-primary text-primary`) |
 | `Tag` | `StatusBadge`/`Badge` §3.6 | Никогда не цвет-только: точка/иконка + текст |
 | `Select` | `Select` shadcn; с поиском/мульти — `Popover + Command` (паттерн Combobox) | мультиселекты фильтров: чипы выбранного внутри триггера, счётчик «+N» |
-| `DatePicker`/`RangePicker` | `Popover + Calendar` (react-day-picker, locale ru) | пресеты периодов («Месяц/Квартал/Год») — кнопки в футере поповера |
+| `DatePicker`/`RangePicker` | `Popover + Calendar` (react-day-picker, locale ru) | пресеты периодов («30 дней / 3 месяца / 12 месяцев»; скользящие, календарный «Месяц» — у отчёта «Активность КАМов») — кнопки в футере поповера |
 | `Upload.Dragger` | `FileDropzone` §3.9 | |
 | `Steps` | `Stepper` §3.10 | |
 | `Statistic` | `StatCard` §3.4 | |
@@ -570,7 +570,7 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 
 - Схема zod рядом с формой (`const schema = z.object({...})`), `useForm({ resolver: zodResolver(schema), mode: 'onTouched' })`.
 - Разметка — `Form/FormField/FormItem/FormLabel/FormControl/FormMessage` shadcn; у каждого инпута `name`, семантический `type` (`email/tel/url/number`) и `autocomplete` (`off` для не-auth полей); paste не блокировать; `spellCheck={false}` на email/кодах/ИНН.
-- Ошибки — inline под полем (`FormMessage`, `text-status-danger-deep text-xs`); при submit — фокус на первое поле с ошибкой (`setFocus`). Ошибка 422 API: маппинг `loc → field` (существующий хелпер) → `form.setError(field, { message: detail })`, непривязанные — toast.
+- Ошибки — inline под полем (`FormMessage`, `text-status-danger-deep text-xs`); при submit — фокус на первое поле с ошибкой (`setFocus`). Ошибка 400 `validation_error` API: маппинг `loc → field` (существующий хелпер) → `form.setError(field, { message: detail })`, непривязанные — toast.
 - Submit-кнопка активна до старта запроса; во время — спиннер `Loader2 animate-spin` + текст «Сохраняем…» (`aria-live="polite"` на статус).
 - Плейсхолдеры — образец с `…`: «ИНН, 10 цифр…».
 
@@ -639,7 +639,7 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 
 - Все таблицы (users, audit, журнал обмена) — `DataTable`; audit: быстрый чип-фильтр «Раскрытия ПДн» — `StatusBadge talent` кликабельный.
 - `/admin/approvals`: входящие — карточки со строкой автор+дата+workflow, диффом-плашками (как impact-preview 6.6) и парой кнопок «Согласовать и опубликовать» primary / «Вернуть» outline+textarea; пусто — иллюстрация `registry-empty` с текстом «Согласований нет».
-- Фичефлаги — строки-карточки: имя `font-mono text-sm`, описание одной строкой, Switch, «изменён кем/когда» `text-xs text-muted-foreground`; `llm_features` — disabled c подписью-тултипом.
+- Фичефлаги — строки-карточки: имя `font-mono text-sm`, описание одной строкой, Switch, «изменён кем/когда» `text-xs text-muted-foreground`; заблокированных флагов нет (прежний `llm_features` заменён рабочим `ai_summaries` — «Сводка ИИ»).
 - Интеграции: две карточки-коннектора со статус-точкой (пульс `animate-pulse` у живого; reduce — статично) и счётчиками «→ N / ← M» `tabular-nums`; журнал — DataTable, направление — иконка `ArrowRight`/`ArrowLeft` в tint-круге, кнопка `{}` — `Dialog` с `<pre>` JSON (`bg-sidebar text-sidebar-muted rounded-md p-4 text-xs`).
 
 ---
@@ -717,9 +717,9 @@ sonner: `<Toaster position="bottom-right" />`. Обёртки в `shared/lib/toa
 
 ## 8. Ограничения, a11y, бандл, приёмка
 
-### 8.1 Адаптив (до планшета, ux.md §4.3 остаётся в силе)
+### 8.1 Адаптив (от 375 px, ux.md §4.3 остаётся в силе)
 
-Desktop ≥1200 — полный layout; 992–1199 — сайдбар в иконки; 768–991 — сайдбар-`Sheet` по бургеру, канбан — горизонтальный скролл + scroll-snap, `DataTable` скрывает колонки `responsive`, карточка заявки — табы, конструктор — read-only-предупреждение. Тач: dnd-kit `TouchSensor` long-press 250ms (не менять), тач-цели ≥ 40×40px, hover-эффекты за `@media (hover: hover)`.
+Desktop ≥1200 — полный layout; 992–1199 — сайдбар в иконки; 768–991 — сайдбар-`Sheet` по бургеру, канбан — горизонтальный скролл + scroll-snap, `DataTable` скрывает колонки `responsive`, карточка заявки — табы, конструктор — read-only-предупреждение; 375–767 — табы и широкие таблицы прокручиваются внутри блока, KPI 2 в ряд, календарь в 1 месяц, диалоги не выше экрана. Тач: dnd-kit `TouchSensor` long-press 250ms (не менять), тач-цели ≥ 40×40px, hover-эффекты за `@media (hover: hover)`.
 
 ### 8.2 Чек-лист a11y (из web-interface-guidelines — проверяется на ревью каждого PR)
 

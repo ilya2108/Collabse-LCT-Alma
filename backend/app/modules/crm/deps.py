@@ -8,19 +8,16 @@ from typing import TypeVar
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import forbidden, not_found, stale_version
-from app.core.security import check_roles
 from app.models.base import Base
 from app.models.user import AppUser
 
 ModelT = TypeVar("ModelT", bound=Base)
 
-# правило видимости §12.2: kam читает всё, пишет своё; admin/head_kam пишут всё
-FULL_WRITE_ROLES = ("admin", "head_kam")
-
 
 def ensure_can_write_owned(user: AppUser, owner_id: uuid.UUID | None) -> None:
-    """kam может писать только объекты, где он ответственный (или ещё не назначен никто)."""
-    if check_roles(user.roles, FULL_WRITE_ROLES):
+    """Правило §12.2: без `crm:write_any` (КАМ) писать можно только объекты, где
+    пользователь ответственный (или ответственный ещё не назначен)."""
+    if user.access.has("crm:write_any"):
         return
     if owner_id is not None and owner_id != user.id:
         raise forbidden("Изменять можно только объекты, где вы ответственный")

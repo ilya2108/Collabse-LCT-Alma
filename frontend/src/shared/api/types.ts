@@ -25,22 +25,141 @@ export interface ApiErrorBody {
   };
 }
 
+/** Область записей роли в процессе: все заявки или только свои (Р-F2-4). */
+export type RecordScope = 'all' | 'own';
+
+/** Ссылка на роль в профиле (`role_details` в `/auth/me`). */
+export interface RoleRef {
+  code: string;
+  name: string;
+  is_system: boolean;
+}
+
+/**
+ * Эффективный доступ пользователя (`/auth/me` → `access`, F2 §4.7): права ролей
+ * объединяются по процессу — в процессе P действуют права ролей, у которых P
+ * входит в область.
+ */
+export interface AccessInfo {
+  /** Процессы, доступные пользователю. */
+  workflow_types: WorkflowType[];
+  /** Область записей по процессу. */
+  records: Partial<Record<WorkflowType, RecordScope>>;
+  /** Процесс → права с областью, действующие в нём. */
+  by_workflow: Partial<Record<WorkflowType, string[]>>;
+  /** Процесс → коды ролей пользователя, способные выполнять переходы в нём. */
+  transition_roles: Partial<Record<WorkflowType, string[]>>;
+  /** Коды прав с областью (действуют только в процессах роли). */
+  scoped_permissions: string[];
+  /** Версия каталога ролей на сервере в момент ответа. */
+  catalog_version?: number;
+}
+
 /** Профиль текущего пользователя — `GET /auth/me` (§2.1). */
 export interface CurrentUser {
   id: string;
   username: string;
   full_name: string;
   email: string;
-  /** Сырые роли из токена (могут включать технические — UI фильтрует через isAppRole). */
+  /** Коды ролей CRM — назначаются в Альме (Р-F2-1), Keycloak отвечает только за вход. */
   roles: string[];
+  /** Роли с названиями из каталога (своё название у пользовательских ролей). */
+  role_details: RoleRef[];
   manager_id: string | null;
-  /** Вычисляются на backend по матрице §12; фронт ничего не хардкодит. */
+  /** Объединение прав всех ролей; фронт ничего не хардкодит. */
   permissions: string[];
+  access: AccessInfo;
   telegram: {
     linked: boolean;
     tg_username?: string | null;
     linked_at?: string | null;
   } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Роли и права (F2: `/roles`, `/admin/roles`, `/admin/permissions`)
+// ---------------------------------------------------------------------------
+
+/** Элемент каталога ролей `GET /roles` — доступен всем аутентифицированным. */
+export interface RoleCatalogItem {
+  code: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  workflow_types: WorkflowType[];
+  record_scope: RecordScope;
+  /** Процессы, где роль может выполнять переходы (право requests:transition). */
+  transition_workflow_types: WorkflowType[];
+}
+
+/** Право каталога `GET /admin/permissions`. */
+export interface PermissionDef {
+  code: string;
+  name: string;
+  description: string | null;
+  /** Действует только в процессах роли (B2B/B2C). */
+  scoped: boolean;
+  /** Права, без которых это право не имеет смысла (ставятся автоматически). */
+  requires: string[];
+}
+
+/** Группа прав в порядке UI. */
+export interface PermissionGroup {
+  code: string;
+  name: string;
+  permissions: PermissionDef[];
+}
+
+/** Роль в админке `GET /admin/roles`. */
+export interface AdminRole {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  /** admin: права и область не редактируются (Р-F2-9). */
+  is_locked: boolean;
+  workflow_types: WorkflowType[];
+  record_scope: RecordScope;
+  permissions: string[];
+  users_count: number;
+  permissions_count: number;
+  updated_at: string;
+  version: number;
+}
+
+/** Покрытие переходов процесса ролью: из `restricted` переходов с ограничением по ролям роль указана в `allowed`. */
+export interface RoleTransitionCoverage {
+  restricted: number;
+  allowed: number;
+}
+
+/** Карточка роли `GET /admin/roles/{id}`. */
+export interface AdminRoleDetail extends AdminRole {
+  users: Array<{ id: string; full_name: string; username: string; is_active?: boolean }>;
+  coverage: Partial<Record<WorkflowType, RoleTransitionCoverage>>;
+  /** Только для системных ролей: права отличаются от набора по умолчанию. */
+  differs_from_default?: boolean;
+}
+
+/** Тело `POST /admin/roles`. */
+export interface RoleCreateBody {
+  code: string;
+  name: string;
+  description?: string | null;
+  permissions: string[];
+  workflow_types: WorkflowType[];
+  record_scope: RecordScope;
+}
+
+/** Тело `PATCH /admin/roles/{id}`: поля опциональны, `version` обязателен. */
+export interface RolePatchBody {
+  name?: string;
+  description?: string | null;
+  permissions?: string[];
+  workflow_types?: WorkflowType[];
+  record_scope?: RecordScope;
+  version: number;
 }
 
 /** Пресет таблицы/фильтров — `/ui/presets` (§2.2). */
@@ -75,10 +194,18 @@ export interface University {
   version: number;
   created_at: string;
   updated_at: string;
-  /** Агрегаты карточки (§3.1: «+агрегаты: счётчики договоров/заявок/студентов»). */
-  contracts_count?: number;
-  active_requests?: number;
-  students_count?: number;
+  /**
+   * Агрегаты карточки (§3.1: «+агрегаты: счётчики договоров/заявок/студентов»):
+   * только в GET /universities/{id}, в списке и ответах на запись — null.
+   */
+  aggregates?: UniversityAggregates | null;
+}
+
+/** Счётчики карточки вуза — `UniversityOut.aggregates` (crm/schemas.py). */
+export interface UniversityAggregates {
+  contracts_count: number;
+  active_requests: number;
+  students_count: number;
 }
 
 /** Контактное лицо вуза (§3.1). */
@@ -95,6 +222,21 @@ export interface UniversityContact {
 /** Статус договора (§3.2). */
 export type ContractStatus = 'draft' | 'negotiation' | 'active' | 'completed' | 'terminated';
 
+/** Статус передачи лицензии вузу; null — не указан. */
+export type LicenseTransferStatus = 'not_started' | 'in_progress' | 'transferred' | 'cancelled';
+
+/** Строка договора как лицензия на ИТ-продукт (§3.2). */
+export interface ContractLicense {
+  product_id: string;
+  license_signed_at: string | null;
+  license_term_years: number | null;
+  /** Дата окончания — включительно. */
+  license_valid_to: string | null;
+  transfer_status: LicenseTransferStatus | null;
+  transfer_status_updated_at?: string | null;
+  note: string | null;
+}
+
 /** Договор (§3.2). */
 export interface Contract {
   id: string;
@@ -108,15 +250,17 @@ export interface Contract {
   amount: string | null;
   currency: string;
   product_ids: string[];
+  /** Лицензии по продуктам договора (строки contract_product, импорт «Таблица КАМов»). */
+  licenses?: ContractLicense[];
   notes?: string | null;
   version: number;
   created_at?: string;
   updated_at?: string;
-  /** Денормализованные подписи владельца (если backend их отдаёт). */
+  /** Подписи владельца: вуз или контрагент (ContractOut, без ПДн контрагента). */
   university?: { id: string; name: string } | null;
   counterparty?: { id: string; display_name: string } | null;
-  /** Предупреждение о втором активном договоре вуза (§3.2). */
-  warning_duplicate?: boolean;
+  /** Текст предупреждения о втором активном договоре вуза (§3.2); только в ответе создания. */
+  warning_duplicate?: string | null;
 }
 
 /** Файл в MinIO — общий формат файлов всего API (§3.2). */
@@ -132,6 +276,34 @@ export interface FileObject {
 }
 
 /** Продукт (§3.3). */
+/**
+ * ИТ-направление обучения (DevOps, QA, анализ данных…) — справочник `it_direction`.
+ * Читают все роли, правит право «Справочники» (`admin:dictionaries`).
+ */
+export interface ItDirection {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  sort_order: number;
+  is_active: boolean;
+  version: number;
+  /** Активные программы с этим направлением. */
+  programs_count: number;
+  /** ИТ-продукты с этим направлением. */
+  products_count: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Направление в карточках программ и продуктов. */
+export interface DirectionBrief {
+  id: string;
+  code: string;
+  name: string;
+  is_active: boolean;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -139,6 +311,9 @@ export interface Product {
   product_type?: string;
   description: string | null;
   is_active: boolean;
+  /** ИТ-направления, которым помогает учить продукт (M:N). */
+  direction_ids?: string[];
+  directions?: DirectionBrief[];
   version: number;
   created_at?: string;
   updated_at?: string;
@@ -149,6 +324,11 @@ export interface Program {
   id: string;
   product_id: string | null;
   university_id: string | null;
+  /** ИТ-направление программы (одно). */
+  direction_id?: string | null;
+  direction?: DirectionBrief | null;
+  /** Направления ИТ-продукта: если своё не задано, программа относится к ним. */
+  product_directions?: DirectionBrief[];
   name: string;
   description?: string | null;
   priority_rank: number;
@@ -239,7 +419,8 @@ export interface RequestComment {
   text: string;
   author: UserRef;
   created_at: string;
-  deleted_at?: string | null;
+  /** Удалён (CommentOut.deleted): text тогда — «(удалено)». */
+  deleted?: boolean;
 }
 
 /** Доступный переход для текущего пользователя (workflow-engine.md §7). */
@@ -327,10 +508,18 @@ export interface AdminUser {
   username: string;
   full_name: string;
   email: string;
+  /** Коды ролей CRM (только известные каталогу). */
   roles: string[];
+  /** Названия ролей в том же порядке, что `roles`. */
+  role_names?: string[];
+  /** Ролей нет — вход в CRM закрыт, пока администратор не назначит роль. */
+  no_roles?: boolean;
   manager_id: string | null;
   telegram_linked?: boolean;
+  is_active?: boolean;
   last_login_at?: string | null;
+  /** Версия записи — для `PUT /admin/users/{id}/roles`. */
+  version?: number;
 }
 
 /** Запись журнала интеграций `GET /admin/integration/events` (§10.4, data-model §9.3). */
@@ -404,10 +593,29 @@ export interface WorkflowChangeImpact {
   }[];
 }
 
-/** Отчёт миграции после approve (§5.4). */
+/** Замеры применения пакета, мс (§5.4, workflow-engine.md §6.8). */
+export interface WorkflowMigrationTimings {
+  /** Ожидание эксклюзивного лока воронки — хвоста уже начатых переходов. */
+  lock_wait_ms: number;
+  /** От захвата лока до COMMIT: схема, перенос, история, сводки, аудит. */
+  apply_ms: number;
+  /** Из них — пакетный перенос заявок. */
+  migrate_ms: number;
+  /** Лок удерживался (включая COMMIT) — только в ответе approve. */
+  lock_held_ms?: number | null;
+}
+
+/**
+ * Отчёт миграции (§5.3–5.4): в ответе approve и у применённого пакета
+ * (`WorkflowChangeRecord.migration_report`, хранится в `impact.migration_report`).
+ */
 export interface WorkflowMigrationReport {
   migrated_requests: number;
   by_status: { from: string; to: string; count: number }[];
+  /** Сводных уведомлений `request.transitioned` — одно на получателя и канал. */
+  digest_notifications?: number | null;
+  /** Нет у пакетов, применённых до появления замеров. */
+  timings?: WorkflowMigrationTimings | null;
 }
 
 export type WorkflowChangeStatus = 'pending' | 'approved' | 'rejected' | 'applied' | 'failed';
@@ -443,6 +651,7 @@ export type ImportEntityType =
   | 'requests_b2b'
   | 'requests_b2c'
   | 'students'
+  | 'kam_catalog'
   | (string & {});
 
 /** Машина состояний `import_session` (data-model.md §9.1, ответы §6.2–6.4). */
@@ -482,6 +691,8 @@ export interface ImportTargetField {
   field: string;
   label: string;
   required: boolean;
+  /** Справочник, по которому ищется значение (вуз, продукт, КАМ…); null — простое поле. */
+  lookup?: string | null;
 }
 
 export interface ImportSuggestedMapping {
@@ -537,6 +748,8 @@ export interface ImportApplyResult {
   skipped: number;
   failed: number;
   report_file_id?: string | null;
+  /** Разбивка составного импорта (kam_catalog): ключ счётчика → количество. */
+  details?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,47 +885,8 @@ export interface DashboardKpiValue {
   delta?: number | null;
 }
 
-export interface DashboardKpi {
-  active: DashboardKpiValue;
-  completed: DashboardKpiValue;
-  /** Конверсия в successful-терминал за период, проценты 0–100. */
-  conversion: DashboardKpiValue;
-  stuck: DashboardKpiValue;
-}
-
-/** Строка нагрузки КАМа (§7.2 kam-workload): stacked-bar по этапам. */
-export interface KamWorkloadRow {
-  kam_id: string;
-  kam_name: string;
-  by_status: ReportSeriesItem[];
-  stuck?: number;
-}
-
-/** Строка спроса программ (§7.2 programs-demand). */
-export interface ProgramDemandRow {
-  program_id: string;
-  name: string;
-  priority_rank: number;
-  requests_count: number;
-  /** «Расчётный спрос» — только при включённом фичефлаге auto_ranking. */
-  computed_demand?: number | null;
-}
-
-/**
- * Агрегат всех виджетов дашборда — `GET /reports/dashboard` (§7.2):
- * секции в едином формате отчётов + блок KPI. Кэшируется на backend 60 с.
- */
-export interface DashboardReport {
-  report: string;
-  generated_at: string;
-  params?: Record<string, unknown>;
-  kpi: DashboardKpi;
-  funnel: { series: ReportSeriesItem[] };
-  dynamics: { series: ReportDynamicsSeries[] };
-  kam_workload: { rows: KamWorkloadRow[] };
-  programs_demand: { rows: ProgramDemandRow[] };
-  talent_pool_funnel: { series: ReportSeriesItem[] };
-}
+/* Типы ответа `GET /reports/dashboard` (KPI, нагрузка КАМов, востребованность программ) —
+ * в `endpoints/reports.ts` рядом с запросом. */
 
 /** Отчёт `GET /reports/talent-pool-funnel` (§7.2) — счётчики воронки студентов. */
 export interface TalentPoolFunnelReport {
@@ -834,7 +1008,8 @@ export interface DictionaryImportResult {
 export interface AdminSettings {
   stuck_threshold_days: number;
   stuck_escalate_to_manager: boolean;
-  integration_mode: 'http' | 'stream';
+  /** Единственный транспорт — outbox PostgreSQL → HTTP + HMAC (§13.7). */
+  integration_mode: 'http';
   file_delivery: 'proxy' | 'presigned';
   version: number;
 }

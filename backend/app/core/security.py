@@ -4,6 +4,9 @@
   (кэш 10 минут, форс-обновление при неизвестном kid), roles — из `realm_access.roles`.
 - Сервисы: те же JWT client credentials с ролями `svc_notification` / `svc_integration`.
 - CronJob и межсервисные вызовы: статический `X-Internal-Token` (constant-time сравнение).
+- Роли людей — источник истины БД Альмы (`app_user.roles`, Р-F2-1): из токена берётся
+  только стартовое назначение при создании записи; права эндпоинтов —
+  `require_permission(<код права>)` по каталогу `core/rbac_catalog.py`.
 
 api-contract.md §1.2, §11.1; deployment.md §3.4 (двойное имя Keycloak: JWKS качаем по
 внутреннему URL, `iss` проверяем по внешнему).
@@ -14,6 +17,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from functools import cache
 from hmac import compare_digest
 from typing import Annotated
 
@@ -24,13 +28,16 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import ensure_role_catalog
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.errors import forbidden, unauthorized
+from app.core.rbac_catalog import PERMISSION_CODES, SYSTEM_ROLE_CODES, permission_name
 from app.models.user import AppUser
 
-# канонический список ролей проекта (OVERVIEW.md §2.2); прочие роли realm игнорируются
-PEOPLE_ROLES = ("admin", "head_kam", "kam", "observer")
+# системные роли CRM (OVERVIEW.md §2.2) — только они берутся из токена как стартовое
+# назначение при первом входе; дальше роли назначаются в Альме (свои роли — тоже там)
+PEOPLE_ROLES: tuple[str, ...] = SYSTEM_ROLE_CODES
 SERVICE_ROLES = ("svc_notification", "svc_integration")
 KNOWN_ROLES = frozenset(PEOPLE_ROLES + SERVICE_ROLES)
 
@@ -176,6 +183,10 @@ async def sync_app_user(session: AsyncSession, claims: TokenClaims) -> AppUser:
 
     Если строка была создана сидом до первого логина (sub ещё неизвестен),
     она «усыновляется» по username — дубликаты исключены.
+
+    Роли — источник истины БД Альмы (Р-F2-1): при создании записи роли токена из
+    PEOPLE_ROLES становятся стартовым назначением, у существующих пользователей роли
+    из токена больше не перезаписываются (их назначает администратор в Альме).
     """
     sub = uuid.UUID(claims.sub)
     user = (
@@ -195,7 +206,7 @@ async def sync_app_user(session: AsyncSession, claims: TokenClaims) -> AppUser:
             username=claims.username,
             email=claims.email,
             full_name=claims.full_name,
-            roles=list(claims.roles),
+            roles=[role for role in claims.roles if role in PEOPLE_ROLES],
         )
         session.add(user)
     else:
@@ -205,8 +216,6 @@ async def sync_app_user(session: AsyncSession, claims: TokenClaims) -> AppUser:
             user.email = claims.email
         if claims.full_name and user.full_name != claims.full_name:
             user.full_name = claims.full_name
-        if sorted(user.roles) != sorted(claims.roles):
-            user.roles = list(claims.roles)
     await session.flush()
     await session.commit()
     return user
@@ -216,30 +225,48 @@ async def get_current_user(
     claims: Annotated[TokenClaims, Depends(get_token_claims)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> AppUser:
-    """Текущий пользователь-человек (зеркалится в app_user)."""
-    if not claims.has_any_role(PEOPLE_ROLES):
-        raise forbidden("Учётная запись не имеет ролей CRM")
+    """Текущий пользователь-человек (зеркалится в app_user).
+
+    Сервисная учётная запись (только `svc_*` в токене) интерфейсом CRM не пользуется —
+    запись `app_user` для неё не создаётся. Пользователь без ролей CRM зеркалится
+    (администратор видит его в списке и назначает роль), но получает 403.
+    """
+    if claims.has_any_role(SERVICE_ROLES) and not claims.has_any_role(PEOPLE_ROLES):
+        raise forbidden("Сервисная учётная запись не работает с интерфейсом CRM")
     user = await sync_app_user(session, claims)
     if not user.is_active:
         raise forbidden("Учётная запись деактивирована")
+    await ensure_role_catalog(session)
+    if session.in_transaction():
+        # загрузка каталога (раз в TTL) открыла читающую транзакцию: закрываем её, как и
+        # sync_app_user, — долгие ответы (SSE /events/stream) не держат «idle in transaction»
+        await session.commit()
+    if not user.access.role_codes:
+        raise forbidden("Учётной записи не назначены роли CRM — обратитесь к администратору")
     return user
 
 
-def check_roles(user_roles: list[str] | tuple[str, ...], allowed: tuple[str, ...]) -> bool:
-    """Чистая проверка пересечения ролей (юнит-тестируется отдельно от FastAPI)."""
-    return bool(set(user_roles) & set(allowed))
+@cache
+def require_permission(code: str):
+    """Зависимость: пользователь с правом `code` (для права с областью — хотя бы в одном
+    процессе; процесс конкретного объекта проверяет обработчик), иначе 403.
 
-
-def require_roles(*allowed: str):
-    """Зависимость: доступ только ролям из списка; иначе 403."""
+    Опечатка в коде права падает при импорте роутера. У зависимости есть атрибут
+    `required_permission` — по нему тест матрицы доступа обходит все маршруты.
+    """
+    if code not in PERMISSION_CODES:
+        raise ValueError(f"Неизвестное право «{code}»: см. app/core/rbac_catalog.py")
+    title = permission_name(code)
 
     async def dependency(
         user: Annotated[AppUser, Depends(get_current_user)],
     ) -> AppUser:
-        if not check_roles(user.roles, allowed):
-            raise forbidden()
+        if not user.access.has(code):
+            raise forbidden(f"Недостаточно прав: «{title}»")
         return user
 
+    dependency.required_permission = code  # type: ignore[attr-defined]
+    dependency.__name__ = f"require_permission_{code.replace(':', '_')}"
     return dependency
 
 

@@ -17,7 +17,7 @@ from app.core.errors import validation_error
 TRANSFORMS = ("trim", "lowercase", "uppercase", "date_ru", "phone_normalize")
 
 _DATE_RU_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$")
-_NORMALIZE_HEADER_RE = re.compile(r"[\s_\-./()№«»\"']+")
+_NORMALIZE_HEADER_RE = re.compile(r"[\s_\-./()№«»\"',:;*]+")
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,8 @@ class EntityFields:
     label: str
     fields: tuple[TargetField, ...]
     default_match_by: tuple[str, ...] = ()
+    # права каталога F2 сверх `import:run`: составной импорт пишет в несколько реестров
+    required_permissions: tuple[str, ...] = ()
 
     def by_name(self) -> dict[str, TargetField]:
         return {f.field: f for f in self.fields}
@@ -63,7 +65,7 @@ class EntityFields:
 
 
 # --------------------------------------------------------------------------------------
-# Реестр целевых полей (стадия B3: universities, students, requests_b2b/b2c, dictionary:*)
+# Реестр целевых полей: universities, students, requests_b2b/b2c, kam_catalog, dictionary:*
 # --------------------------------------------------------------------------------------
 
 _FIO_SYNONYMS = ("фио", "ф и о", "fio", "фамилия имя отчество", "полное имя", "full name")
@@ -71,7 +73,18 @@ _EMAIL_SYNONYMS = ("email", "e mail", "почта", "эл почта", "элек
 _PHONE_SYNONYMS = ("телефон", "тел", "phone", "номер телефона", "моб телефон")
 _UNIVERSITY_SYNONYMS = ("вуз", "университет", "учебное заведение", "организация", "university")
 _PROGRAM_SYNONYMS = ("программа", "курс", "program", "направление подготовки")
-_PRODUCT_SYNONYMS = ("продукт", "направление", "услуга", "product")
+# «направление» — ИТ-направление (каталог it_direction), а не продукт: ИТ-продукт — ПО,
+# помогающее учить по одному или нескольким направлениям
+_PRODUCT_SYNONYMS = ("продукт", "ит продукт", "услуга", "product")
+_DIRECTION_SYNONYMS = (
+    "направление",
+    "ит направление",
+    "it направление",
+    "направление ит",
+    "направление обучения",
+    "direction",
+    "it direction",
+)
 
 STUDENT_FIELDS = EntityFields(
     entity_type="students",
@@ -134,9 +147,7 @@ REQUEST_B2B_FIELDS = EntityFields(
     entity_type="requests_b2b",
     label="Заявки B2B",
     fields=(
-        TargetField(
-            "title", "Название заявки", synonyms=("название", "заявка", "тема", "title")
-        ),
+        TargetField("title", "Название заявки", synonyms=("название", "заявка", "тема", "title")),
         TargetField(
             "university",
             "Вуз (название или ИНН)",
@@ -151,6 +162,12 @@ REQUEST_B2B_FIELDS = EntityFields(
             lookup="by_code_or_name",
         ),
         TargetField(
+            "it_direction",
+            "ИТ-направление (код или название)",
+            synonyms=_DIRECTION_SYNONYMS,
+            lookup="by_code_or_name",
+        ),
+        TargetField(
             "program", "Программа (название)", synonyms=_PROGRAM_SYNONYMS, lookup="by_name"
         ),
         TargetField(
@@ -160,9 +177,7 @@ REQUEST_B2B_FIELDS = EntityFields(
             lookup="by_username_or_email",
         ),
         TargetField("amount", "Сумма", synonyms=("сумма", "бюджет", "стоимость", "amount")),
-        TargetField(
-            "description", "Описание", synonyms=("описание", "комментарий", "примечание")
-        ),
+        TargetField("description", "Описание", synonyms=("описание", "комментарий", "примечание")),
     ),
 )
 
@@ -197,15 +212,144 @@ REQUEST_B2C_FIELDS = EntityFields(
             lookup="by_code_or_name",
         ),
         TargetField(
+            "it_direction",
+            "ИТ-направление (код или название)",
+            synonyms=_DIRECTION_SYNONYMS,
+            lookup="by_code_or_name",
+        ),
+        TargetField(
             "program", "Программа (название)", synonyms=_PROGRAM_SYNONYMS, lookup="by_name"
         ),
         TargetField("title", "Название заявки", synonyms=("название", "заявка", "тема")),
         TargetField("amount", "Сумма", synonyms=("сумма", "стоимость", "amount")),
-        TargetField(
-            "description", "Описание", synonyms=("описание", "комментарий", "примечание")
-        ),
+        TargetField("description", "Описание", synonyms=("описание", "комментарий", "примечание")),
     ),
     default_match_by=("email",),
+)
+
+# Таблица КАМов: одна строка — лицензия на ИТ-продукт по договору с вузом. За один проход
+# импорт находит или создаёт вуз и продукт, upsert'ит договор по номеру и строку
+# «договор × продукт» с полями лицензии, назначает ответственного КАМа и дописывает
+# контакты вуза (importers._apply_kam_catalog).
+KAM_CATALOG_FIELDS = EntityFields(
+    entity_type="kam_catalog",
+    label="Таблица КАМов: вузы, ИТ-продукты, договоры, лицензии",
+    fields=(
+        TargetField(
+            "university",
+            "Вуз (название или ИНН)",
+            required=True,
+            synonyms=(
+                "название вуза",
+                "наименование вуза",
+                "вуз",
+                "университет",
+                "учебное заведение",
+                "образовательная организация",
+                "university",
+            ),
+            lookup="by_name_or_inn",
+        ),
+        TargetField(
+            "it_direction",
+            "ИТ-направление (код или название; несколько — через запятую)",
+            synonyms=_DIRECTION_SYNONYMS,
+            lookup="by_code_or_name",
+        ),
+        TargetField(
+            "vendor",
+            "Вендор",
+            synonyms=("вендор", "производитель", "правообладатель", "разработчик", "vendor"),
+        ),
+        TargetField(
+            "product",
+            "ИТ-продукт, ПО (код или название; несколько — через запятую)",
+            required=True,
+            synonyms=(
+                "по",
+                "программное обеспечение",
+                "ит продукт",
+                "продукт",
+                "решение",
+                "software",
+                "product",
+            ),
+            lookup="by_code_or_name",
+        ),
+        TargetField(
+            "contract_number",
+            "Номер договора",
+            required=True,
+            synonyms=("номер договора", "договор", "договор номер", "contract", "contract number"),
+        ),
+        TargetField(
+            "license_signed_at",
+            "Дата подписания лицензии",
+            synonyms=(
+                "подписание лицензии",
+                "дата подписания лицензии",
+                "лицензия подписана",
+                "дата лицензии",
+                "license date",
+            ),
+        ),
+        TargetField(
+            "license_term",
+            "Срок действия лицензии (лет или год окончания)",
+            synonyms=(
+                "срок действия лицензии",
+                "срок лицензии",
+                "лицензия до",
+                "лицензия действует до",
+                "license term",
+            ),
+        ),
+        TargetField(
+            "transfer_status",
+            "Статус передачи лицензии",
+            synonyms=(
+                "статус передачи",
+                "статус передачи лицензии",
+                "передача лицензии",
+                "статус по передаче",
+                "transfer status",
+            ),
+        ),
+        TargetField(
+            "kam",
+            "Ответственный КАМ (Фамилия Имя)",
+            synonyms=(
+                "ответственный кам",
+                "кам",
+                "фио менеджера",
+                "менеджер",
+                "ответственный менеджер",
+                "ответственный",
+                "kam",
+                "manager",
+            ),
+            lookup="by_full_name",
+        ),
+        TargetField(
+            "university_contacts",
+            "Ответственные от вуза (ФИО, должность, телефон, почта; несколько — через «;»)",
+            synonyms=(
+                "ответственные от вуза",
+                "контакты вуза",
+                "контактные лица",
+                "контактное лицо",
+                "представители вуза",
+            ),
+            pii="contacts",
+        ),
+        TargetField(
+            "comment",
+            "Комментарий",
+            synonyms=("комментарий", "примечание", "заметки", "comment"),
+        ),
+    ),
+    default_match_by=("contract_number",),
+    required_permissions=("universities:write", "contracts:write"),
 )
 
 _DICTIONARY_FIELDS: dict[str, EntityFields] = {
@@ -230,9 +374,7 @@ _DICTIONARY_FIELDS: dict[str, EntityFields] = {
         label="Справочник «Типы взаимодействия B2C»",
         fields=(
             TargetField("code", "Код", required=True, synonyms=("код", "code")),
-            TargetField(
-                "name", "Название", required=True, synonyms=("название", "наименование")
-            ),
+            TargetField("name", "Название", required=True, synonyms=("название", "наименование")),
             TargetField("description", "Описание", synonyms=("описание", "комментарий")),
         ),
         default_match_by=("code",),
@@ -294,6 +436,7 @@ _ENTITY_REGISTRY: dict[str, EntityFields] = {
     "universities": UNIVERSITY_FIELDS,
     "requests_b2b": REQUEST_B2B_FIELDS,
     "requests_b2c": REQUEST_B2C_FIELDS,
+    "kam_catalog": KAM_CATALOG_FIELDS,
 }
 
 
@@ -334,38 +477,75 @@ def normalize_header(header: str) -> str:
     return value.strip()
 
 
+# короткие синонимы («по», «инн», «фио», «кам») совпадают только целым словом:
+# иначе «по» нашлось бы в «Подписание лицензии», а «кам» — в «Камера»
+_SHORT_SYNONYM_LEN = 3
+# основа слова для нестрогого сравнения многословных синонимов: «передаче» и «передачи»,
+# «лицензии» и «лицензия» дают одну основу
+_STEM_LEN = 5
+
+
+def _stems(text: str) -> set[str]:
+    return {word[:_STEM_LEN] for word in text.split() if word}
+
+
+def match_confidence(header: str, synonym: str) -> float | None:
+    """Уверенность совпадения нормализованных заголовка и синонима (или None).
+
+    0.95 — точное совпадение; 0.8 — вхождение (короткие синонимы — только целым словом);
+    0.7 — все основы слов многословного синонима есть в заголовке, в любом порядке:
+    «Срок действия лицензии (год)» ↔ «срок лицензии», «Статус по передачи» ↔ «статус
+    передачи».
+    """
+    if not header or not synonym:
+        return None
+    if header == synonym:
+        return 0.95
+    if len(synonym) <= _SHORT_SYNONYM_LEN or len(header) <= _SHORT_SYNONYM_LEN:
+        if synonym in header.split() or header in synonym.split():
+            return 0.8
+    elif synonym in header or header in synonym:
+        return 0.8
+    synonym_stems = _stems(synonym)
+    if len(synonym_stems) >= 2 and synonym_stems <= _stems(header):
+        return 0.7
+    return None
+
+
 def suggest_mapping(columns: list[str], spec: EntityFields) -> list[dict[str, Any]]:
-    """`suggested_mapping` (§6.2): точное совпадение синонима 0.95, вхождение 0.8."""
-    suggestions: list[dict[str, Any]] = []
-    used_fields: set[str] = set()
+    """`suggested_mapping` (§6.2): каждой колонке — не больше одного поля и наоборот.
+
+    Пары «колонка — поле» назначаются жадно по убыванию уверенности: точное совпадение
+    с синонимом поля важнее частичного совпадения в более ранней колонке.
+    """
+    candidates: list[tuple[float, int, int, str]] = []
     for index, column in enumerate(columns):
         header = normalize_header(column)
         if not header:
             continue
-        best: tuple[float, str] | None = None
-        for target in spec.fields:
-            if target.field in used_fields:
-                continue
+        for order, target in enumerate(spec.fields):
             variants = (normalize_header(target.label),) + tuple(
                 normalize_header(s) for s in target.synonyms
             )
-            for synonym in variants:
-                if not synonym:
-                    continue
-                if header == synonym:
-                    confidence = 0.95
-                elif synonym in header or header in synonym:
-                    confidence = 0.8
-                else:
-                    continue
-                if best is None or confidence > best[0]:
-                    best = (confidence, target.field)
-        if best is not None:
-            confidence, target_field = best
-            used_fields.add(target_field)
-            suggestions.append(
-                {"source_column": index, "target_field": target_field, "confidence": confidence}
+            best = max(
+                (c for c in (match_confidence(header, v) for v in variants) if c is not None),
+                default=None,
             )
+            if best is not None:
+                candidates.append((best, index, order, target.field))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    used_columns: set[int] = set()
+    used_fields: set[str] = set()
+    suggestions: list[dict[str, Any]] = []
+    for confidence, index, _order, target_field in candidates:
+        if index in used_columns or target_field in used_fields:
+            continue
+        used_columns.add(index)
+        used_fields.add(target_field)
+        suggestions.append(
+            {"source_column": index, "target_field": target_field, "confidence": confidence}
+        )
+    suggestions.sort(key=lambda item: item["source_column"])
     return suggestions
 
 
@@ -423,7 +603,10 @@ def parse_mapping_entries(raw_mapping: list[dict[str, Any]]) -> list[MappingEntr
                 target_field=str(item["target_field"]),
                 transform=item.get("transform"),
                 lookup=item.get("lookup"),
-                create_missing=bool(item.get("create_missing", False)),
+                # правило «Создавать отсутствующие» мастера (lookup=match_or_create)
+                # равносильно create_missing: UI шлёт правило, API — флаг
+                create_missing=bool(item.get("create_missing", False))
+                or item.get("lookup") == "match_or_create",
                 value_map={str(k).strip().lower(): str(v) for k, v in raw_value_map.items()},
             )
         )

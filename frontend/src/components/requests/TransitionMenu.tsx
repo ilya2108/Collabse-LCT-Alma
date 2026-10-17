@@ -3,9 +3,10 @@ import { AlertTriangle, ChevronDown, Loader2, Undo2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import {
   listRequestTransitions,
-  performTransition,
+  transitionWithFiles,
 } from '@/shared/api/endpoints/requests';
 import type { AvailableTransition, RequestItem } from '@/shared/api/types';
+import { useAuth } from '@/shared/auth/AuthContext';
 import { toastSuccess } from '@/shared/lib/toast';
 import { Button } from '@/shared/ui/button';
 import {
@@ -23,16 +24,26 @@ import { TransitionCommentModal } from './TransitionCommentModal';
  * строго из `GET /requests/{id}/transitions`; возвраты — danger-подсекция
  * «↩ Возврат на…». `condition` — только подсказка: недоступные пункты
  * помечаются AlertTriangle + строкой причины, но не блокируются.
+ * Любой переход идёт через диалог: необязательный комментарий и файлы (ФТ2, ФТ3),
+ * обязательный — у возвратов и переходов с `requires_comment`.
  */
 
 interface TransitionMenuProps {
   request: RequestItem;
   onTransitioned?: () => void;
+  /** Классы кнопки-триггера (во всю ширину на телефоне — в шапке карточки). */
+  triggerClassName?: string;
 }
 
-export function TransitionMenu({ request, onTransitioned }: TransitionMenuProps): ReactNode {
+export function TransitionMenu({
+  request,
+  onTransitioned,
+  triggerClassName,
+}: TransitionMenuProps): ReactNode {
   const queryClient = useQueryClient();
+  const { hasPermission } = useAuth();
   const [pending, setPending] = useState<AvailableTransition | null>(null);
+  const canAttach = hasPermission('requests:files', request.workflow_type);
 
   const transitionsQuery = useQuery({
     queryKey: ['request-transitions', request.id, request.status.id],
@@ -41,35 +52,45 @@ export function TransitionMenu({ request, onTransitioned }: TransitionMenuProps)
   const transitions = transitionsQuery.data?.items ?? [];
 
   const mutation = useMutation({
-    mutationFn: ({ transition, comment }: { transition: AvailableTransition; comment?: string }) =>
-      performTransition(request.id, {
-        to_status_id: transition.to_status_id,
-        comment,
-        version: request.version,
-      }),
-    onSuccess: (updated) => {
-      toastSuccess(`Заявка переведена на этап «${updated.status.name}»`);
+    mutationFn: ({
+      transition,
+      comment,
+      files,
+    }: {
+      transition: AvailableTransition;
+      comment?: string;
+      files?: File[];
+    }) =>
+      transitionWithFiles(
+        request.id,
+        {
+          to_status_id: transition.to_status_id,
+          comment: comment || undefined,
+          version: request.version,
+        },
+        files,
+      ),
+    onSuccess: (updated, { files }) => {
+      const attached = files?.length ? ` · файлов: ${files.length}` : '';
+      toastSuccess(`Заявка переведена на этап «${updated.status.name}»${attached}`);
       void queryClient.invalidateQueries({ queryKey: ['request', request.id] });
       void queryClient.invalidateQueries({ queryKey: ['request-history', request.id] });
       void queryClient.invalidateQueries({ queryKey: ['request-transitions', request.id] });
+      void queryClient.invalidateQueries({ queryKey: ['request-files', request.id] });
       void queryClient.invalidateQueries({ queryKey: ['board-requests'] });
       setPending(null);
       onTransitioned?.();
     },
     onError: () => {
-      // тост показал глобальный обработчик; данные могли устареть — перечитываем
+      // тост показал глобальный обработчик; данные могли устареть — перечитываем.
+      // Диалог остаётся открытым: комментарий и файлы не теряются, можно повторить.
       void queryClient.invalidateQueries({ queryKey: ['request', request.id] });
       void queryClient.invalidateQueries({ queryKey: ['request-transitions', request.id] });
     },
   });
 
-  const run = (transition: AvailableTransition): void => {
-    if (transition.requires_comment || transition.kind === 'return') {
-      setPending(transition);
-    } else {
-      mutation.mutate({ transition });
-    }
-  };
+  // ФТ2: комментарий можно оставить на любом переходе — диалог открывается всегда
+  const run = (transition: AvailableTransition): void => setPending(transition);
 
   const renderItem = (transition: AvailableTransition, isReturn: boolean): ReactNode => {
     const label = transition.to_status
@@ -106,7 +127,10 @@ export function TransitionMenu({ request, onTransitioned }: TransitionMenuProps)
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button disabled={transitionsQuery.isLoading || mutation.isPending}>
+          <Button
+            className={triggerClassName}
+            disabled={transitionsQuery.isLoading || mutation.isPending}
+          >
             {mutation.isPending ? (
               <Loader2 className="animate-spin" aria-hidden="true" />
             ) : null}
@@ -131,8 +155,12 @@ export function TransitionMenu({ request, onTransitioned }: TransitionMenuProps)
           actionName={pending.name}
           toStatusName={pending.to_status?.name ?? ''}
           isReturn={pending.kind === 'return'}
+          required={pending.requires_comment || pending.kind === 'return'}
+          canAttach={canAttach}
           loading={mutation.isPending}
-          onConfirm={(comment) => mutation.mutate({ transition: pending, comment })}
+          onConfirm={({ comment, files }) =>
+            mutation.mutate({ transition: pending, comment, files })
+          }
           onCancel={() => setPending(null)}
         />
       ) : null}

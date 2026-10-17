@@ -28,6 +28,7 @@ const ACTION_LABELS: Record<string, string> = {
   'auth.login': 'Вход в систему',
   'request.transitioned': 'Переход заявки',
   'request.created': 'Создание заявки',
+  'counterparty.created': 'Создание клиента B2C',
   'request.assigned': 'Назначение ответственного',
   'workflow.change_requested': 'Запрос изменения процесса',
   'workflow.change_applied': 'Публикация схемы процесса',
@@ -38,18 +39,30 @@ const ACTION_LABELS: Record<string, string> = {
   'import.applied': 'Импорт данных',
   'user.tg_linked': 'Привязка Telegram',
   'program.priority_changed': 'Изменение приоритета программы',
+  // роли и права (F2)
+  'role.created': 'Создание роли',
+  'role.updated': 'Изменение прав роли',
+  'role.reset': 'Сброс роли к стандартным правам',
+  'role.deleted': 'Удаление роли',
+  'user.roles_changed': 'Назначение ролей пользователю',
+  // сводки ИИ отчёта «Активность КАМов»: в записи — параметры и итог, без текста сводки
+  'ai.summary_requested': 'Запрос сводки ИИ',
+  'ai.summary_generated': 'Сводка ИИ: результат',
 };
 
 const ENTITY_LABELS: Record<string, string> = {
   deal: 'заявка',
+  counterparty: 'клиент B2C',
   student: 'студент',
   workflow: 'процесс',
   university: 'вуз',
   contract: 'договор',
   program: 'программа',
   app_user: 'пользователь',
+  app_role: 'роль',
   feature_flag: 'фичефлаг',
   import_session: 'импорт',
+  ai_summary_job: 'сводка ИИ',
 };
 
 const PII_ACTION = 'student.pii_revealed';
@@ -60,6 +73,13 @@ function entityLink(record: AuditLogRecord): ReactNode {
   if (record.entity_type === 'deal') {
     return (
       <Link to={`/requests/${record.entity_id}`} className="text-primary hover:underline">
+        {label}
+      </Link>
+    );
+  }
+  if (record.entity_type === 'app_role' && record.action !== 'role.deleted') {
+    return (
+      <Link to={`/admin/roles/${record.entity_id}`} className="text-primary hover:underline">
         {label}
       </Link>
     );

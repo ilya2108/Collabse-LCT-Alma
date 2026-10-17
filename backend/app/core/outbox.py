@@ -3,8 +3,12 @@
 Три журнала пишутся В ОДНОЙ транзакции с бизнес-изменением:
 - `notification` — получатели вычисляются backend'ом по `notification_rule`;
   relay доставляет в notification-service `POST :8010/api/v1/send`
-  (X-Internal-Token, идемпотентность по `notification_id`);
-- `integration_event` (outbound) — конверт IntegrationEvent, HTTP+HMAC к заглушкам,
+  (X-Internal-Token, идемпотентность по `notification_id`). Получатели правила `role`
+  (`role_rule_members`) — активные пользователи с ролью, видящие заявку события
+  (область B2B/B2C и «только свои», F2);
+- `integration_event` (outbound) — конверт IntegrationEvent; outbox в PG — источник
+  истины, доставку выполняет транспорт `IntegrationTransport` (app.core.integration_transport,
+  сейчас HTTP + HMAC к заглушкам; корпоративная шина — новая реализация того же протокола),
   ретраи 1м → 5м → 30м → 2ч → 6ч (только сеть/5xx), 4xx и исчерпание попыток → DLQ
   (`status='dead'`), просмотр/ручной retry — в админке;
 - `audit_log` — см. app.core.audit.
@@ -16,8 +20,6 @@ Relay-воркеры — asyncio-таски в lifespan приложения (п
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import logging
 import time
 import uuid
@@ -26,21 +28,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-import orjson
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import ensure_role_catalog
 from app.core.config import get_settings
 from app.core.db import get_session_factory
 from app.core.events import (
     EVENT_INTEGRATION_DELIVERY_FAILED,
-    INTG_CRM_PROGRAM_PUBLISHED,
-    INTG_CRM_PROGRAM_UNPUBLISHED,
-    INTG_CRM_PROGRAM_UPSERTED,
-    INTG_CRM_REQUEST_HANDED_OVER,
     SSE_NOTIFICATION_CREATED,
     notification_template,
+)
+from app.core.integration_transport import (
+    HttpIntegrationTransport,
+    IntegrationTransport,
+    sign_payload,  # noqa: F401 — реэкспорт (§13.6)
 )
 from app.core.sse import publish_event
 from app.models.deal import Deal
@@ -108,6 +111,45 @@ def _address_for(user: AppUser, channel: str) -> str | None:
     return None
 
 
+def sees_deal(user: AppUser, pipeline: str, responsible_user_id: uuid.UUID | None) -> bool:
+    """Заявка процесса `pipeline` с этим ответственным — в области пользователя
+    (`requests:read` в процессе; при «только свои» — он ответственный). Права — по снимку
+    каталога ролей: вызывающий заранее делает `ensure_role_catalog`."""
+    return user.access.deal_scope("requests:read", user.id).allows(pipeline, responsible_user_id)
+
+
+async def role_rule_members(
+    session: AsyncSession,
+    role_code: str,
+    *,
+    pipeline: str | None,
+    responsible_user_id: uuid.UUID | None = None,
+) -> list[AppUser]:
+    """Получатели правила `role`: активные пользователи с ролью `role_code`.
+
+    Процесс события известен (`pipeline`) — только те, у кого `requests:read` в нём
+    (роль «КАМ B2C» не получает уведомления о заявках B2B); известен и ответственный —
+    ещё и с учётом «только свои» (заявка в области получателя, `sees_deal`). Общая функция
+    поштучных уведомлений (`_resolve_rule_users`) и сводок переноса заявок
+    (`modules.workflow.migration.emit_migration_digests`) — их эквивалентность проверяет
+    tests/db/test_workflow_bulk_migration.py::test_digest_equivalent_to_legacy.
+    """
+    if not role_code:
+        return []
+    await ensure_role_catalog(session)
+    rows = await session.execute(
+        select(AppUser)
+        .where(AppUser.roles.any(role_code), AppUser.is_active.is_(True))
+        .order_by(AppUser.id)
+    )
+    users = list(rows.scalars().all())
+    if pipeline is None:
+        return users
+    if responsible_user_id is None:
+        return [user for user in users if user.access.has("requests:read", pipeline)]
+    return [user for user in users if sees_deal(user, pipeline, responsible_user_id)]
+
+
 async def _resolve_rule_users(
     session: AsyncSession, rule: NotificationRule, deal: Deal | None
 ) -> list[AppUser]:
@@ -125,12 +167,12 @@ async def _resolve_rule_users(
         manager = await session.get(AppUser, responsible.manager_id)
         return [manager] if manager else []
     if rule.recipient_type == "role":
-        rows = await session.execute(
-            select(AppUser).where(
-                AppUser.roles.any(rule.recipient_value or ""), AppUser.is_active.is_(True)
-            )
+        return await role_rule_members(
+            session,
+            rule.recipient_value or "",
+            pipeline=deal.pipeline if deal is not None else None,
+            responsible_user_id=deal.responsible_user_id if deal is not None else None,
         )
-        return list(rows.scalars().all())
     if rule.recipient_type == "user":
         try:
             user = await session.get(AppUser, uuid.UUID(rule.recipient_value or ""))
@@ -247,7 +289,8 @@ async def emit_event_notifications(
             rules = [r for r in rules if r.recipient_type in recipient_types]
         if not rules and event_type == EVENT_INTEGRATION_DELIVERY_FAILED:
             # дефолтного правила в сиде нет, но админ обязан узнать о DLQ (§13.7):
-            # фолбэк кодом — всем активным админам в telegram
+            # фолбэк кодом — всем активным админам в telegram (код admin системный и
+            # неизменяемый — Р-F2-9)
             admins = await session.execute(
                 select(AppUser).where(AppUser.roles.any("admin"), AppUser.is_active.is_(True))
             )
@@ -272,9 +315,7 @@ async def emit_event_notifications(
     # выключить целиком, канал — перевести в skipped (останется в in-app ленте)
     from app.modules.notifications.prefs import delivery_decision, load_prefs_for_users
 
-    prefs = await load_prefs_for_users(
-        session, [user.id for _, user, _ in unique_targets]
-    )
+    prefs = await load_prefs_for_users(session, [user.id for _, user, _ in unique_targets])
 
     created = 0
     multiple = len(unique_targets) + len(direct_addresses) > 1
@@ -283,9 +324,7 @@ async def emit_event_notifications(
             prefs.get(user.id),
             event_type=event_type,
             channel=channel,
-            is_responsible=(
-                user.id == deal.responsible_user_id if deal is not None else None
-            ),
+            is_responsible=(user.id == deal.responsible_user_id if deal is not None else None),
         )
         if decision == "drop":
             continue
@@ -306,9 +345,7 @@ async def emit_event_notifications(
             payload=payload,
             dedup_key=row_dedup,
             skipped_reason=(
-                "Канал отключён настройками получателя"
-                if decision == "skip_channel"
-                else None
+                "Канал отключён настройками получателя" if decision == "skip_channel" else None
             ),
         )
         if inserted:
@@ -371,28 +408,6 @@ async def emit_integration_event(
     return event
 
 
-def sign_payload(secret: str, raw_body: bytes) -> str:
-    """`X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, raw_body)>` (§13.6)."""
-    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return f"sha256={digest}"
-
-
-def _integration_target_url(event_type: str, system: str) -> str | None:
-    settings = get_settings()
-    lms = settings.lms_base_url.rstrip("/")
-    cms = settings.cms_base_url.rstrip("/")
-    mapping = {
-        INTG_CRM_REQUEST_HANDED_OVER: f"{lms}/api/v1/enrollments",
-        INTG_CRM_PROGRAM_UPSERTED: f"{lms}/api/v1/programs/upsert",
-        INTG_CRM_PROGRAM_PUBLISHED: f"{cms}/api/v1/catalog/upsert",
-        INTG_CRM_PROGRAM_UNPUBLISHED: f"{cms}/api/v1/catalog/unpublish",
-    }
-    url = mapping.get(event_type)
-    if url is None:
-        logger.error("Неизвестный тип outbound-события %s (system=%s)", event_type, system)
-    return url
-
-
 async def _store_external_ids(
     session: AsyncSession, event: IntegrationEvent, response_body: dict[str, Any]
 ) -> None:
@@ -408,12 +423,16 @@ async def _store_external_ids(
         await session.execute(
             pg_insert(ExternalLink)
             .values(
-                entity_type=entity_type, entity_id=entity_id, system=system,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                system=system,
                 external_id=external_id,
             )
             .on_conflict_do_update(
                 index_elements=[
-                    ExternalLink.entity_type, ExternalLink.entity_id, ExternalLink.system
+                    ExternalLink.entity_type,
+                    ExternalLink.entity_id,
+                    ExternalLink.system,
                 ],
                 set_={"external_id": external_id},
             )
@@ -441,52 +460,25 @@ async def _mark_integration_dead(
 
 
 async def deliver_integration_event(
-    session: AsyncSession, event: IntegrationEvent, client: httpx.AsyncClient
+    session: AsyncSession, event: IntegrationEvent, transport: IntegrationTransport
 ) -> bool:
-    """Одна попытка доставки outbound-события. True — доставлено."""
-    settings = get_settings()
-    url = _integration_target_url(event.event_type, event.system)
-    if url is None:
-        await _mark_integration_dead(session, event, "Неизвестный тип события (нет адресата)")
-        return False
-    secret = (
-        settings.lms_webhook_secret if event.system == "lms" else settings.cms_webhook_secret
-    )
-    raw_body = orjson.dumps(event.payload)
-    try:
-        response = await client.post(
-            url,
-            content=raw_body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Webhook-Signature": sign_payload(secret, raw_body),
-            },
-        )
-    except httpx.HTTPError as exc:
-        await _register_integration_failure(session, event, f"Сетевая ошибка: {exc}")
-        return False
-
-    if response.status_code < 300:
+    """Одна попытка доставки outbound-события через транспорт; исход переводится
+    в состояние события (delivered / retrying / dead). True — доставлено."""
+    outcome = await transport.deliver(event)
+    if outcome.status == "delivered":
         event.status = "delivered"
         event.processed_at = _now()
         event.last_error = None
         event.next_retry_at = None
-        try:
-            body = response.json()
-        except ValueError:
-            body = {}
-        if isinstance(body, dict):
-            await _store_external_ids(session, event, body)
+        if outcome.response_body:
+            await _store_external_ids(session, event, outcome.response_body)
         return True
-    if 400 <= response.status_code < 500:
-        # ошибка контракта — не ретраим (§13.7), чинится руками через админку
-        await _mark_integration_dead(
-            session, event, f"HTTP {response.status_code}: {response.text[:500]}"
-        )
+    error = outcome.error or "Ошибка доставки"
+    if outcome.status == "dead":
+        # ошибка контракта или нет адресата — не ретраим (§13.7), чинится через админку
+        await _mark_integration_dead(session, event, error)
         return False
-    await _register_integration_failure(
-        session, event, f"HTTP {response.status_code}: {response.text[:500]}"
-    )
+    await _register_integration_failure(session, event, error)
     return False
 
 
@@ -524,8 +516,9 @@ async def run_integration_relay_pass(session: AsyncSession) -> int:
         return 0
     delivered = 0
     async with httpx.AsyncClient(timeout=10.0) as client:
+        transport = HttpIntegrationTransport(client)
         for event in events:
-            if await deliver_integration_event(session, event, client):
+            if await deliver_integration_event(session, event, transport):
                 delivered += 1
     await session.commit()
     return delivered
@@ -539,9 +532,7 @@ async def run_integration_relay_pass(session: AsyncSession) -> int:
 def build_send_envelope(notification: Notification) -> dict[str, Any]:
     """Тело `POST /api/v1/send` notification-service (api-contract.md §9.4)."""
     recipient: dict[str, Any] = {
-        "user_id": str(notification.recipient_user_id)
-        if notification.recipient_user_id
-        else None,
+        "user_id": str(notification.recipient_user_id) if notification.recipient_user_id else None,
         "channels": [notification.channel],
         "telegram_chat_id": None,
         "email": None,

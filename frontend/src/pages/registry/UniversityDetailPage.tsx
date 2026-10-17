@@ -17,6 +17,7 @@ import { listContractsByUniversity } from '@/shared/api/endpoints/contracts';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { listRequests } from '@/shared/api/endpoints/requests';
 import {
+  UNIVERSITIES_ASSIGN,
   createUniversityContact,
   deleteUniversityContact,
   getUniversity,
@@ -111,7 +112,7 @@ type ContactFormValues = z.infer<typeof contactSchema>;
 
 function ContactsCard({ universityId }: { universityId: string }): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const [editing, setEditing] = useState<UniversityContact | 'new' | null>(null);
 
   const form = useForm<ContactFormValues>({
@@ -219,7 +220,7 @@ function ContactsCard({ universityId }: { universityId: string }): ReactNode {
                         <Pencil aria-hidden="true" />
                       </Button>
                     </Can>
-                    {hasRole('admin', 'head_kam') ? (
+                    {hasPermission('contacts:delete') ? (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -376,7 +377,10 @@ function EditUniversitySheet({
   onClose: () => void;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const { hasRole } = useAuth();
+  const { user, hasPermission } = useAuth();
+  // ответственный КАМ — право Руководителя (universities:assign); без права поле
+  // недоступно и в PATCH не уходит
+  const canAssign = hasPermission(UNIVERSITIES_ASSIGN);
   const form = useForm<UniversityEditValues>({
     resolver: zodResolver(universityEditSchema),
     mode: 'onTouched',
@@ -444,7 +448,7 @@ function EditUniversitySheet({
                 region: values.region?.trim() || null,
                 city: values.city?.trim() || null,
                 website: values.website?.trim() || null,
-                kam_user_id: values.kam_user_id ?? null,
+                ...(canAssign ? { kam_user_id: values.kam_user_id ?? null } : {}),
                 notes: values.notes?.trim() || null,
               }),
             )}
@@ -460,7 +464,7 @@ function EditUniversitySheet({
               {textField('city', 'Город')}
             </div>
             {textField('website', 'Сайт', 'https://…')}
-            {hasRole('admin', 'head_kam') ? (
+            {canAssign ? (
               <FormField
                 control={form.control}
                 name="kam_user_id"
@@ -469,7 +473,7 @@ function EditUniversitySheet({
                     <FormLabel>Ответственный КАМ</FormLabel>
                     <FormControl>
                       <UserCombobox
-                        role="kam"
+                        permission="requests:kam"
                         placeholder="КАМ вуза"
                         className="w-full"
                         value={field.value}
@@ -480,7 +484,24 @@ function EditUniversitySheet({
                   </FormItem>
                 )}
               />
-            ) : null}
+            ) : (
+              <div className="grid gap-1.5">
+                <span className="text-sm font-medium">Ответственный КАМ</span>
+                <div
+                  aria-disabled="true"
+                  className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                >
+                  {university.kam_user_id
+                    ? university.kam_user_id === user?.id
+                      ? 'Вы'
+                      : 'Назначен другой КАМ'
+                    : 'Не назначен'}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Ответственного КАМа назначает руководитель
+                </span>
+              </div>
+            )}
             <FormField
               control={form.control}
               name="notes"
@@ -514,7 +535,7 @@ function EditUniversitySheet({
 
 export function UniversityDetailPage(): ReactNode {
   const { id = '' } = useParams<'id'>();
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const [editOpen, setEditOpen] = useState(false);
 
   const universityQuery = useQuery({
@@ -579,7 +600,9 @@ export function UniversityDetailPage(): ReactNode {
           </>
         }
         extra={
-          hasPermission('universities:write') ? (
+          // правка вуза: свой вуз (КАМ вуза) или право на чужие — как ensure_can_write_owned
+          hasPermission('universities:write') &&
+          (hasPermission('crm:write_any') || university.kam_user_id === user?.id) ? (
             <Button variant="outline" onClick={() => setEditOpen(true)}>
               <Pencil aria-hidden="true" />
               Редактировать
@@ -718,8 +741,9 @@ export function UniversityDetailPage(): ReactNode {
                 >
                   <GraduationCap className="size-4" aria-hidden="true" />
                   Студенты вуза
-                  {typeof university.students_count === 'number'
-                    ? ` (${university.students_count})`
+                  {/* счётчик приходит в aggregates карточки (UniversityOut), не в корне */}
+                  {typeof university.aggregates?.students_count === 'number'
+                    ? ` (${university.aggregates.students_count})`
                     : ''}
                 </Link>
               </div>
