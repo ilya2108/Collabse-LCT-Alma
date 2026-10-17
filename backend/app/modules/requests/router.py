@@ -1350,7 +1350,10 @@ async def upload_request_file(
         check_format=True,
         stage_history_id=stage_history_id,
     )
-    deal.last_activity_at = _now()
+    if not pending_transition:
+        # файл для перехода строку заявки не меняет: модалка отправит переход с версией,
+        # снятой до загрузки, а `last_activity_at` выставит сам переход
+        deal.last_activity_at = _now()
     await write_audit(
         session,
         actor_user_id=user.id,
