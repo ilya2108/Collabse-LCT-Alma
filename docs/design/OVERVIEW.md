@@ -13,7 +13,7 @@
 
 | Документ | Зона ответственности |
 |---|---|
-| `docs/design/data-model.md` | PostgreSQL 16: 38 таблиц, DDL, миграции 0001–0010, роли и права в БД, шифрование ПДн, ключи идемпотентности, KeyDB-ключи, seed и сброс стенда |
+| `docs/design/data-model.md` | PostgreSQL 16: 38 таблиц, DDL, миграции 0001–0011, роли и права в БД, шифрование ПДн, ключи идемпотентности, KeyDB-ключи, seed и сброс стенда |
 | `docs/design/api-contract.md` | REST `/api/v1`, Idempotency-Key, каталог прав и доступ к эндпоинтам, импорт/экспорт, отчёты, интеграционный конверт |
 | `docs/design/workflow-engine.md` | Семантика движка: графы, миграции и массовый перенос заявок, локи, SLA, инварианты |
 | `docs/design/deployment.md` | k8s (kustomize base + overlays), compose, секреты, NetworkPolicy, k6 |

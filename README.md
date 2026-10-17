@@ -632,7 +632,7 @@ Keycloak при импорте realm — в git они не попадают.
   - [migration-benchmark.md](docs/evidence/migration-benchmark.md) — замер массового переноса заявок: 1 000 / 10 000 / 50 000, «до» и «после»
 - **Проектная документация** — [docs/design/](docs/design/):
   - [OVERVIEW.md](docs/design/OVERVIEW.md) — сводная архитектура, C4, трассировка требований
-  - [data-model.md](docs/design/data-model.md) — PostgreSQL: DDL 38 таблиц, миграции 0001–0010, шифрование ПДн, ключи KeyDB
+  - [data-model.md](docs/design/data-model.md) — PostgreSQL: DDL 38 таблиц, миграции 0001–0011, шифрование ПДн, ключи KeyDB
   - [api-contract.md](docs/design/api-contract.md) — REST `/api/v1`, права эндпоинтов, Idempotency-Key, «Сводка ИИ» (§7.2.3), интеграционный конверт
   - [workflow-engine.md](docs/design/workflow-engine.md) — семантика движка процессов: графы, миграции, блокировки, SLA
   - [tz-14-steps.md](docs/design/tz-14-steps.md) — 14 шагов базового процесса: какой шаг каким этапом или механизмом закрыт
@@ -740,7 +740,7 @@ docker-вариант запуска — `deploy/load/README.md`.
 │   │   │                           #   reporting · ai_summary · notifications · integrations · access · admin
 │   │   └── tools/                  #   наполнение демо-данными, аварийная выдача admin,
 │   │                               #   замер переноса заявок, ротация ключей ПДн, перечень библиотек
-│   ├── alembic/                    #   миграции схемы БД (0001–0010), 38 таблиц
+│   ├── alembic/                    #   миграции схемы БД (0001–0011), 38 таблиц
 │   └── tests/                      #   2 074 pytest, из них 241 на PostgreSQL (tests/db)
 ├── frontend/                       # интерфейс — React 18 + TypeScript + Vite
 │   ├── src/
