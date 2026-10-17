@@ -14,7 +14,7 @@ DEV_GATEWAY_TOKEN = "dev-llm-token"
 
 # Маркетинговые имена → id моделей в API. «GigaChat 2 Lite» в API называется GigaChat-2:
 # модели GigaChat-2-Lite в списке GET /models нет (проверено 17.10.2026 на обоих хостах),
-# а такое имя встречается в готовых env (в том числе «Орбиты») и даёт 404 No such model.
+# а такое имя встречается в готовых env и даёт 404 No such model.
 MODEL_ALIASES = {"GigaChat-2-Lite": "GigaChat-2", "GigaChat-Lite": "GigaChat"}
 
 

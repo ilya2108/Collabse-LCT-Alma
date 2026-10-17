@@ -1,6 +1,6 @@
 """Провайдер GigaChat на чистом httpx: OAuth-кэш, chat, ретраи, фолбэк structured output.
 
-Wire-формат — как в SDK `gigachat` 0.2.3, отлаженном в «Орбите»:
+Wire-формат — как в SDK `gigachat` 0.2.3:
 
 - OAuth: POST {GIGACHAT_AUTH_URL}, `Authorization: Basic <ключ>`, `RqUID: <uuid4>`,
   форма `scope=<GIGACHAT_SCOPE>` → `{"access_token", "expires_at" (мс)}` или `{"tok", "exp"}`.
