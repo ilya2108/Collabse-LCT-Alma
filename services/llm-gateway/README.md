@@ -108,7 +108,7 @@ backend (без egress) ──POST /v1/chat, X-Internal-Token──> llm-gateway
 
 ## Как шлюз ходит в GigaChat
 
-Wire-формат — как в SDK `gigachat` 0.2.3, отлаженном в «Орбите»; SDK не используется (чистый
+Wire-формат — как в SDK `gigachat` 0.2.3; SDK не используется (чистый
 httpx: явный контроль OAuth, TLS-бандла, ретраев и семафора; тесты на `httpx.MockTransport`).
 
 - **OAuth**: `POST {GIGACHAT_AUTH_URL}`, `Authorization: Basic <GIGACHAT_CREDENTIALS>`,
@@ -248,7 +248,7 @@ make llm-smoke-k8s   # из DMZ-пода llm-gateway: заодно провер�
 Результат 17.10.2026 (ключ `GIGACHAT_API_PERS`, `make llm-smoke` и `make llm-smoke-k8s`):
 
 - хост чата `gigachat.devices.sberbank.ru/api/v1` (по умолчанию) отвечает, TLS — через бандл НУЦ;
-  `api.giga.chat/v1` (дефолт SDK 0.2.3, на нём работала «Орбита») тоже отвечает тем же токеном
+  `api.giga.chat/v1` (дефолт SDK 0.2.3) тоже отвечает тем же токеном
   и дополнительно отдаёт модели GigaChat-3 — переключение одной переменной `GIGACHAT_API_URL`;
 - OAuth ≈ 0,3 с; `GigaChat-2` ≈ 0,4 с; `GigaChat-2-Pro` со схемой ≈ 2,2 с на коротком входе,
   `structured_supported=true` (structured output принят);
