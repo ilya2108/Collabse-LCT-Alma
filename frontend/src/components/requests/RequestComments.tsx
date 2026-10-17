@@ -14,6 +14,7 @@ import { formatRelative } from '@/shared/lib/format';
 import { springs } from '@/shared/lib/motion';
 import { eventRequestId, useSseInvalidate } from '@/shared/lib/useSseInvalidate';
 import { cn } from '@/shared/lib/cn';
+import { useSessionDraft } from '@/shared/lib/sessionDraft';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -53,7 +54,8 @@ export function RequestComments({
 }): ReactNode {
   const queryClient = useQueryClient();
   const { user, hasPermission } = useAuth();
-  const [draft, setDraft] = useState('');
+  // черновик переживает F5 и смену экрана (sessionStorage, ФТ13); после отправки — очищается
+  const [draft, setDraft] = useSessionDraft(`alma:comment-draft:${requestId}`);
   const [pendingComments, setPendingComments] = useState<PendingComment[]>([]);
   const canWrite = hasPermission('comments:write', workflowType);
   const canDeleteAny = hasPermission('comments:delete_any', workflowType);

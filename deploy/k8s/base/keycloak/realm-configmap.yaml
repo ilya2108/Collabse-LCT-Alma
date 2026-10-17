@@ -45,6 +45,10 @@ data:
       "resetPasswordAllowed": false,
       "rememberMe": true,
       "bruteForceProtected": true,
+      "eventsEnabled": true,
+      "eventsExpiration": 2592000,
+      "adminEventsEnabled": true,
+      "adminEventsDetailsEnabled": false,
       "loginTheme": "keycloak",
       "internationalizationEnabled": true,
       "supportedLocales": [

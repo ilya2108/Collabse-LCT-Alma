@@ -257,7 +257,13 @@ async def deliver_file(file_object: FileObject) -> Response:
         )
         return RedirectResponse(url, status_code=302)
     stream = get_storage().stream(file_object.s3_bucket, file_object.s3_key)
-    headers = {"Content-Disposition": content_disposition(file_object.original_name)}
+    headers = {
+        "Content-Disposition": content_disposition(file_object.original_name),
+        # вложение не исполняется в домене CRM: тип не угадывается браузером, а открытый
+        # напрямую HTML/SVG попадает в песочницу без скриптов и доступа к origin
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+    }
     if file_object.size_bytes:
         headers["Content-Length"] = str(file_object.size_bytes)
     return StreamingResponse(

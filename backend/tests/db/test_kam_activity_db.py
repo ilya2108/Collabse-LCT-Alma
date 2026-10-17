@@ -848,6 +848,8 @@ async def test_case14_request_files(api, db_session, workflows, people, memory_s
     # скачивание: КАМ видит заявки процесса (записи all) — файл отдаётся
     download = await api.as_user(kam2).get(f"{API}/files/{file_id}/download")
     assert download.status_code == 200 and download.content == b"%PDF-1.4 demo"
+    assert download.headers["x-content-type-options"] == "nosniff"
+    assert download.headers["content-security-policy"] == "sandbox"
     # наблюдатель видит заявку, но файлы заявок ему не скачать (нет files:business)
     observer = await api.as_user(people["observer"]).get(f"{API}/files/{file_id}/download")
     assert observer.status_code == 403

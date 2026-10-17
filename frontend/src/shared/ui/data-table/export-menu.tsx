@@ -47,7 +47,7 @@ export function ExportMenu({
   entityType,
   filters,
   columns,
-  formats = ['xlsx', 'csv'],
+  formats = ['xlsx', 'csv', 'json'],
   fileName,
   buttonText = 'Экспорт',
 }: ExportMenuProps): ReactNode {

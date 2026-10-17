@@ -253,7 +253,8 @@ async def _dataset_requests(
         stmt = stmt.where(Deal.created_at >= created_from)
     created_to = filter_date(filters, "created_to")
     if created_to:
-        stmt = stmt.where(Deal.created_at <= created_to)
+        # последний день периода включительно — как в GET /requests (файл совпадает с экраном)
+        stmt = stmt.where(Deal.created_at < created_to + timedelta(days=1))
 
     columns = [
         ("id", "ID"),
