@@ -14,7 +14,7 @@ from typing import Any
 from app.modules.ai_summary.facts import canonical_json
 from app.modules.ai_summary.parse import response_schema
 
-PROMPT_VERSION = "kam-summary.v2"
+PROMPT_VERSION = "kam-summary.v3"
 TEMPERATURE = 0.2
 MAX_TOKENS = 1500
 TIER = "strong"

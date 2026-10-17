@@ -16,7 +16,7 @@ def _facts() -> dict:
 
 
 def test_prompt_version() -> None:
-    assert prompt.PROMPT_VERSION == "kam-summary.v2"
+    assert prompt.PROMPT_VERSION == "kam-summary.v3"
     assert prompt.PURPOSES == {"team": "kam_summary_team", "kam": "kam_summary_kam"}
     assert (prompt.TEMPERATURE, prompt.MAX_TOKENS, prompt.TIER) == (0.2, 1500, "strong")
 

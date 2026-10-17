@@ -109,6 +109,15 @@ def test_team_facts_shape() -> None:
     assert "others" not in activity and "others" not in overdue
 
 
+@pytest.mark.parametrize("build", [_team, _kam], ids=["team", "kam"])
+def test_delay_total_is_not_sent_to_model(build) -> None:  # noqa: ANN001
+    """Сумму задержек модель путала со «средней задержкой» — в факты она не попадает."""
+    payload = orjson.dumps(build().facts).decode()
+    assert "delay_total_days" not in payload
+    assert "delay_total_days" not in f.OVERDUE_KPI_KEYS
+    assert {"delay_avg_days", "delay_median_days", "delay_max_days"} <= set(f.OVERDUE_KPI_KEYS)
+
+
 def test_aliases_are_sorted_by_id_and_consistent() -> None:
     result = _team()
     assert result.aliases == {

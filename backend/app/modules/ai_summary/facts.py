@@ -77,7 +77,13 @@ ACTIVITY_STAGE_KEYS: tuple[str, ...] = (
     "threshold_days",
     "is_terminal",
 )
-OVERDUE_KPI_KEYS: tuple[str, ...] = tuple(key for key, _compare in KPI_COMPARE)
+# Сумма задержек (delay_total_days) в модель не уходит: на живом прогоне GigaChat назвал её
+# «средней задержкой» (474,6 дня) — число есть в данных, проверка чисел его пропускает, а
+# смысл искажён. Для сводки хватает среднего, медианы и максимума; в отчёте сумма остаётся.
+LLM_EXCLUDED_KPI_KEYS: frozenset[str] = frozenset({"delay_total_days"})
+OVERDUE_KPI_KEYS: tuple[str, ...] = tuple(
+    key for key, _compare in KPI_COMPARE if key not in LLM_EXCLUDED_KPI_KEYS
+)
 OVERDUE_KAM_KEYS: tuple[str, ...] = (
     "active",
     "overdue",

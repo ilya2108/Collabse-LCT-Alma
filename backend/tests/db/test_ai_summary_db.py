@@ -202,7 +202,7 @@ async def test_team_summary_flow(db_session, db_session_factory, api, team, _stu
     (generated,) = await _audit(db_session, "ai.summary_generated")
     assert generated.actor_user_id == head.id and generated.entity_id == job_id
     assert generated.after["status"] == "done" and generated.after["provider"] == "stub"
-    assert generated.after["prompt_version"] == "kam-summary.v2"
+    assert generated.after["prompt_version"] == "kam-summary.v3"
     assert generated.after["checks"] == checks and generated.after["error_code"] is None
     audit_json = json.dumps([e.after for e in requested + [generated]], ensure_ascii=False)
     for name in (*NAMES.values(), "Петров", "Иванова", sections["headline"]):
