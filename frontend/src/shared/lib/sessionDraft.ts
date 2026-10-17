@@ -36,6 +36,27 @@ export function writeDraft(
   }
 }
 
+/** Префикс черновиков комментариев: ключ — `${префикс}${id пользователя}:${id заявки}`. */
+export const COMMENT_DRAFT_PREFIX = 'alma:comment-draft:';
+
+/** Удаляет все черновики с префиксом (выход из системы: ПДн не достаются следующему). */
+export function clearDrafts(
+  prefix: string,
+  storage: Pick<Storage, 'length' | 'key' | 'removeItem'> | null = sessionStore() as Storage | null,
+): void {
+  try {
+    if (!storage) return;
+    const keys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    for (const key of keys) storage.removeItem(key);
+  } catch {
+    // хранилище недоступно — чистить нечего
+  }
+}
+
 /** `useState` для черновика: значение по ключу, смена ключа подхватывает свой черновик. */
 export function useSessionDraft(key: string): [string, (value: string) => void] {
   const [state, setState] = useState(() => ({ key, value: readDraft(key) }));

@@ -1,5 +1,6 @@
 import { api } from '../client';
 import { isApiError } from '../errors';
+import { isTransitionAlreadyDone } from '../transitionContext';
 import type {
   AvailableTransition,
   FileObject,
@@ -161,7 +162,14 @@ export async function transitionWithFiles(
       file_ids: uploaded.length > 0 ? uploaded.map((f) => f.id) : undefined,
     });
   } catch (error) {
-    if (uploaded.length > 0 && isApiError(error) && error.status >= 400 && error.status < 500) {
+    // «уже выполнен» (повтор с тем же ключом) — файлы уже приложены к переходу, не трогаем
+    if (
+      uploaded.length > 0 &&
+      isApiError(error) &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      !isTransitionAlreadyDone(error)
+    ) {
       await Promise.allSettled(uploaded.map((f) => deleteRequestFile(id, f.id)));
     }
     throw error;

@@ -3,7 +3,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { readDraft, writeDraft } from '../src/shared/lib/sessionDraft.ts';
+import {
+  clearDrafts,
+  COMMENT_DRAFT_PREFIX,
+  readDraft,
+  writeDraft,
+} from '../src/shared/lib/sessionDraft.ts';
 
 function memoryStorage(): Storage {
   const items = new Map<string, string>();
@@ -52,5 +57,16 @@ describe('sessionDraft', () => {
     assert.equal(readDraft('k', broken), '');
     assert.doesNotThrow(() => writeDraft('k', 'v', broken));
     assert.doesNotThrow(() => writeDraft('k', '', broken));
+  });
+
+  it('выход из системы стирает все черновики комментариев и только их', () => {
+    const storage = memoryStorage();
+    writeDraft(`${COMMENT_DRAFT_PREFIX}u1:r1`, 'черновик 1', storage);
+    writeDraft(`${COMMENT_DRAFT_PREFIX}u1:r2`, 'черновик 2', storage);
+    writeDraft('alma:other', 'не черновик', storage);
+    clearDrafts(COMMENT_DRAFT_PREFIX, storage);
+    assert.equal(storage.length, 1);
+    assert.equal(readDraft('alma:other', storage), 'не черновик');
+    assert.doesNotThrow(() => clearDrafts(COMMENT_DRAFT_PREFIX, null));
   });
 });
