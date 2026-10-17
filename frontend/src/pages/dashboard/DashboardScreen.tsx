@@ -10,8 +10,10 @@ import { listPrograms } from '@/shared/api/endpoints/programs';
 import { runExportAndDownload } from '@/shared/api/endpoints/exportJobs';
 import {
   getDashboardReport,
+  getDashboardSignals,
   type DashboardData,
   type DashboardReportParams,
+  type SignalCount,
 } from '@/shared/api/endpoints/reports';
 import { searchUniversities } from '@/shared/api/endpoints/universities';
 import { listUsers } from '@/shared/api/endpoints/users';
@@ -50,10 +52,13 @@ import {
   type ProgramsMode,
 } from './model';
 import { Segmented } from './Segmented';
+import { SignalsCard } from './SignalsCard';
+import { targetWorkflow } from './signalsModel';
 
 /**
  * Дашборд (redesign.md §6.3, ux.md §6): панель фильтров одной строкой над
- * сеткой (состояние в URL — ссылку можно переслать), KPI-ряд StatCard,
+ * сеткой (состояние в URL — ссылку можно переслать), KPI-ряд StatCard, под ним карточка
+ * «Сигналы» (что требует внимания сейчас, отдельный запрос `/reports/signals`),
  * виджеты ECharts на теме 'crm' в сетке 12 колонок со stagger-входом,
  * drill-down кликами и экспорт: PNG и PDF всей панели (на клиенте, по графику на
  * страницу PDF), PNG каждого графика с шапкой, XLSX/CSV данных (через /export/jobs).
@@ -231,6 +236,18 @@ export function DashboardScreen(): ReactNode {
   });
   useSseInvalidate('workflow.changed', [['dashboard-report']]);
 
+  // «Сигналы» — срез «сейчас»: период панели не передаётся (и не перезапрашивает карточку)
+  const signalsParams = useMemo<DashboardReportParams>(
+    () => ({ ...params, from: undefined, to: undefined }),
+    [params],
+  );
+  const signalsQuery = useQuery({
+    queryKey: ['dashboard-signals', signalsParams],
+    queryFn: ({ signal }) => getDashboardSignals(signalsParams, signal),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+
   const report = reportQuery.data ?? null;
   const loading = reportQuery.isLoading;
 
@@ -314,6 +331,17 @@ export function DashboardScreen(): ReactNode {
     for (const id of filters.product) query.append('product', id);
     for (const [key, value] of Object.entries(extra)) query.set(key, value);
     return `/board?${query.toString()}`;
+  };
+
+  /**
+   * Переход с «Сигналов» на доску: процесс — выбранный или тот, где сигнал есть. Отчёты без
+   * `reports:all` считают только свои заявки, а доска КАМу показывает все — поэтому на
+   * доске включается «Только мои», и список совпадает с числом на плитке.
+   */
+  const openSignalBoard = (extra: Record<string, string>, count: SignalCount): void => {
+    const wf = targetWorkflow(count.by_workflow, filters.wf, reportTypes);
+    const own = !hasPermission('reports:all') && filters.kam.length === 0 && user;
+    navigate(boardQuery(own ? { ...extra, kam: user.id } : extra, wf));
   };
 
   const subtitles = useMemo(() => widgetSubtitles(filters, report), [filters, report]);
@@ -715,6 +743,22 @@ export function DashboardScreen(): ReactNode {
             kpi={report?.kpi ?? null}
             loading={loading}
             onStuckClick={() => navigate(boardQuery({ stuck: 'true' }))}
+          />
+          <SignalsCard
+            data={signalsQuery.data ?? null}
+            loading={signalsQuery.isLoading}
+            error={signalsQuery.isError ? signalsQuery.error : null}
+            onRetry={() => void signalsQuery.refetch()}
+            b2bHidden={filters.wf === 'b2c' && reportTypes.includes('b2b')}
+            onOpenStuck={() => {
+              if (signalsQuery.data) openSignalBoard({ stuck: 'true' }, signalsQuery.data.stuck);
+            }}
+            onOpenUnassigned={() => {
+              if (signalsQuery.data) {
+                openSignalBoard({ unassigned: 'true' }, signalsQuery.data.unassigned);
+              }
+            }}
+            kamActivityHref={(period) => kamActivityHref({ ...filters, ...period })}
           />
           <motion.div
             variants={staggerContainer}

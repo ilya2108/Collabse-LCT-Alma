@@ -9,9 +9,10 @@
 - справочник ИТ-направлений (DevOps, QA, анализ данных…) с привязкой программ (одно
   направление) и продуктов (несколько направлений);
 - демо-домен: вузы, контакты, продукты, программы (с приоритетами), договоры
-  («1 договор — N продуктов»), заявки B2B/B2C с историей (включая заведомо
-  зависшие — фактура для демо CronJob), студентов Talent Pool (ПДн шифруются тем же
-  кодом, что в проде), федпроекты и активности с расписанием;
+  («1 договор — N продуктов»; лицензии в строках договора — часть истекает в ближайшие
+  30 дней, одна истекла), заявки B2B/B2C с историей (включая заведомо зависшие — фактура
+  для демо CronJob — и нераспределённые лиды CMS у руководителя), студентов Talent Pool
+  (ПДн шифруются тем же кодом, что в проде), федпроекты и активности с расписанием;
 - историю активности ~20 КАМов для отчёта «Активность КАМов» (`app.tools.seed_activity`:
   комментарии, файлы заявок, прошедшие мероприятия, исторические заявки);
 - просрочки (`app.tools.seed_sla`): сценарные заявки с разной картиной просрочек, передача
@@ -88,6 +89,7 @@ from app.models import (
     WorkflowStage,
     WorkflowTransition,
 )
+from app.modules.import_export.importers import license_end
 
 SEEDS_DIR = Path(__file__).resolve().parents[1] / "modules" / "workflow" / "seeds"
 
@@ -440,6 +442,10 @@ PRODUCT_DIRECTIONS: dict[str, list[str]] = {
     "corp-edu": ["backend", "frontend", "mobile", "qa", "devops", "infosec", "system-analysis"],
 }
 
+# licenses — строки договора как лицензии (миграция 0008): продукт → (сколько дней назад
+# подписана, статус передачи вузу); срок — год, последний день — по правилу импорта
+# «Таблица КАМов» (`license_end`). Даты — от якоря: к показу 3 лицензии истекают в
+# ближайшие 30 дней и 1 истекла у действующего договора (сигналы «Аналитики»)
 CONTRACTS: list[dict[str, Any]] = [
     {
         # демонстрация «1 договор — N продуктов»
@@ -451,6 +457,11 @@ CONTRACTS: list[dict[str, Any]] = [
         "amount": "1200000.00",
         "products": ["dpo-ds", "dpo-ai", "corp-edu"],
         "responsible": "kam1@demo",
+        "licenses": {
+            "dpo-ds": (220, "transferred"),  # вместе с договором — ещё ~5 месяцев
+            "dpo-ai": (356, "transferred"),  # продление прошлого года — истекает через 8 дней
+            "corp-edu": (340, "in_progress"),  # истекает через 24 дня
+        },
     },
     {
         "number": "Д-2026/052",
@@ -461,6 +472,21 @@ CONTRACTS: list[dict[str, Any]] = [
         "amount": "800000.00",
         "products": ["dpo-ai"],
         "responsible": "kam1@demo",
+    },
+    {
+        # рамочный договор на два года: лицензия Data Science истекла, ИИ — истекает
+        "number": "Д-2025/118",
+        "university": "ДВФУ",
+        "status": "active",
+        "signed": 400,
+        "valid_days": 730,
+        "amount": "650000.00",
+        "products": ["dpo-ds", "dpo-ai"],
+        "responsible": "kam1@demo",
+        "licenses": {
+            "dpo-ds": (400, "transferred"),  # истекла 36 дней назад
+            "dpo-ai": (350, "transferred"),  # истекает через 14 дней
+        },
     },
 ]
 
@@ -484,6 +510,16 @@ PERSONS: list[dict[str, str]] = [
         "full_name": "Фёдоров Максим Ильич",
         "email": "fedorov@example.com",
         "phone": "+7 915 333-44-55",
+    },
+    {
+        "full_name": "Белова Ксения Андреевна",
+        "email": "belova@example.com",
+        "phone": "+7 917 444-55-66",
+    },
+    {
+        "full_name": "Громов Илья Сергеевич",
+        "email": "gromov@example.com",
+        "phone": "+7 925 555-66-77",
     },
 ]
 
@@ -696,6 +732,34 @@ DEALS_B2C: list[dict[str, Any]] = [
         "kam": "kam1@demo",
         "amount": "700000.00",
         "product": "corp-edu",
+        "age": 2,
+        "stage_days": 2,
+    },
+    # лиды с сайта (CMS) ещё не распределены: висят на руководителе, как назначает их
+    # интеграция, — сигнал «Без ответственного КАМа» на «Аналитике»
+    {
+        "title": "Белова К.А. — заявка с сайта: Аналитик данных с нуля",
+        "person": "belova@example.com",
+        "interaction": "dpo_course",
+        "stage": "new",
+        "kam": "head@demo",
+        "source": "cms",
+        "amount": None,
+        "program": "Аналитик данных с нуля",
+        "product": "dpo-ds",
+        "age": 1,
+        "stage_days": 1,
+    },
+    {
+        "title": "Громов И.С. — заявка с сайта: ИИ-инженер",
+        "person": "gromov@example.com",
+        "interaction": "dpo_course",
+        "stage": "new",
+        "kam": "head@demo",
+        "source": "cms",
+        "amount": None,
+        "program": "ИИ-инженер, 256 ч.",
+        "product": "dpo-ai",
         "age": 2,
         "stage_days": 2,
     },
@@ -1360,8 +1424,30 @@ async def seed_contracts(
                     )
                 )
             await session.flush()
+        await _seed_licenses(session, row, spec.get("licenses") or {}, products)
         result[spec["number"]] = row
     return result
+
+
+async def _seed_licenses(
+    session: AsyncSession,
+    contract: Contract,
+    licenses: dict[str, tuple[int, str]],
+    products: dict[str, Product],
+) -> None:
+    """Поля лицензии в строках договора: заполняются, только пока пусты (повтор сида и
+    стенд, засеянный до лицензий, — без сдвига уже записанных дат)."""
+    for code, (signed_days, transfer_status) in licenses.items():
+        line = await session.get(ContractProduct, (contract.id, products[code].id))
+        if line is None or line.license_signed_at or line.license_valid_to:
+            continue
+        signed = (_NOW - timedelta(days=signed_days)).date()
+        line.license_signed_at = signed
+        line.license_term_years = 1
+        line.license_valid_to = license_end(signed, 1)
+        line.transfer_status = transfer_status
+        line.transfer_status_updated_at = _NOW - timedelta(days=min(signed_days, 30))
+    await session.flush()
 
 
 async def seed_counterparties(session: AsyncSession) -> dict[str, Counterparty]:
@@ -1555,6 +1641,7 @@ async def seed_deals(
                 "interaction_type_id": interaction_types[spec["interaction"]],
                 "product_id": products[spec["product"]].id if spec.get("product") else None,
                 "program_id": programs[spec["program"]].id if spec.get("program") else None,
+                "source": spec.get("source", "manual"),
             },
         )
 

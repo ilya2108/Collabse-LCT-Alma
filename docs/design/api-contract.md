@@ -582,7 +582,7 @@ workflow (§5).
 
 | Метод/путь | Описание | Роли (write) |
 |---|---|---|
-| `GET /requests` | Список. Фильтры: `workflow_type`, `status_id` (multi), `assignee_id` (multi), `university_id` (multi), `product_id` (multi), `program_id`, `stuck` (bool, см. §11), `created_from`, `created_to`, `source` (`manual/import/cms`), `search` (название/клиент). Multi — повторяемый параметр, условие IN; один параметр — как раньше (переход с дашборда на доску переносит мультифильтр целиком) | все |
+| `GET /requests` | Список. Фильтры: `workflow_type`, `status_id` (multi), `assignee_id` (multi), `university_id` (multi), `product_id` (multi), `program_id`, `stuck` (bool, см. §11), `unassigned` (bool: без ответственного КАМа — открытая заявка, чей ответственный не ведёт портфель как КАМ процесса или деактивирован; `false` — остальные), `created_from`, `created_to`, `source` (`manual/import/cms`), `search` (название/клиент). Multi — повторяемый параметр, условие IN; один параметр — как раньше (переход с дашборда на доску переносит мультифильтр целиком) | все |
 | `GET /requests/board` | Канбан-агрегат: `?workflow_type=b2b` → колонки по статусам, счётчики, первые N карточек в каждой | все |
 | `POST /requests` | Создать (статус = initial статус схемы; менять статус при создании нельзя) | admin, head_kam, kam |
 | `GET /requests/{id}` | Карточка: поля + текущий статус + доступные переходы + последние комментарии | все |
@@ -1243,6 +1243,7 @@ sequenceDiagram
 | `GET /reports/talent-pool-funnel` | Студенты по статусам на текущую дату: кандидат → обучается → выпускник → пул талантов | `federal_project`; период не применяется |
 | `GET /reports/dynamics` | Динамика по неделям (МСК): «Создано», «Завершено» (`won`), «Отказ» (`lost`); без периода — последние 12 недель | период |
 | `GET /reports/dashboard` | Агрегат всех виджетов панели одним запросом (KPI + funnel + dynamics + kam-workload + programs-demand + talent-pool-funnel) с одним набором фильтров | все параметры панели |
+| `GET /reports/signals` | Карточка «Сигналы»: зависшие, без ответственного КАМа, лицензии (истекают и истекли), вузы без активности — на текущий момент (§7.2.0) | параметры панели; период не применяется |
 | `GET /reports/interactions` | «Взаимодействия за период»: таблица заявок с выбором колонок (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]`, `direction_id[]`, `product_id[]`, `program_id[]`, `stage_id[]` |
 | `GET /reports/kam-activity` | Активность КАМов, детализация: КАМ → вузы → заявки за период (§7.2.1) | `from`, `to`, `workflow_type`, `kam_id[]`, `university_id[]`, `direction_id[]` |
 | `GET /reports/kam-activity/summary` | Активность КАМов, сводка для заказчика: KPI с дельтами к прошлому периоду, вузы по этапам, конверсия по этапам, где застревают, риски (§7.2.1) | те же |
@@ -1251,7 +1252,7 @@ sequenceDiagram
 | `POST /reports/ai-summaries` | «Сводка ИИ»: текстовая сводка фактов по команде или по КАМу поверх цифр §7.2.1 и §7.2.2 — задача (§7.2.3) | тело: `kind`, `kam_id`, `params` (те же фильтры), `mode`, `force` |
 | `GET /reports/ai-summaries/{job_id}` | «Сводка ИИ»: статус и результат задачи (§7.2.3) | — |
 
-**Параметры панели** (первые восемь отчётов, общий разбор `report_params`): `workflow_type`
+**Параметры панели** (первые восемь отчётов и `signals`, общий разбор `report_params`): `workflow_type`
 (`b2b`/`b2c`; не задан — все процессы области), `from`, `to` (даты МСК, `to` включительно),
 `kam_id`, `university_id`, `product_id`, `program_id`, `direction_id` — повторяемые
 (`kam_id=a&kam_id=b`), условие `IN` во всех секциях, не больше 50 значений; один параметр —
@@ -1292,6 +1293,29 @@ KPI дашборда (`kpi` в `/reports/dashboard`): «Заявок актив�
 (admin, head_kam, observer), иначе только заявки, где пользователь ответственный (kam). Любой
 запрос по заявкам проходит через фильтр области, ключ кэша включает область
 (`b2b:*|b2c:<uuid>`).
+
+#### 7.2.0. Карточка «Сигналы» (`GET /reports/signals`)
+
+Что требует внимания руководителя прямо сейчас. Срез на текущий момент: период панели не
+применяется (как у `kam-workload`), остальные параметры панели — где применимы. Каждый сигнал
+считается правилом, которое уже есть в системе:
+
+| Поле | Правило | Измерения панели | Переход в UI |
+|---|---|---|---|
+| `stuck` | Открытая заявка на нетерминальном этапе дольше нормы этапа (каскад этап → процесс), точное время от входа в этап — то же условие, что у KPI «Зависших» и `GET /requests?stuck=true` | все, как у KPI | доска `?stuck=true` |
+| `unassigned` | Без ответственного КАМа: ответственный не ведёт портфель как КАМ процесса (нет роли с `requests:kam` в процессе — лид CMS у руководителя, заявка у администратора) или деактивирован; то же условие, что `GET /requests?unassigned=true` | все, как у KPI | доска `?unassigned=true` |
+| `licenses` | Строки действующих договоров с вузами (`contract_product`): `expiring` — последний день лицензии от сегодня до сегодня + 30 дней (МСК, включительно), `expired` — раньше сегодня; отменённая передача не сигналит | КАМ вуза, вуз, ИТ-продукт строки (программа — её продукт), ИТ-направление продукта | окно со списком → карточка договора |
+| `untouched_universities` | Закреплённые за КАМом вузы без взаимодействий за последние 30 дней — правило «Закреплены, нет контакта» §7.2.1 | процесс, КАМ, вуз, ИТ-направление | окно со списком → «Активность КАМов» |
+
+`stuck` и `unassigned` — `{value, by_workflow: {b2b, b2c}}` (процессы панели; переход
+открывает доску процесса, где сигнал есть). `licenses` — `{expiring, expired, horizon_days,
+items[≤50 истекающих + ≤50 истёкших]: {contract_id, contract_number, university_id, university,
+kam_id, kam, product_id, product, valid_to, days_left, state, transfer_status}, truncated}`;
+`untouched_universities` — `{value, period: {from, to, as_of, days}, items[≤50]:
+{university_id, name, kam_id, kam, last_contact_at}, truncated}`. Лицензии и вузы — сущности
+B2B: при процессе B2C на панели или без B2B в области роли — `null`. Область, право и кэш —
+как у остальных отчётов (`reports:read`; КАМ с областью «только свои» видит свои заявки и
+закреплённые за ним вузы). В выгрузки (`report:<code>`) не входит.
 
 #### 7.2.1. Отчёт «Активность КАМов»
 
@@ -2750,6 +2774,7 @@ GET    /api/v1/export/jobs/{id}/download
 GET    /api/v1/reports/funnel              GET    /api/v1/reports/kam-workload   GET    /api/v1/reports/stuck
 GET    /api/v1/reports/universities-coverage                                     GET    /api/v1/reports/programs-demand
 GET    /api/v1/reports/talent-pool-funnel  GET    /api/v1/reports/dynamics       GET    /api/v1/reports/dashboard
+GET    /api/v1/reports/signals
 GET    /api/v1/reports/kam-activity        GET    /api/v1/reports/kam-activity/summary
 GET    /api/v1/reports/interactions
 GET    /api/v1/reports/sla                 GET    /api/v1/reports/sla/kams/{kam_id}

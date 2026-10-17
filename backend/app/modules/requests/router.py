@@ -89,6 +89,7 @@ from app.modules.requests.service import (
     available_transitions,
     counterparty_audit_after,
     find_or_create_counterparty,
+    unassigned_condition,
 )
 from app.modules.workflow import service as workflow_service
 
@@ -208,6 +209,13 @@ async def list_requests(
     product_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     program_id: Annotated[uuid.UUID | None, Query()] = None,
     stuck: Annotated[bool | None, Query()] = None,
+    unassigned: Annotated[
+        bool | None,
+        Query(
+            description="Без ответственного КАМа: открытая заявка, чей ответственный не КАМ "
+            "процесса или деактивирован (сигнал «Аналитики»)"
+        ),
+    ] = None,
     created_from: Annotated[date | None, Query()] = None,
     created_to: Annotated[date | None, Query()] = None,
     source: Annotated[Literal["manual", "import", "cms", "lms"] | None, Query()] = None,
@@ -245,6 +253,9 @@ async def list_requests(
             _stuck_condition(),
         )
         stmt = stmt.where(stuck_clause if stuck else ~stuck_clause)
+    if unassigned is not None:
+        unassigned_clause = unassigned_condition()
+        stmt = stmt.where(unassigned_clause if unassigned else ~unassigned_clause)
     if search:
         pattern = f"%{search.strip()}%"
         university_match = (

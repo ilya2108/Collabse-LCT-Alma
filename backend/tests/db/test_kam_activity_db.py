@@ -1091,7 +1091,10 @@ async def test_seed_activity_history_is_idempotent(db_session, memory_storage) -
             )
         )
     ).scalar_one()
-    assert active_contracts == stats["contracts"] + 1
+    # плюс действующие договоры базового сида (МФТИ и ДВФУ — у этих вузов второго нет)
+    base_active = sum(1 for spec in seed.CONTRACTS if spec["status"] == "active")
+    assert base_active == 2
+    assert active_contracts == stats["contracts"] + base_active
     again = await seed_activity_history(
         db_session, workflows, universities, products, programs, users, now=now
     )

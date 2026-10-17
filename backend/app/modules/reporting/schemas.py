@@ -1,5 +1,5 @@
-"""Pydantic-схемы ответов отчётов «Активность КАМов» (api-contract.md §7.2.1) и
-«Взаимодействия за период» (таблица по колонкам ТЗ ФТ4).
+"""Pydantic-схемы ответов отчётов «Активность КАМов» (api-contract.md §7.2.1),
+«Взаимодействия за период» (таблица по колонкам ТЗ ФТ4) и карточки «Сигналы» дашборда.
 
 Нужны для качественного OpenAPI (Swagger показывают экспертам): каждое поле описано,
 форма совпадает с тем, что собирает `kam_activity.py`. Деньги — строкой decimal
@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -502,3 +502,75 @@ class InteractionsReportOut(_ApiModel):
     totals: InteractionsTotals
     truncated: bool = Field(description="Строк больше 5000 — полный список в выгрузке")
     rows: list[InteractionsRow]
+
+
+# --- карточка «Сигналы» дашборда (§7.2) ----------------------------------------------------
+
+
+class SignalCount(_ApiModel):
+    """Число заявок на текущий момент и разбивка по процессам панели (переход на доску
+    нужного процесса)."""
+
+    value: int
+    by_workflow: dict[str, int] = Field(description="Процесс панели → число (нули тоже)")
+
+
+class LicenseSignalItem(_ApiModel):
+    contract_id: str
+    contract_number: str
+    university_id: str
+    university: str = Field(description="Краткое наименование вуза, без него — полное")
+    kam_id: str | None = None
+    kam: str | None = Field(default=None, description="КАМ, за которым закреплён вуз")
+    product_id: str
+    product: str = Field(description="ИТ-продукт строки договора (лицензия)")
+    valid_to: date = Field(description="Последний день действия лицензии (включительно)")
+    days_left: int = Field(description="Дней до последнего дня: 0 — сегодня, < 0 — истекла")
+    state: Literal["expiring", "expired"]
+    transfer_status: Literal["not_started", "in_progress", "transferred"] | None = Field(
+        default=None, description="Статус передачи лицензии вузу (отменённая не сигналит)"
+    )
+
+
+class LicenseSignal(_ApiModel):
+    expiring: int = Field(description="Истекают: последний день — от сегодня до горизонта")
+    expired: int = Field(description="Истекли у действующих договоров")
+    horizon_days: int = Field(description="Горизонт «истекают», дней")
+    items: list[LicenseSignalItem] = Field(
+        description="Не больше 50 истекающих (ближайшие первыми) и 50 истёкших (недавние первыми)"
+    )
+    truncated: bool
+
+
+class UntouchedUniversityItem(_ApiModel):
+    university_id: str
+    name: str
+    kam_id: str
+    kam: str
+    last_contact_at: datetime | None = Field(
+        default=None, description="Последнее взаимодействие до периода; null — не было"
+    )
+
+
+class UntouchedSignal(_ApiModel):
+    value: int = Field(description="Закреплённые вузы без взаимодействий КАМа за период")
+    period: KamActivityPeriod = Field(description="Последние 30 дней по МСК")
+    items: list[UntouchedUniversityItem] = Field(description="Не больше 50, по алфавиту")
+    truncated: bool
+
+
+class DashboardSignalsOut(_ApiModel):
+    """«Сигналы»: что требует внимания сейчас. Период панели не применяется; лицензии и
+    вузы — только при процессе B2B в области (иначе null)."""
+
+    report: Literal["signals"]
+    generated_at: datetime
+    params: dict[str, Any]
+    as_of: datetime
+    workflow_types: list[WorkflowType] = Field(description="Процессы панели")
+    stuck: SignalCount = Field(description="Зависшие: правило доски `?stuck=true`")
+    unassigned: SignalCount = Field(
+        description="Без ответственного КАМа: правило доски `?unassigned=true`"
+    )
+    licenses: LicenseSignal | None = None
+    untouched_universities: UntouchedSignal | None = None

@@ -21,6 +21,8 @@ export interface RequestListFilters {
   product_id?: string | string[];
   program_id?: string;
   stuck?: boolean;
+  /** Без ответственного КАМа: ответственный не КАМ процесса или деактивирован. */
+  unassigned?: boolean;
   created_from?: string;
   created_to?: string;
   source?: string;

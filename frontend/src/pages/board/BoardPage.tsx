@@ -163,6 +163,8 @@ export function BoardPage(): ReactNode {
     0,
   );
   const filterStuck = searchParams.get('stuck') === 'true';
+  // «Без ответственного КАМа» — переход с карточки «Сигналы» на «Аналитике»
+  const filterUnassigned = searchParams.get('unassigned') === 'true';
   const filterStatus = searchParams.get('status') ?? undefined;
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search, 400);
@@ -215,6 +217,7 @@ export function BoardPage(): ReactNode {
         university: universityIds.join(','),
         product: productIds.join(','),
         stuck: filterStuck,
+        unassigned: filterUnassigned,
         status: statusIdFilter ?? '',
         search: debouncedSearch.trim(),
       },
@@ -226,6 +229,7 @@ export function BoardPage(): ReactNode {
       universityIds.join(','),
       productIds.join(','),
       filterStuck,
+      filterUnassigned,
       statusIdFilter,
       debouncedSearch,
     ],
@@ -241,6 +245,7 @@ export function BoardPage(): ReactNode {
           university_id: universityIds.length > 0 ? universityIds : undefined,
           product_id: productIds.length > 0 ? productIds : undefined,
           stuck: filterStuck || undefined,
+          unassigned: filterUnassigned || undefined,
           status_id: statusIdFilter ? [statusIdFilter] : undefined,
           search: debouncedSearch.trim() || undefined,
         },
@@ -704,6 +709,11 @@ export function BoardPage(): ReactNode {
         {statusIdFilter ? (
           <Button variant="link" size="sm" onClick={() => setParam('status', undefined)}>
             Сбросить фильтр этапа
+          </Button>
+        ) : null}
+        {filterUnassigned ? (
+          <Button variant="link" size="sm" onClick={() => setParam('unassigned', undefined)}>
+            Сбросить фильтр «Без ответственного КАМа»
           </Button>
         ) : null}
         {multiFilterCount > 0 ? (
