@@ -925,6 +925,14 @@ async def perform_transition(
         responsible_user_id=responsible_id,
         user_id=user.id,
     ):
+        if body.expected_assignee_id == user.id and responsible_id != user.id:
+            # клиент видел заявку своей — её передали, пока карточка была открыта
+            responsible = await session.get(AppUser, responsible_id)
+            name = (responsible.full_name if responsible else None) or "другой сотрудник"
+            raise forbidden(
+                f"Заявку передали другому ответственному — {name}. Переход доступен "
+                "только ответственному по заявке"
+            )
         raise forbidden("Переход доступен только ответственному по заявке")
     # файлы перехода проверяются ДО движка: невалидный файл не должен оставить заявку
     # переведённой без своего вложения; привязка к строке истории — в транзакции перехода
@@ -938,6 +946,8 @@ async def perform_transition(
         version=body.version,
         ip=client_ip(request),
         files=files,
+        expected_status_id=body.expected_status_id,
+        expected_assignee_id=body.expected_assignee_id,
     )
     return await serialize_deal(
         session,

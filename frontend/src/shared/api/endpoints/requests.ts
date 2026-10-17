@@ -129,6 +129,9 @@ export interface TransitionPayload {
   version: number;
   /** Файлы, загруженные «для перехода» (`pending_transition`): сервер приложит их к переходу. */
   file_ids?: string[];
+  /** Этап и ответственный из карточки — только для причины 409 (`transitionExpectations`). */
+  expected_status_id?: string;
+  expected_assignee_id?: string;
 }
 
 /** Переход по статусу (§4.3): 409 workflow_invalid_transition / stale_version. */

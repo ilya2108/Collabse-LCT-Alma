@@ -647,13 +647,34 @@ Idempotency-Key: 9d1f…
   "to_status_id": "st-uuid-contract-prep",
   "comment": "Согласовали КП, готовим договор",
   "version": 7,
-  "file_ids": ["f-uuid"]
+  "file_ids": ["f-uuid"],
+  "expected_status_id": "st-uuid-negotiation",
+  "expected_assignee_id": "u-uuid-kam"
 }
 ```
 
 Правила:
 - Переход валиден, только если в живой схеме workflow есть транзиция `current → to_status_id`.
   Иначе `409 workflow_invalid_transition` с `details[0].message` = список допустимых переходов.
+- `expected_status_id` / `expected_assignee_id` (необязательные) — этап и ответственный, которые
+  видел клиент. Сервер по ним ничего не проверяет: они только объясняют отказ. Top-level код
+  ошибки прежний (на нём держатся автоповтор клиента и прежние клиенты), причина — в
+  `details[0].code`, человеческий текст — в `message`:
+
+  | Код ответа | `details[0].code` | Когда | Текст (пример) |
+  |---|---|---|---|
+  | `409 stale_version` | `request_moved` | этап сменился, заявка открыта | «Заявку уже перевели на этап «Переговоры» (Петров К.)» |
+  | `409 stale_version` | `request_closed` | этап сменился, заявка закрыта | «Заявку уже закрыли: этап «Отказ» (…)» |
+  | `409 stale_version` | `request_migrated` | этап удалили из схемы, заявку перенесла система | «Этап «X» удалён из схемы процесса — заявка перенесена на этап «Y»» |
+  | `409 stale_version` | `assignee_changed` | сменился ответственный | «Ответственного по заявке сменили — теперь …» |
+  | `409 stale_version` | `request_modified` | этап и ответственный те же: правили поля, комментарий, файлы | «Заявку изменили, пока вы её смотрели…» |
+  | `409 workflow_invalid_transition` | `request_closed` / `transition_removed` / `target_stage_deleted` / `not_in_schema` | заявка закрыта; клиент смотрел на старую схему; ребра не было | «Этот переход убран из схемы процесса — доска обновлена по новой схеме» |
+  | `409 workflow_busy` | — | ждали лок воронки (применяется схема) или строку заявки (её меняет другой запрос) | разные тексты, `Retry-After: 2` |
+  | `403 forbidden` | — | клиент видел заявку своей (`expected_assignee_id` = он), её передали | «Заявку передали другому ответственному — …» |
+
+  `details[0]` у `stale_version` несёт ещё `current_status_id`, `current_status_name` (и
+  `current_assignee_id` для `assignee_changed`). Без `expected_*` — прежний ответ
+  `stale_version` без деталей.
 - Права (§12.2): `requests:transition` в процессе заявки; чужая заявка — ещё
   `requests:write_any`; непустой `allowed_roles` транзиции должен содержать роль пользователя,
   которая может выполнять переходы в этом процессе (`access.transition_roles`, §2.1), пустой —

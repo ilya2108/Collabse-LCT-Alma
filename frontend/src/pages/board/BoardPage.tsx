@@ -24,12 +24,13 @@ import { listPresets } from '@/shared/api/endpoints/presets';
 import { listActiveProducts } from '@/shared/api/endpoints/products';
 import { useOnboarding } from '@/features/onboarding';
 import { listRequests, transitionWithFiles } from '@/shared/api/endpoints/requests';
+import { isTransitionAlreadyDone, transitionExpectations } from '@/shared/api/transitionContext';
 import { getWorkflow, listWorkflows } from '@/shared/api/endpoints/workflows';
 import type { ListEnvelope, RequestItem, UiPreset, WorkflowType } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { WORKFLOW_TYPE_TITLES } from '@/shared/auth/permissions';
 import { springs } from '@/shared/lib/motion';
-import { toastError } from '@/shared/lib/toast';
+import { toastError, toastInfo } from '@/shared/lib/toast';
 import { useDebouncedValue } from '@/shared/lib/useDebouncedValue';
 import { useSseInvalidate } from '@/shared/lib/useSseInvalidate';
 import { cn } from '@/shared/lib/cn';
@@ -343,6 +344,7 @@ export function BoardPage(): ReactNode {
           to_status_id: target.toStatus.id,
           comment: comment || undefined,
           version: request.version,
+          ...transitionExpectations(request),
         },
         files,
       ),
@@ -377,8 +379,14 @@ export function BoardPage(): ReactNode {
       return { previous };
     },
     onError: (error, _variables, context) => {
-      if (context?.previous) queryClient.setQueryData(requestsKey, context.previous);
-      toastError(error, { title: 'Переход не выполнен' });
+      if (isTransitionAlreadyDone(error)) {
+        // повтор уже выполненного перехода: карточка остаётся в целевой колонке
+        toastInfo('Переход уже выполнен', 'Данные доски обновлены');
+      } else {
+        if (context?.previous) queryClient.setQueryData(requestsKey, context.previous);
+        // причина 409 — в тексте сервера: перевели, закрыли, сменился ответственный…
+        toastError(error, { title: 'Переход не выполнен' });
+      }
       // 409: схему могли поменять или заявку уже перевели — перечитываем
       void queryClient.invalidateQueries({ queryKey: ['board-requests'] });
       void queryClient.invalidateQueries({ queryKey: ['workflow-schema'] });

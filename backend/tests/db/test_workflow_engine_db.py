@@ -33,6 +33,7 @@ from app.models import (
     IntegrationEvent,
     WorkflowChangeRequest,
     WorkflowStage,
+    WorkflowTransition,
 )
 from app.models.talent import Student, StudentStatusHistory
 from app.modules.workflow import service
@@ -221,8 +222,201 @@ async def test_no_edges_from_terminal_stage(db_session, api, workflows) -> None:
     error = _error(response)
     assert error["code"] == "workflow_invalid_transition"
     assert error["details"][0]["message"] == "Из текущего этапа переходов нет"
+    assert error["details"][0]["code"] == "request_closed"
+    assert error["message"] == f"Заявка уже закрыта: этап «{st['completed'].name}»"
     await db_session.refresh(deal)
     assert deal.status == "won"
+
+
+# --------------------------------------------------------------------------------------
+# Причины 409 при смене этапа (details[0].code, api-contract.md §4.3)
+# --------------------------------------------------------------------------------------
+
+
+async def _stale_attempt(client, deal: Deal, stage: WorkflowStage, version: int, **seen):  # noqa: ANN001, ANN202
+    body = {"to_status_id": str(stage.id), "version": version}
+    body.update({key: str(value) for key, value in seen.items()})
+    response = await client.post(f"/api/v1/requests/{deal.id}/transitions", json=body)
+    assert response.status_code == 409, response.text
+    error = _error(response)
+    assert error["code"] == "stale_version"  # top-level код прежний — на нём держится клиент
+    return error
+
+
+async def test_stale_reason_request_moved_names_who(db_session, api, workflows) -> None:
+    kam = await factories.make_user(db_session, roles=("kam",))
+    admin = await factories.make_user(db_session, roles=("admin",), full_name="Админов Админ")
+    wf, st = workflows["b2b"]
+    deal = await factories.make_deal(
+        db_session,
+        workflow=wf,
+        stages=st,
+        responsible=kam,
+        path=[("new", days_ago(3)), ("first_contact", days_ago(1))],
+    )
+    kam_client = api.as_user(kam)
+    seen_version = await _version(kam_client, deal)
+    moved = await _transition(api.as_user(admin), deal, st["negotiation"])
+    assert moved.status_code == 200, moved.text
+
+    error = await _stale_attempt(
+        kam_client,
+        deal,
+        st["negotiation"],
+        seen_version,
+        expected_status_id=st["first_contact"].id,
+        expected_assignee_id=kam.id,
+    )
+    [detail] = error["details"]
+    assert detail["code"] == "request_moved"
+    assert error["message"] == (
+        f"Заявку уже перевели на этап «{st['negotiation'].name}» (Админов Админ)"
+    )
+    assert detail["current_status_id"] == str(st["negotiation"].id)
+    assert detail["current_status_name"] == st["negotiation"].name
+
+
+async def test_stale_reason_request_migrated(db_session, api, workflows) -> None:
+    """Заявку перенесла система при удалении этапа (строка истории kind=system_migration)."""
+    kam = await factories.make_user(db_session, roles=("kam",))
+    wf, st = workflows["b2b"]
+    deal = await factories.make_deal(
+        db_session,
+        workflow=wf,
+        stages=st,
+        responsible=kam,
+        path=[("new", days_ago(3)), ("first_contact", days_ago(1), None, "system_migration")],
+    )
+    client = api.as_user(kam)
+    error = await _stale_attempt(
+        client,
+        deal,
+        st["negotiation"],
+        await _version(client, deal) + 1,
+        expected_status_id=st["new"].id,
+    )
+    assert error["details"][0]["code"] == "request_migrated"
+    assert error["message"] == (
+        f"Этап «{st['new'].name}» удалён из схемы процесса — заявка перенесена на этап "
+        f"«{st['first_contact'].name}»"
+    )
+
+
+async def test_stale_reason_assignee_changed_and_403_for_former(db_session, api, workflows) -> None:
+    kam1 = await factories.make_user(db_session, roles=("kam",), full_name="Петров Константин")
+    kam2 = await factories.make_user(db_session, roles=("kam",), full_name="Иванова Мария")
+    admin = await factories.make_user(db_session, roles=("admin",))
+    wf, st = workflows["b2b"]
+    deal = await factories.make_deal(
+        db_session,
+        workflow=wf,
+        stages=st,
+        responsible=kam1,
+        path=[("new", days_ago(3)), ("first_contact", days_ago(1))],
+    )
+    admin_client = api.as_user(admin)
+    seen_version = await _version(admin_client, deal)
+    assigned = await admin_client.post(
+        f"/api/v1/requests/{deal.id}/assign", json={"assignee_id": str(kam2.id)}
+    )
+    assert assigned.status_code == 200, assigned.text
+
+    error = await _stale_attempt(
+        admin_client,
+        deal,
+        st["negotiation"],
+        seen_version,
+        expected_status_id=st["first_contact"].id,
+        expected_assignee_id=kam1.id,
+    )
+    assert error["details"][0]["code"] == "assignee_changed"
+    assert error["message"] == "Ответственного по заявке сменили — теперь Иванова Мария"
+    assert error["details"][0]["current_assignee_id"] == str(kam2.id)
+
+    # прежний ответственный видел заявку своей: 403 объясняет, что её передали
+    former = await api.as_user(kam1).post(
+        f"/api/v1/requests/{deal.id}/transitions",
+        json={
+            "to_status_id": str(st["negotiation"].id),
+            "version": seen_version,
+            "expected_assignee_id": str(kam1.id),
+        },
+    )
+    assert former.status_code == 403, former.text
+    assert _error(former)["message"].startswith(
+        "Заявку передали другому ответственному — Иванова Мария."
+    )
+
+
+async def test_stale_reason_request_modified_and_legacy_body(db_session, api, workflows) -> None:
+    kam = await factories.make_user(db_session, roles=("kam",))
+    wf, st = workflows["b2b"]
+    deal = await factories.make_deal(
+        db_session,
+        workflow=wf,
+        stages=st,
+        responsible=kam,
+        path=[("new", days_ago(3)), ("first_contact", days_ago(1))],
+    )
+    client = api.as_user(kam)
+    seen_version = await _version(client, deal)
+    commented = await client.post(
+        f"/api/v1/requests/{deal.id}/comments", json={"text": "Созвонились"}
+    )
+    assert commented.status_code == 201, commented.text
+
+    error = await _stale_attempt(
+        client,
+        deal,
+        st["negotiation"],
+        seen_version,
+        expected_status_id=st["first_contact"].id,
+        expected_assignee_id=kam.id,
+    )
+    assert error["details"][0]["code"] == "request_modified"
+    # клиент без ожиданий (старый) — прежний ответ без деталей
+    legacy = await _stale_attempt(client, deal, st["negotiation"], seen_version)
+    assert legacy["message"] == "Объект был изменён другим пользователем, обновите данные"
+    assert not legacy.get("details")
+
+
+async def test_invalid_reason_removed_edge_and_deleted_stage(db_session, api, workflows) -> None:
+    """Клиент смотрел на старую схему: ребро убрали или целевой этап удалили."""
+    kam = await factories.make_user(db_session, roles=("kam",))
+    wf, st = workflows["b2b"]
+    deal = await factories.make_deal(
+        db_session,
+        workflow=wf,
+        stages=st,
+        responsible=kam,
+        path=[("new", days_ago(3)), ("first_contact", days_ago(1))],
+    )
+    client = api.as_user(kam)
+    edge = (
+        await db_session.execute(
+            sa.select(WorkflowTransition).where(
+                WorkflowTransition.from_stage_id == st["first_contact"].id,
+                WorkflowTransition.to_stage_id == st["negotiation"].id,
+            )
+        )
+    ).scalar_one()
+    edge.deleted_at = days_ago(0)
+    await db_session.flush()
+
+    removed = await _transition(client, deal, st["negotiation"])
+    assert removed.status_code == 409, removed.text
+    assert _error(removed)["details"][0]["code"] == "transition_removed"
+    assert _error(removed)["message"].startswith("Этот переход убран из схемы процесса")
+
+    st["negotiation"].deleted_at = days_ago(0)
+    await db_session.flush()
+    deleted = await _transition(client, deal, st["negotiation"])
+    assert _error(deleted)["details"][0]["code"] == "target_stage_deleted"
+    assert _error(deleted)["message"].startswith(f"Этап «{st['negotiation'].name}» удалён")
+
+    unknown = await _transition(client, deal, st["completed"])
+    assert _error(unknown)["details"][0]["code"] == "not_in_schema"
+    assert _error(unknown)["message"] == "Переход не разрешён схемой workflow"
 
 
 # --------------------------------------------------------------------------------------
