@@ -646,14 +646,14 @@ Keycloak при импорте realm — в git они не попадают.
 
 ## Тесты
 
-Всего **2 287 тестов pytest**: 2 074 в backend, 95 в шлюзе GigaChat, 82 в службе
-уведомлений, 36 в заглушках LMS/CMS. Во фронтенде — 125 юнит-тестов `node:test`
+Всего **2 392 теста pytest**: 2 179 в backend, 95 в шлюзе GigaChat, 82 в службе
+уведомлений, 36 в заглушках LMS/CMS. Во фронтенде — 157 юнит-тестов `node:test`
 (клиент Idempotency-Key, контраст палитры этапов, шаблон импорта, форматы вкладки
-«Просрочки», модель «Сводки ИИ»), строгая проверка типов, проверка встроенной
+«Просрочки», модель «Сводки ИИ», карточка «Сигналы», контекст перехода, черновики), строгая проверка типов, проверка встроенной
 справки и сборка. Числа — по `pytest --collect-only -q` (с параметризациями) и
 `npm run test:unit`, подсчёт 17.10.2026.
 
-Из тестов backend 1 833 идут без инфраструктуры, а 241 в `backend/tests/db` — на
+Из тестов backend 1 880 идут без инфраструктуры, а 299 в `backend/tests/db` — на
 настоящем PostgreSQL 16 со схемой из миграций Alembic (`upgrade head`, со всеми
 индексами и CHECK). Они проверяют обратимость миграций, каталог ролей против кода,
 перенос 10 000 заявок и откат при сбое посередине переноса, гонки переходов с
@@ -672,7 +672,7 @@ lock-файлами. Полный прогон backend с PostgreSQL — око�
 
 | Сервис | Команды |
 |---|---|
-| backend (2 074) | `cd backend && uv sync --extra dev && uv run pytest` (линт: `uv run ruff check app tests`) |
+| backend (2 179) | `cd backend && uv sync --extra dev && uv run pytest` (линт: `uv run ruff check app tests`) |
 | llm-gateway (95) | `cd services/llm-gateway && uv sync --group dev && uv run pytest` (живой GigaChat — `make llm-smoke`) |
 | notification (82) | `cd services/notification && uv sync && uv run pytest` |
 | lms-stub / cms-stub (20 + 16) | `cd services/lms-stub && uv sync --extra dev && uv run pytest` (аналогично cms-stub) |
@@ -741,7 +741,7 @@ docker-вариант запуска — `deploy/load/README.md`.
 │   │   └── tools/                  #   наполнение демо-данными, аварийная выдача admin,
 │   │                               #   замер переноса заявок, ротация ключей ПДн, перечень библиотек
 │   ├── alembic/                    #   миграции схемы БД (0001–0011), 38 таблиц
-│   └── tests/                      #   2 074 pytest, из них 241 на PostgreSQL (tests/db)
+│   └── tests/                      #   2 179 pytest, из них 299 на PostgreSQL (tests/db)
 ├── frontend/                       # интерфейс — React 18 + TypeScript + Vite
 │   ├── src/
 │   │   ├── app/                    #   каркас: маршруты, охрана доступа по правам, меню, макет
@@ -751,7 +751,7 @@ docker-вариант запуска — `deploy/load/README.md`.
 │   │   │                           #   встроенная справка (help/content — текст руководств)
 │   │   ├── features/onboarding/    #   адаптация сотрудников: туры, контрольный список
 │   │   └── shared/                 #   дизайн-система (ui, токены), API-клиент с Idempotency-Key, SSE
-│   └── tests/                      #   125 юнит-тестов node:test
+│   └── tests/                      #   157 юнит-тестов node:test
 ├── services/
 │   ├── notification/               # служба уведомлений + Telegram-бот (aiogram 3, DMZ), 82 pytest
 │   ├── llm-gateway/                # шлюз GigaChat для «Сводки ИИ» (DMZ, ключ видит только он), 90 pytest
