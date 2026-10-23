@@ -1,0 +1,42 @@
+  █ THRESHOLDS 
+    checks
+    ✓ 'rate>0.99' rate=100.00%
+    crm_export_ms
+    ✓ 'p(95)<3000' p(95)=1.97s
+    crm_report_ms
+    ✓ 'p(95)<1000' p(95)=540.42ms
+    http_req_duration{kind:ui}
+    ✗ 'p(95)<500' p(95)=843.53ms
+    ✗ 'p(99)<1000' p(99)=2.04s
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+  █ TOTAL RESULTS 
+    checks_total.......: 5311    16.681242/s
+    checks_succeeded...: 100.00% 5311 out of 5311
+    checks_failed......: 0.00%   0 out of 5311
+    ✓ report 200
+    ✓ board 200
+    ✓ registry 200
+    ✓ card 200
+    ✓ export 201
+    ✓ export download 200
+    CUSTOM
+    crm_export_ms..................: avg=592.75ms min=55ms   med=266ms   max=6.34s  p(90)=1.45s    p(95)=1.97s   
+    crm_report_ms..................: avg=136.93ms min=7.53ms med=49.92ms max=5.12s  p(90)=287.33ms p(95)=540.42ms
+    HTTP
+    http_req_duration..............: avg=188.35ms min=5.11ms med=56.17ms max=6.14s  p(90)=436.99ms p(95)=904.27ms
+      { expected_response:true }...: avg=188.35ms min=5.11ms med=56.17ms max=6.14s  p(90)=436.99ms p(95)=904.27ms
+      { kind:ui }..................: avg=180.71ms min=5.11ms med=54.51ms max=4.38s  p(90)=397.06ms p(95)=843.53ms
+    http_req_failed................: 0.00%  0 out of 5419
+    http_reqs......................: 5419   17.020458/s
+    EXECUTION
+    iteration_duration.............: avg=7.84s    min=1.03s  med=3.25s   max=22.47s p(90)=17.28s   p(95)=18.65s  
+    iterations.....................: 2347   7.371658/s
+    vus............................: 2      min=0         max=60
+    vus_max........................: 60     min=60        max=60
+    NETWORK
+    data_received..................: 85 MB  266 kB/s
+    data_sent......................: 7.0 MB 22 kB/s
+reports ✓ [ 100% ] 10 VUs  5m0s
+users50 ✓ [ 100% ] 50 VUs  5m0s
+time="2026-10-22T07:48:28Z" level=error msg="thresholds on metrics 'http_req_duration{kind:ui}' have been crossed"

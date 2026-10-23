@@ -691,9 +691,11 @@ lock-файлами. Полный прогон backend с PostgreSQL — око�
 в [docs/evidence/load-report.md](docs/evidence/load-report.md). Профили
 нефункциональных требований — 50 пользователей под разными учётками
 (`make load-test-users`), 10 параллельных отчётов разной сложности с выгрузками
-(`make load-test-reports`) и оба сразу (`make load-test-nft`) — подготовлены; их
-прогона ещё не было, результаты будут добавлены в тот же отчёт. Скрипт и
-docker-вариант запуска — `deploy/load/README.md`.
+(`make load-test-reports`) и оба сразу (`make load-test-nft`) — прогнаны 22.10 на
+локальном k3d профилем `nft`: при 6 репликах backend 5 419 запросов без единой ошибки,
+отчёт p95 540 мс, выгрузка XLSX/PDF p95 1,97 с, экраны КАМа — медиана 55 мс, p95 0,84 с;
+первый прогон при автомасштабировании 2 → 6 дал хвосты разгона, разбор обоих — в том же
+отчёте, §8. Скрипт и docker-вариант запуска — `deploy/load/README.md`.
 
 Аттестация импорта/экспорта на реальных данных —
 [docs/evidence/import-export-test.md](docs/evidence/import-export-test.md).
