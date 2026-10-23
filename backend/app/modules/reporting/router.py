@@ -8,6 +8,9 @@ PNG-экспорт графиков — обязанность фронта (`ge
 `reports:all`) — `service.report_scope`. Отчёт КАМов проверяет область явно: процесс
 вне области и чужой `kam_id` при области «только свои» — 403 (`kam_activity._resolve_scope`).
 
+Карточка «Сигналы» (`/reports/signals`) — срез «сейчас» с тем же кэшем и областью; правила
+сигналов — в `signals.py`.
+
 Фильтры `/reports/*` — повторяемые параметры (`kam_id=a&kam_id=b`, условие `IN`); один
 параметр, как раньше, — список из одного id (старые клиенты работают без изменений).
 """
@@ -30,7 +33,11 @@ from app.modules.reporting.kam_activity import (
     build_kam_activity,
     build_kam_activity_summary,
 )
-from app.modules.reporting.schemas import KamActivityReportOut, KamActivitySummaryOut
+from app.modules.reporting.schemas import (
+    DashboardSignalsOut,
+    KamActivityReportOut,
+    KamActivitySummaryOut,
+)
 from app.modules.reporting.service import MAX_FILTER_IDS as REPORT_MAX_FILTER_IDS
 from app.modules.reporting.service import ReportParams, build_report
 
@@ -119,6 +126,25 @@ def _make_handler(code: str):
 
 for _code, _summary in _REPORTS:
     router.get(f"/{_code}", summary=_summary, responses=_REPORT_ERRORS)(_make_handler(_code))
+
+
+# response_model=None: ответ отдаётся как собран (и как лежит в кэше), схема — в OpenAPI
+@router.get(
+    "/signals",
+    summary="Сигналы на текущий момент: зависшие, без ответственного КАМа, лицензии, вузы",
+    response_model=None,
+    responses={200: {"model": DashboardSignalsOut}, **_REPORT_ERRORS},
+)
+async def report_signals(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[AppUser, Depends(require_permission("reports:read"))],
+    params: Annotated[ReportParams, Depends(report_params)],
+) -> dict[str, Any]:
+    """Карточка «Сигналы» на «Аналитике»: что требует внимания сейчас. Период панели не
+    применяется; процесс, КАМы, вузы, продукты, программы и ИТ-направления — где применимы
+    (`reporting.signals`). Лицензии и вузы без активности — только при процессе B2B в
+    области роли, иначе `null`."""
+    return await build_report(session, "signals", user, params)
 
 
 # --- отчёт «Активность КАМов» (§7.2.1) --------------------------------------------------

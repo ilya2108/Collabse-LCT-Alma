@@ -1,0 +1,45 @@
+  █ THRESHOLDS 
+    checks
+    ✗ 'rate>0.99' rate=98.81%
+    crm_export_ms
+    ✗ 'p(95)<3000' p(95)=4.15s
+    crm_report_ms
+    ✗ 'p(95)<1000' p(95)=1.41s
+    http_req_duration{kind:ui}
+    ✗ 'p(95)<500' p(95)=2.21s
+    ✗ 'p(99)<1000' p(99)=9.8s
+    http_req_failed
+    ✗ 'rate<0.01' rate=1.16%
+  █ TOTAL RESULTS 
+    checks_total.......: 4878   15.22861/s
+    checks_succeeded...: 98.81% 4820 out of 4878
+    checks_failed......: 1.18%  58 out of 4878
+    ✗ board 200
+      ↳  99% — ✓ 982 / ✗ 1
+    ✗ report 200
+      ↳  95% — ✓ 1104 / ✗ 56
+    ✓ registry 200
+    ✓ card 200
+    ✗ export 201
+      ↳  99% — ✓ 384 / ✗ 1
+    ✓ export download 200
+    CUSTOM
+    crm_export_ms..................: avg=976.11ms min=42ms     med=327.5ms max=13.46s p(90)=2.1s     p(95)=4.15s
+    crm_report_ms..................: avg=305.12ms min=112.87µs med=53.43ms max=13.09s p(90)=447.92ms p(95)=1.41s
+    HTTP
+    http_req_duration..............: avg=461.83ms min=112.87µs med=71.71ms max=16.05s p(90)=968.42ms p(95)=1.98s
+      { expected_response:true }...: avg=464.2ms  min=112.87µs med=72.5ms  max=16.05s p(90)=974.39ms p(95)=2.01s
+      { kind:ui }..................: avg=512.69ms min=4.06ms   med=73.9ms  max=16.05s p(90)=1.15s    p(95)=2.21s
+    http_req_failed................: 1.16%  58 out of 4988
+    http_reqs......................: 4988   15.572019/s
+    EXECUTION
+    iteration_duration.............: avg=8.56s    min=1.03s    med=3.85s   max=39.07s p(90)=18.39s   p(95)=20.2s
+    iterations.....................: 2143   6.690224/s
+    vus............................: 1      min=0          max=60
+    vus_max........................: 60     min=60         max=60
+    NETWORK
+    data_received..................: 73 MB  227 kB/s
+    data_sent......................: 6.4 MB 20 kB/s
+reports ✓ [ 100% ] 10 VUs  5m0s
+users50 ✓ [ 100% ] 50 VUs  5m0s
+time="2026-10-22T07:42:10Z" level=error msg="thresholds on metrics 'checks, crm_export_ms, crm_report_ms, http_req_duration{kind:ui}, http_req_failed' have been crossed"

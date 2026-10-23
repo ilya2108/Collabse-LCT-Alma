@@ -1,5 +1,6 @@
 import Keycloak from 'keycloak-js';
 import { env } from '@/shared/config/env';
+import { clearDrafts, COMMENT_DRAFT_PREFIX } from '@/shared/lib/sessionDraft';
 
 /**
  * Единственный экземпляр keycloak-js (OIDC Authorization Code + PKCE,
@@ -56,5 +57,7 @@ export function loginRedirect(redirectPath?: string): void {
 }
 
 export function logoutRedirect(): void {
+  // черновики комментариев (могут содержать ПДн) не достаются следующему входу во вкладке
+  clearDrafts(COMMENT_DRAFT_PREFIX);
   void keycloak.logout({ redirectUri: `${window.location.origin}/login` });
 }

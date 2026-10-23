@@ -146,6 +146,80 @@ export function getDashboardReport(
   });
 }
 
+/** Число на текущий момент и разбивка по процессам панели (для перехода на доску). */
+export interface SignalCount {
+  value: number;
+  by_workflow: Partial<Record<WorkflowCode, number>>;
+}
+
+export interface LicenseSignalItem {
+  contract_id: string;
+  contract_number: string;
+  university_id: string;
+  /** Краткое наименование вуза, без него — полное. */
+  university: string;
+  kam_id: string | null;
+  kam: string | null;
+  product_id: string;
+  /** ИТ-продукт строки договора. */
+  product: string;
+  /** Последний день действия лицензии (включительно), ГГГГ-ММ-ДД. */
+  valid_to: string;
+  /** Дней до последнего дня: 0 — сегодня, отрицательное — истекла. */
+  days_left: number;
+  state: 'expiring' | 'expired';
+  transfer_status: 'not_started' | 'in_progress' | 'transferred' | null;
+}
+
+export interface LicenseSignal {
+  expiring: number;
+  expired: number;
+  horizon_days: number;
+  items: LicenseSignalItem[];
+  truncated: boolean;
+}
+
+export interface UntouchedUniversityItem {
+  university_id: string;
+  name: string;
+  kam_id: string;
+  kam: string;
+  /** Последнее взаимодействие до периода; null — не было. */
+  last_contact_at: string | null;
+}
+
+export interface UntouchedSignal {
+  value: number;
+  period: { from: string; to: string; as_of: string; days: number };
+  items: UntouchedUniversityItem[];
+  truncated: boolean;
+}
+
+/**
+ * Карточка «Сигналы» (`GET /reports/signals`): срез на текущий момент, период панели не
+ * применяется. Лицензии и вузы — только при процессе B2B в области роли, иначе null.
+ */
+export interface DashboardSignals {
+  report: string;
+  generated_at: string;
+  as_of: string;
+  workflow_types: WorkflowCode[];
+  stuck: SignalCount;
+  unassigned: SignalCount;
+  licenses: LicenseSignal | null;
+  untouched_universities: UntouchedSignal | null;
+}
+
+export function getDashboardSignals(
+  params: DashboardReportParams,
+  signal?: AbortSignal,
+): Promise<DashboardSignals> {
+  return api.get<DashboardSignals>('/reports/signals', {
+    query: params as Record<string, QueryValue | QueryValue[]>,
+    signal,
+  });
+}
+
 export function getProgramsDemand(
   params: DashboardReportParams,
   signal?: AbortSignal,

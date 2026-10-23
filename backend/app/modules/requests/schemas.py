@@ -151,6 +151,13 @@ class TransitionBody(_ApiModel):
     # файлы, загруженные этим пользователем в заявку перед переходом (POST /files):
     # после перехода они привязываются к его строке истории — «файл в статусе» (ТЗ, ФТ3)
     file_ids: list[UUID] = Field(default_factory=list, max_length=MAX_TRANSITION_FILES)
+    # что видел клиент — только для причины 409 (details[0].code), ничего не проверяют
+    expected_status_id: UUID | None = Field(
+        default=None, description="Этап заявки в карточке клиента (причина 409 stale_version)"
+    )
+    expected_assignee_id: UUID | None = Field(
+        default=None, description="Ответственный в карточке клиента (причина 409 / 403)"
+    )
 
 
 class ReopenBody(_ApiModel):

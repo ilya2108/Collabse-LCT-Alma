@@ -9,15 +9,22 @@
 (`POST /requests` с `client`) и лида CMS (`cms.lead.created`): физлицо ищется по blind index
 email, юрлицо — по ИНН, без ИНН — по точному названию; ПДн физлица шифруются типом
 EncryptedStr, HMAC-колонки заполняются здесь.
+
+`unassigned_condition` — правило «без ответственного КАМа» (заявка не распределена): одно
+SQL-условие у фильтра `GET /requests?unassigned=true` и сигнала дашборда «Без
+ответственного».
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from app.core.access import get_catalog_snapshot
 from app.core.pii import (
     display_name_from_full_name,
     get_pii_crypto,
@@ -25,6 +32,7 @@ from app.core.pii import (
     mask_full_name,
     mask_phone,
 )
+from app.core.rbac_catalog import WORKFLOW_TYPES
 from app.models.crm import Counterparty, InteractionType
 from app.models.deal import Deal
 from app.models.user import AppUser
@@ -118,6 +126,39 @@ def counterparty_audit_after(counterparty: Counterparty, *, source: str) -> dict
         "org_name": counterparty.org_name,
         "inn": counterparty.inn,
     }
+
+
+def unassigned_condition() -> sa.ColumnElement[bool]:
+    """Заявка «без ответственного КАМа» — открыта и не распределена: её ответственный не
+    ведёт портфель как КАМ процесса заявки (нет роли с правом `requests:kam` в этом
+    процессе) либо деактивирован.
+
+    `deal.responsible_user_id` в DDL NOT NULL, поэтому «пустого» ответственного не бывает:
+    лид CMS до распределения висит на руководителе (`head_kam`), заявка может остаться на
+    администраторе или на уволенном КАМе. Это то же правило, что «свободная заявка» в
+    `POST /requests/{id}/assign` (её можно взять на себя), плюс деактивированный сотрудник.
+    Роли — снимок каталога RBAC (своя роль «КАМ B2C» тоже КАМ); подзапрос по псевдониму
+    `app_user`, чтобы не скоррелироваться с пользователем внешнего запроса.
+    """
+    catalog = get_catalog_snapshot()
+    owner = aliased(AppUser, name="unassigned_owner")
+    branches: list[sa.ColumnElement[bool]] = []
+    for workflow_type in WORKFLOW_TYPES:
+        roles = catalog.role_codes_with("requests:kam", workflow_type)
+        if not roles:
+            branches.append(Deal.pipeline == workflow_type)
+            continue
+        kam_owner = (
+            select(owner.id)
+            .where(
+                owner.id == Deal.responsible_user_id,
+                owner.is_active.is_(True),
+                owner.roles.overlap(list(roles)),
+            )
+            .exists()
+        )
+        branches.append(sa.and_(Deal.pipeline == workflow_type, sa.not_(kam_owner)))
+    return sa.and_(Deal.status == "open", sa.or_(*branches))
 
 
 async def build_request_context(session: AsyncSession, deal: Deal) -> dict[str, Any]:

@@ -291,7 +291,7 @@ OpenAPI — `http://localhost:8000/api/v1/docs`.
 ## Проверки
 
 ```bash
-./.venv/bin/python -m pytest -q                    # 2 139 тестов (1 864 юнит + 275 tests/db)
+./.venv/bin/python -m pytest -q                    # 2 179 тестов (1 880 юнит + 299 tests/db)
 ALMA_DB_TESTS=required ./.venv/bin/python -m pytest -q   # как в CI: без PostgreSQL — ошибка
 ./.venv/bin/python -m ruff check app tests
 ./.venv/bin/python -m app.tools.check_migrations   # exit 0 = схема на head

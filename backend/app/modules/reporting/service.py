@@ -1289,6 +1289,18 @@ async def report_dashboard(
     }
 
 
+async def report_signals(
+    session: AsyncSession, params: ReportParams, scope: DealScope
+) -> dict[str, Any]:
+    """Карточка «Сигналы» (зависшие, без ответственного КАМа, лицензии, вузы без активности)
+    на текущий момент — `signals.build_signals`. Модуль сигналов сам импортирует этот
+    (условия «зависла», измерения панели), поэтому импорт — при вызове. В выгрузки
+    (`REPORT_CODES`) не входит: это экранная сводка со ссылками на списки."""
+    from app.modules.reporting.signals import build_signals
+
+    return await build_signals(session, params, _scope_or_all(scope))
+
+
 _BUILDERS = {
     "funnel": report_funnel,
     "kam-workload": report_kam_workload,
@@ -1298,6 +1310,7 @@ _BUILDERS = {
     "talent-pool-funnel": report_talent_pool_funnel,
     "dynamics": report_dynamics,
     "dashboard": report_dashboard,
+    "signals": report_signals,
 }
 
 # отчёты, чей ответ зависит от фичефлага auto_ranking (флаг — в ключе кэша)

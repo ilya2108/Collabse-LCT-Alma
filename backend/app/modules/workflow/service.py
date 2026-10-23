@@ -280,6 +280,111 @@ async def _talent_pool_hook_on_won(
     )
 
 
+# --- причины 409 перехода (api-contract.md §4.3): top-level код прежний (на нём держатся
+# автоповтор клиента и тесты), причина — в details[0].code, текст — в message
+REQUEST_LOCKED_MESSAGE = (
+    "Заявку прямо сейчас меняет другой пользователь — повторите действие через несколько секунд"
+)
+_HISTORY_KIND_ACTORS = {
+    "integration": "событие LMS",
+    "import": "импорт",
+    "system_migration": "система",
+}
+
+
+async def _stage_name(session: AsyncSession, stage_id: uuid.UUID) -> str:
+    stage = await session.get(WorkflowStage, stage_id)
+    return stage.name if stage is not None else "—"
+
+
+async def _stale_version_error(
+    session: AsyncSession,
+    deal: Deal,
+    *,
+    expected_status_id: uuid.UUID | None,
+    expected_assignee_id: uuid.UUID | None,
+) -> ApiError:
+    """409 `stale_version` с причиной: заявку перевели, закрыли, перенесла система при
+    удалении этапа, сменили ответственного или изменили иначе (поля, комментарий, файлы).
+    Без ожиданий клиента (старые клиенты) — прежний ответ без деталей."""
+    if expected_status_id is None and expected_assignee_id is None:
+        return stale_version()
+    current = await _stage_name(session, deal.stage_id)
+    context = {"current_status_id": str(deal.stage_id), "current_status_name": current}
+    if expected_status_id is not None and expected_status_id != deal.stage_id:
+        last = (
+            await session.execute(
+                select(DealStageHistory.kind, DealStageHistory.from_stage_name, AppUser.full_name)
+                .outerjoin(AppUser, AppUser.id == DealStageHistory.actor_user_id)
+                .where(
+                    DealStageHistory.deal_id == deal.id,
+                    DealStageHistory.to_stage_id == deal.stage_id,
+                )
+                .order_by(DealStageHistory.created_at.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        who = (last.full_name or _HISTORY_KIND_ACTORS.get(last.kind)) if last else None
+        by = f" ({who})" if who else ""
+        if last is not None and last.kind == "system_migration":
+            reason = "request_migrated"
+            message = (
+                f"Этап «{last.from_stage_name}» удалён из схемы процесса — заявка "
+                f"перенесена на этап «{current}»"
+            )
+        elif deal.status != "open":
+            reason, message = "request_closed", f"Заявку уже закрыли: этап «{current}»{by}"
+        else:
+            reason, message = "request_moved", f"Заявку уже перевели на этап «{current}»{by}"
+        hint = "Карточка обновлена — проверьте заявку и при необходимости повторите переход"
+    elif expected_assignee_id is not None and expected_assignee_id != deal.responsible_user_id:
+        responsible = await session.get(AppUser, deal.responsible_user_id)
+        name = (responsible.full_name if responsible else None) or "другой сотрудник"
+        reason, message = "assignee_changed", f"Ответственного по заявке сменили — теперь {name}"
+        hint = "Карточка обновлена — повторите переход, если он ещё нужен"
+        context["current_assignee_id"] = str(deal.responsible_user_id)
+    else:
+        reason = "request_modified"
+        message = "Заявку изменили, пока вы её смотрели: поля, комментарий или файлы"
+        hint = "Карточка обновлена — повторите переход"
+    return ApiError(
+        409, "stale_version", message, details=[{"code": reason, "message": hint, **context}]
+    )
+
+
+async def _invalid_transition_reason(
+    session: AsyncSession, deal: Deal, to_status_id: uuid.UUID
+) -> tuple[str, str]:
+    """Причина 409 `workflow_invalid_transition`: заявка закрыта, переход или целевой этап
+    убраны из схемы (клиент смотрел на старую схему) или ребра в схеме не было."""
+    if deal.status != "open":
+        current = await _stage_name(session, deal.stage_id)
+        return "request_closed", f"Заявка уже закрыта: этап «{current}»"
+    removed_edge = await session.scalar(
+        select(func.count())
+        .select_from(WorkflowTransition)
+        .where(
+            WorkflowTransition.workflow_id == deal.workflow_id,
+            WorkflowTransition.from_stage_id == deal.stage_id,
+            WorkflowTransition.to_stage_id == to_status_id,
+            WorkflowTransition.deleted_at.is_not(None),
+        )
+    )
+    target = await session.get(WorkflowStage, to_status_id)
+    if target is not None and target.workflow_id == deal.workflow_id:
+        if target.deleted_at is not None:
+            return (
+                "target_stage_deleted",
+                f"Этап «{target.name}» удалён из схемы процесса — доска обновлена по новой схеме",
+            )
+        if removed_edge:
+            return (
+                "transition_removed",
+                "Этот переход убран из схемы процесса — доска обновлена по новой схеме",
+            )
+    return "not_in_schema", "Переход не разрешён схемой workflow"
+
+
 async def transition_deal(
     session: AsyncSession,
     *,
@@ -290,6 +395,8 @@ async def transition_deal(
     version: int,
     ip: str | None = None,
     files: Sequence[FileObject] = (),
+    expected_status_id: uuid.UUID | None = None,
+    expected_assignee_id: uuid.UUID | None = None,
 ) -> Deal:
     """Единственная точка смены этапа по ребру живой схемы (инвариант I-4).
 
@@ -297,6 +404,10 @@ async def transition_deal(
     (своя заявка, не удалены, не привязаны, право `requests:files`): привязываются к строке
     истории перехода в той же транзакции — отказ движка (4xx) не оставляет привязки, а
     зафиксированный переход не остаётся без своих файлов.
+
+    `expected_status_id` / `expected_assignee_id` — этап и ответственный, которые видел
+    клиент: на них не проверяется ничего, они только объясняют 409 `stale_version`
+    (причина в `details[0].code`, api-contract.md §4.3).
     """
     # Порядок локов строго «advisory → row» — как в apply_change (exclusive advisory,
     # затем FOR UPDATE заявок мигрируемых этапов). Обратный порядок давал ABBA-deadlock:
@@ -312,13 +423,20 @@ async def transition_deal(
     # транзакции — включая FOR UPDATE строки): дольше — 409 workflow_busy + Retry-After
     async with lock_timeout_as_busy():
         await acquire_shared_workflow_lock(session, workflow_id)
+    # тот же lock_timeout, но ждём уже строку заявки — её держит другой запрос, не схема
+    async with lock_timeout_as_busy(REQUEST_LOCKED_MESSAGE):
         deal = await session.get(Deal, deal_id, with_for_update=True)
     if deal is None or deal.status == "archived":
         raise not_found("Заявка не найдена")
     if deal.workflow_id != workflow_id:  # заявка воронку не меняет; страховка от гонки
         raise conflict("Схема заявки изменилась, повторите операцию")
     if deal.xmin != version:
-        raise stale_version()
+        raise await _stale_version_error(
+            session,
+            deal,
+            expected_status_id=expected_status_id,
+            expected_assignee_id=expected_assignee_id,
+        )
 
     # ВАЖНО: ребро перечитывается из ЖИВОЙ схемы после захвата локов —
     # она могла измениться, пока пользователь смотрел на карточку (409 → фронт перечитывает)
@@ -349,14 +467,15 @@ async def transition_deal(
             .scalars()
             .all()
         )
+        reason, message = await _invalid_transition_reason(session, deal, to_status_id)
         raise ApiError(
             409,
             "workflow_invalid_transition",
-            "Переход не разрешён схемой workflow",
+            message,
             details=[
                 {
                     "field": "to_status_id",
-                    "code": "workflow_invalid_transition",
+                    "code": reason,
                     "message": (
                         "Допустимые переходы: " + ", ".join(f"«{n}»" for n in available)
                         if available

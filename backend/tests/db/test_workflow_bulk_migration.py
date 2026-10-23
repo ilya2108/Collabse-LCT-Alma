@@ -617,9 +617,16 @@ async def _assert_nothing_applied(
     wcr_id: uuid.UUID,
     stage_ids: dict[str, uuid.UUID],
     expected: dict[str, int],
+    *,
+    audit: int = 0,
 ) -> None:
-    """Заявки на исходных этапах, схема не тронута, истории/сводок/аудита нет."""
-    assert await _side_effect_counts(session) == {"history": 0, "notifications": 0, "audit": 0}
+    """Заявки на исходных этапах, схема не тронута, истории/сводок/аудита нет
+    (`audit` — записи `workflow.change_applied` от пакетов, применённых до проверяемого)."""
+    assert await _side_effect_counts(session) == {
+        "history": 0,
+        "notifications": 0,
+        "audit": audit,
+    }
     for code, count in expected.items():
         assert (
             await _scalar(
@@ -686,10 +693,8 @@ async def test_failed_apply_rolls_back_everything(db_session, workflows, admin_u
     assert "Первое касание" in caught.value.message  # подсказка: актуальное название
 
     assert audit_before == 1  # применён только переименовывающий пакет
-    await db_session.execute(
-        sa.text("DELETE FROM audit_log WHERE action = 'workflow.change_applied'")
-    )
-    await _assert_nothing_applied(db_session, change_id, ids, {"first_contact": 300})
+    # журнал только дополняется (миграция 0011): запись переименования остаётся, новой нет
+    await _assert_nothing_applied(db_session, change_id, ids, {"first_contact": 300}, audit=1)
 
 
 async def test_forced_failure_mid_migration_rolls_back_everything(

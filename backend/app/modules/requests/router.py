@@ -89,6 +89,7 @@ from app.modules.requests.service import (
     available_transitions,
     counterparty_audit_after,
     find_or_create_counterparty,
+    unassigned_condition,
 )
 from app.modules.workflow import service as workflow_service
 
@@ -208,6 +209,13 @@ async def list_requests(
     product_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     program_id: Annotated[uuid.UUID | None, Query()] = None,
     stuck: Annotated[bool | None, Query()] = None,
+    unassigned: Annotated[
+        bool | None,
+        Query(
+            description="Без ответственного КАМа: открытая заявка, чей ответственный не КАМ "
+            "процесса или деактивирован (сигнал «Аналитики»)"
+        ),
+    ] = None,
     created_from: Annotated[date | None, Query()] = None,
     created_to: Annotated[date | None, Query()] = None,
     source: Annotated[Literal["manual", "import", "cms", "lms"] | None, Query()] = None,
@@ -245,6 +253,9 @@ async def list_requests(
             _stuck_condition(),
         )
         stmt = stmt.where(stuck_clause if stuck else ~stuck_clause)
+    if unassigned is not None:
+        unassigned_clause = unassigned_condition()
+        stmt = stmt.where(unassigned_clause if unassigned else ~unassigned_clause)
     if search:
         pattern = f"%{search.strip()}%"
         university_match = (
@@ -914,6 +925,14 @@ async def perform_transition(
         responsible_user_id=responsible_id,
         user_id=user.id,
     ):
+        if body.expected_assignee_id == user.id and responsible_id != user.id:
+            # клиент видел заявку своей — её передали, пока карточка была открыта
+            responsible = await session.get(AppUser, responsible_id)
+            name = (responsible.full_name if responsible else None) or "другой сотрудник"
+            raise forbidden(
+                f"Заявку передали другому ответственному — {name}. Переход доступен "
+                "только ответственному по заявке"
+            )
         raise forbidden("Переход доступен только ответственному по заявке")
     # файлы перехода проверяются ДО движка: невалидный файл не должен оставить заявку
     # переведённой без своего вложения; привязка к строке истории — в транзакции перехода
@@ -927,6 +946,8 @@ async def perform_transition(
         version=body.version,
         ip=client_ip(request),
         files=files,
+        expected_status_id=body.expected_status_id,
+        expected_assignee_id=body.expected_assignee_id,
     )
     return await serialize_deal(
         session,
@@ -1339,7 +1360,10 @@ async def upload_request_file(
         check_format=True,
         stage_history_id=stage_history_id,
     )
-    deal.last_activity_at = _now()
+    if not pending_transition:
+        # файл для перехода строку заявки не меняет: модалка отправит переход с версией,
+        # снятой до загрузки, а `last_activity_at` выставит сам переход
+        deal.last_activity_at = _now()
     await write_audit(
         session,
         actor_user_id=user.id,

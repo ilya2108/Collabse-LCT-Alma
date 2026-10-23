@@ -1813,6 +1813,16 @@ Append-only журнал административных и значимых д
 приоритетов программ, привязка Telegram, экспорты ПДн, ручные overrides). Не заменяет
 `deal_stage_history` (тот — доменная история заявки), а дополняет.
 
+Неизменяемость обеспечивает БД (миграция 0011): построчный триггер
+`trg_audit_log_append_only` (BEFORE UPDATE OR DELETE) и `trg_audit_log_no_truncate`
+(BEFORE TRUNCATE, в том числе каскадный) вызывают `audit_log_append_only()` — отказ с
+SQLSTATE 42501. INSERT и чтение не ограничены; FK `actor_user_id` — NO ACTION, поэтому
+удаление автора записи отклоняется, а не обнуляет его. Сброс стенда журнал сохраняет
+(`RESET_KEEP_TABLES`); тестовая очистка выключает TRUNCATE-триггер только в своей
+транзакции. ФИО студентов пишутся маской (8.5): после удаления по 152-ФЗ в журнале не
+остаётся псевдонима «Фамилия И.О.». От владельца схемы триггер не защищает — разделение
+ролей «миграции / приложение» и выгрузка в SIEM — шаги пилота.
+
 ```sql
 CREATE TABLE audit_log (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -2141,6 +2151,7 @@ CREATE INDEX ix_ai_summary_job_created ON ai_summary_job (created_at);
 | `0008` contract product license | поля лицензии в `contract_product` с CHECK и частичным индексом по дате окончания (4.6); `kam_catalog` в CHECK `import_session.entity_type` (9.1); даунгрейд удаляет сессии `kam_catalog` |
 | `0009` notification stuck index | только индекс: частичный `ix_notification_stuck_created (created_at) WHERE event_type = 'request.stuck'` — начало журнала напоминаний для вкладки «Просрочки» (api-contract.md §7.2.2) |
 | `0010` ai summary | таблица `ai_summary_job` с частичным UNIQUE задач в полёте и индексами кэша, очереди и очистки (9.7); право `reports:ai_summary` и его выдача `admin` и `head_kam` (3.3); даунгрейд удаляет право (каскад из ролей) и таблицу |
+| `0011` audit log append-only | функция `audit_log_append_only()` и триггеры `trg_audit_log_append_only` (UPDATE/DELETE) и `trg_audit_log_no_truncate` (TRUNCATE) на `audit_log` (9.5); даунгрейд удаляет триггеры и функцию |
 
 Обратимость `upgrade head → downgrade base → upgrade head` проверяет `tests/db/test_db_smoke.py`;
 тесты с БД создают схему настоящими миграциями, а не `create_all`.

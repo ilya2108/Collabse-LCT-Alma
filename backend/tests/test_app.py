@@ -2,8 +2,8 @@
 
 Реестр включает маршруты доработок: отчёт «Активность КАМов» и файлы заявки (F1), роли и
 права (F2), очистку ключей идемпотентности (F4), волну 4 — «Взаимодействия за период» и
-передачу портфеля КАМа. Перенос заявок (F3) новых маршрутов не добавляет — он идёт через
-прежние `/workflows/*/changes`.
+передачу портфеля КАМа, карточку «Сигналы» дашборда. Перенос заявок (F3) новых маршрутов
+не добавляет — он идёт через прежние `/workflows/*/changes`.
 """
 
 from __future__ import annotations
@@ -42,6 +42,8 @@ EXPECTED_ROUTES = [
     ("POST", "/api/v1/import/sessions"),
     ("POST", "/api/v1/export/jobs"),
     ("GET", "/api/v1/reports/dashboard"),
+    # карточка «Сигналы» на «Аналитике»
+    ("GET", "/api/v1/reports/signals"),
     # F1: активность КАМов
     ("GET", "/api/v1/reports/kam-activity"),
     ("GET", "/api/v1/reports/kam-activity/summary"),
@@ -123,6 +125,7 @@ def test_healthz_ok_without_dependencies() -> None:
         ("GET", "/api/v1/roles"),
         ("GET", "/api/v1/admin/roles"),
         ("GET", "/api/v1/reports/kam-activity"),
+        ("GET", "/api/v1/reports/signals"),
         ("GET", "/api/v1/reports/interactions"),
         ("GET", "/api/v1/reports/sla"),
         ("POST", "/api/v1/reports/ai-summaries"),

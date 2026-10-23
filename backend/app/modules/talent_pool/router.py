@@ -28,6 +28,7 @@ from app.core.errors import conflict, not_found, validation_error
 from app.core.events import EVENT_STUDENT_TALENT_POOL_ADDED
 from app.core.outbox import emit_event_notifications
 from app.core.pagination import ListParams, apply_sort, list_envelope, list_params
+from app.core.pii import mask_full_name
 from app.core.security import require_permission
 from app.models.crm import Program, University
 from app.models.service import FileObject
@@ -182,7 +183,8 @@ async def create_student(
         action="student.created",
         entity_type="student",
         entity_id=student.id,
-        after={"display_name": student.display_name},  # ПДн в аудит не пишутся
+        # ПДн в аудит не пишутся: только маска ФИО (журнал неизменяем — миграция 0011)
+        after={"display_name": mask_full_name(student.full_name)},
         ip=client_ip(request),
     )
     await session.commit()
@@ -297,7 +299,8 @@ async def reveal_student(
         action="student.pii_revealed",
         entity_type="student",
         entity_id=student.id,
-        after={"display_name": student.display_name},  # кто/когда/кого — без самих ПДн
+        # кто/когда/кого — без самих ПДн: маска ФИО
+        after={"display_name": mask_full_name(student.full_name)},
         ip=client_ip(request),
     )
     await session.commit()
@@ -349,7 +352,9 @@ async def delete_student(
     request: Request,
 ) -> dict[str, bool]:
     student = await _load_student(session, student_id)
-    display_name = student.display_name
+    # журнал аудита неизменяем (миграция 0011) — после удаления по 152-ФЗ в нём остаётся
+    # только маска ФИО, а не псевдоним «Фамилия И.О.»
+    masked_name = mask_full_name(student.full_name)
     files = (
         (
             await session.execute(
@@ -372,7 +377,7 @@ async def delete_student(
         action="student.deleted",
         entity_type="student",
         entity_id=student_id,
-        before={"display_name": display_name},
+        before={"display_name": masked_name},
         ip=client_ip(request),
     )
     await session.commit()

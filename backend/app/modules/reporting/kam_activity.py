@@ -1845,21 +1845,35 @@ def by_kam_rows(tree: Mapping[str, Any], prev_tree: Mapping[str, Any]) -> list[d
     return rows
 
 
-def untouched_assigned(tree: Mapping[str, Any]) -> list[str]:
-    """Закреплённые вузы без единого взаимодействия в периоде («забытые»)."""
+def untouched_assigned_refs(tree: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Закреплённые вузы без единого взаимодействия в периоде («забытые»): вуз, его КАМ и
+    последний контакт до периода (по алфавиту). Вуз «тронут», если с ним работал кто угодно
+    из выборки. Правило одно — у сводки (`untouched_assigned`) и у сигнала «Вузы без
+    активности» дашборда (`untouched_assigned_universities`)."""
     touched = {
         node["university_id"]
         for row in tree["rows"]
         for node in row["universities"]
         if node["university_id"] and node["interactions"]["total"] > 0
     }
-    names: dict[str, str] = {}
+    found: dict[str, dict[str, Any]] = {}
     for row in tree["rows"]:
         for node in row["universities"]:
             uid = node["university_id"]
             if uid and node["assigned"] and uid not in touched:
-                names[uid] = _university_label(node)
-    return sorted(names.values(), key=_name_key)
+                found[uid] = {
+                    "university_id": uid,
+                    "name": _university_label(node),
+                    "kam_id": row["kam_id"],
+                    "kam": row["kam"],
+                    "last_contact_at": node["last_contact_at"],
+                }
+    return sorted(found.values(), key=lambda item: _name_key(item["name"]))
+
+
+def untouched_assigned(tree: Mapping[str, Any]) -> list[str]:
+    """Закреплённые вузы без единого взаимодействия в периоде («забытые»)."""
+    return [item["name"] for item in untouched_assigned_refs(tree)]
 
 
 # --- вид Б: вузы по этапам, риски --------------------------------------------------------
@@ -2487,6 +2501,29 @@ async def kam_activity_detail(
     if params.direction_ids:
         body["directions"] = await direction_refs(session, params.direction_ids)
     return body
+
+
+async def untouched_assigned_universities(
+    session: AsyncSession, params: KamActivityParams, scope: DealScope
+) -> dict[str, Any]:
+    """«Закреплён, нет контакта» за период отчёта — сигнал «Вузы без активности» дашборда.
+
+    То же дерево и то же правило (`untouched_assigned_refs`), что у сводки и детализации,
+    без списков заявок. `params` — после `resolve_params`. Область — как у отчёта, но без
+    явного 403 `_resolve_scope`: дашборд на фильтр вне области показывает пусто, а
+    закреплённые вузы, мероприятия и заявки и так ограничены областью (`_b2b_rule`,
+    `scope.apply`)."""
+    bounds = resolve_bounds(params, now=_now())
+    assigned = await fetch_assigned_universities(session, params, scope)
+    if not assigned:
+        return {"period": bounds.as_json(), "items": []}
+    default_days = await _global_stuck_default(session)
+    rows, activities, assigned = await _collect(
+        session, params, bounds, scope, default_days=default_days, assigned=assigned
+    )
+    people = await fetch_people(session, _people_ids(rows, activities, assigned), params, scope)
+    tree = assemble_tree(rows, activities, assigned, people, bounds, include_requests=False)
+    return {"period": bounds.as_json(), "items": untouched_assigned_refs(tree)}
 
 
 async def kam_activity_summary(

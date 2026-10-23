@@ -5,6 +5,7 @@ import {
   listRequestTransitions,
   transitionWithFiles,
 } from '@/shared/api/endpoints/requests';
+import { transitionExpectations } from '@/shared/api/transitionContext';
 import type { AvailableTransition, RequestItem } from '@/shared/api/types';
 import { useAuth } from '@/shared/auth/AuthContext';
 import { toastSuccess } from '@/shared/lib/toast';
@@ -67,6 +68,7 @@ export function TransitionMenu({
           to_status_id: transition.to_status_id,
           comment: comment || undefined,
           version: request.version,
+          ...transitionExpectations(request),
         },
         files,
       ),

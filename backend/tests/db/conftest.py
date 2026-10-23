@@ -305,13 +305,31 @@ async def _snapshot_seed(url: str) -> tuple[str, tuple[str, ...], dict[str, list
         await engine.dispose()
 
 
+_AUDIT_TRUNCATE_GUARD = "ALTER TABLE public.audit_log {action} TRIGGER trg_audit_log_no_truncate"
+
+
 async def truncate_and_restore(conn: AsyncConnection, db: MigratedDatabase) -> None:
     """Очищает все таблицы и возвращает строки, засеянные миграциями (снимок сессии)."""
     await conn.execute(sa.text("SET LOCAL lock_timeout = '10s'"))
     tables = await _public_tables(conn)
     if tables:
         listed = ", ".join(f"public.{_quote_table(t)}" for t in tables)
+        # журнал аудита только дополняется (триггер миграции 0011), но одноразовой тестовой
+        # базе очистка нужна: триггер выключается в этой же транзакции (DDL транзакционный —
+        # при сбое откат вернёт его включённым)
+        guarded = (
+            await conn.execute(
+                sa.text(
+                    "SELECT 1 FROM pg_trigger WHERE tgname = 'trg_audit_log_no_truncate' "
+                    "AND tgrelid = to_regclass('public.audit_log')"
+                )
+            )
+        ).first() is not None
+        if guarded:
+            await conn.execute(sa.text(_AUDIT_TRUNCATE_GUARD.format(action="DISABLE")))
         await conn.execute(sa.text(f"TRUNCATE TABLE {listed} RESTART IDENTITY CASCADE"))
+        if guarded:
+            await conn.execute(sa.text(_AUDIT_TRUNCATE_GUARD.format(action="ENABLE")))
     for table in db.seed_tables:
         result = await conn.execute(
             sa.text(

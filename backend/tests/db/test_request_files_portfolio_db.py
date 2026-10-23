@@ -323,6 +323,61 @@ async def test_transition_with_files_and_optional_comment(
     ]
 
 
+async def test_modal_flow_version_taken_before_pending_uploads(
+    api, db_session, workflows, people, memory_storage
+) -> None:  # noqa: ANN001
+    """Как модалка `transitionWithFiles`: версия — из карточки до загрузки файлов.
+
+    Загрузка «для перехода» не меняет строку заявки, поэтому переход с этой версией
+    проходит (раньше — 409 stale_version на каждом переходе с файлами из интерфейса).
+    Обычная загрузка из вкладки «Файлы» по-прежнему отмечает активность заявки.
+    """
+    wf, stages = workflows["b2b"]
+    kam1 = people["kam1"]
+    deal = await factories.make_deal(
+        db_session,
+        workflow=wf,
+        stages=stages,
+        responsible=kam1,
+        path=[("new", ago(10)), ("first_contact", ago(5))],
+    )
+    client = api.as_user(kam1)
+    files_url = f"{API}/requests/{deal.id}/files"
+    version = await _version(client, deal)
+    await db_session.refresh(deal)
+    activity_before = deal.last_activity_at
+
+    ids = []
+    for name in ("Скан договора.pdf", "Приложение.zip"):
+        body = ZIP if name.endswith(".zip") else PDF
+        uploaded = await client.post(
+            files_url, files={"file": (name, body)}, data={"pending_transition": "true"}
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        ids.append(uploaded.json()["id"])
+    assert await _version(client, deal) == version
+    await db_session.refresh(deal)
+    assert deal.last_activity_at == activity_before
+
+    moved = await client.post(
+        f"{API}/requests/{deal.id}/transitions",
+        json={"to_status_id": str(stages["negotiation"].id), "version": version, "file_ids": ids},
+    )
+    assert moved.status_code == 200, moved.text
+    transition_row = (await _history(db_session, deal))[-1]
+    for file_id in ids:
+        stored = await db_session.get(FileObject, uuid.UUID(file_id))
+        await db_session.refresh(stored)
+        assert stored.stage_history_id == transition_row.id
+    await db_session.refresh(deal)
+    assert deal.last_activity_at > activity_before
+
+    # загрузка из вкладки «Файлы» — действие по заявке: активность и версия меняются
+    plain = await client.post(files_url, files={"file": ("Устав.pdf", PDF)})
+    assert plain.status_code == 201, plain.text
+    assert await _version(client, deal) != moved.json()["version"]
+
+
 async def test_transition_files_need_files_permission(
     api, db_session, workflows, people, memory_storage
 ) -> None:  # noqa: ANN001

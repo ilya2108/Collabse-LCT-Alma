@@ -15,6 +15,12 @@ import { springs } from '@/shared/lib/motion';
 import { eventRequestId, useSseInvalidate } from '@/shared/lib/useSseInvalidate';
 import { cn } from '@/shared/lib/cn';
 import {
+  COMMENT_DRAFT_PREFIX,
+  readDraft,
+  useSessionDraft,
+  writeDraft,
+} from '@/shared/lib/sessionDraft';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -53,7 +59,10 @@ export function RequestComments({
 }): ReactNode {
   const queryClient = useQueryClient();
   const { user, hasPermission } = useAuth();
-  const [draft, setDraft] = useState('');
+  // черновик переживает F5 и смену экрана (sessionStorage, ФТ13): ключ — пользователь и
+  // заявка, при выходе из системы черновики стираются (logoutRedirect)
+  const draftKey = `${COMMENT_DRAFT_PREFIX}${user?.id ?? 'anonymous'}:${requestId}`;
+  const [draft, setDraft] = useSessionDraft(draftKey);
   const [pendingComments, setPendingComments] = useState<PendingComment[]>([]);
   const canWrite = hasPermission('comments:write', workflowType);
   const canDeleteAny = hasPermission('comments:delete_any', workflowType);
@@ -91,11 +100,15 @@ export function RequestComments({
     onSuccess: (_data, variables) => {
       setPendingComments((prev) => prev.filter((c) => c.key !== variables.key));
       void queryClient.invalidateQueries({ queryKey: ['request-comments', requestId] });
+      // повтор после сбоя дошёл — восстановленный черновик больше не нужен
+      if (readDraft(draftKey) === variables.text) writeDraft(draftKey, '');
     },
     onError: (_error, variables) => {
       setPendingComments((prev) =>
         prev.map((c) => (c.key === variables.key ? { ...c, failed: true } : c)),
       );
+      // не дошло — текст возвращается в хранилище: после F5 он снова в поле ввода
+      if (!readDraft(draftKey)) writeDraft(draftKey, variables.text);
     },
   });
 

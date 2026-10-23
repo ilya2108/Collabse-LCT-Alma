@@ -848,6 +848,8 @@ async def test_case14_request_files(api, db_session, workflows, people, memory_s
     # скачивание: КАМ видит заявки процесса (записи all) — файл отдаётся
     download = await api.as_user(kam2).get(f"{API}/files/{file_id}/download")
     assert download.status_code == 200 and download.content == b"%PDF-1.4 demo"
+    assert download.headers["x-content-type-options"] == "nosniff"
+    assert download.headers["content-security-policy"] == "sandbox"
     # наблюдатель видит заявку, но файлы заявок ему не скачать (нет files:business)
     observer = await api.as_user(people["observer"]).get(f"{API}/files/{file_id}/download")
     assert observer.status_code == 403
@@ -1091,7 +1093,10 @@ async def test_seed_activity_history_is_idempotent(db_session, memory_storage) -
             )
         )
     ).scalar_one()
-    assert active_contracts == stats["contracts"] + 1
+    # плюс действующие договоры базового сида (МФТИ и ДВФУ — у этих вузов второго нет)
+    base_active = sum(1 for spec in seed.CONTRACTS if spec["status"] == "active")
+    assert base_active == 2
+    assert active_contracts == stats["contracts"] + base_active
     again = await seed_activity_history(
         db_session, workflows, universities, products, programs, users, now=now
     )
